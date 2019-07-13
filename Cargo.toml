@@ -1,0 +1,12 @@
+[package]
+name = "reors_offshoot"
+version = "0.1.0"
+authors = ["sirkibsirkib <christopher.esterhuyse@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+parking_lot = "0.7.1"
+maplit = "1.0.1"
+bidir-map = "1.0.0"
