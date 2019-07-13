@@ -17,29 +17,13 @@ type FuncId = usize;
 mod outer {
     use super::*;
     use crate::inner::TraitVtable;
-    use std::any::Any;
-    use std::mem::transmute;
-    use std::mem::ManuallyDrop;
-    pub enum PortKind {
-        Putter,
-        Getter,
-    }
-
-    // PROTECTED THINGY 1: MEMORY INITIALIZER
-    // struct InitializedMemory {
-    // 	// CONTENTS PRIVATE
-    // 	data: HashMap<Name, (TypeId, Box<u8>)>,
-    // }
-
-    // // PROTECTED THINGY 2: FUNCTION DEFINER
-    // struct DefinedFunctions {
-    // 	data: HashMap<Name, CallHandle>,
-    // }
-
     use crate::Instruction;
     use crate::Term;
+    use std::any::Any;
     use std::any::TypeId;
     use std::collections::{HashMap, HashSet};
+    use std::mem::transmute;
+    use std::mem::ManuallyDrop;
 
     pub enum MemDef {
         Initialized(Box<dyn PortDatum>),
@@ -63,21 +47,21 @@ mod outer {
         args: Vec<TypeId>,
     }
     impl CallHandle {
-        fn new_nonary<R: 'static>(func: Box<dyn Fn(*mut R)>) -> Self {
+        pub fn new_nonary<R: 'static>(func: Box<dyn Fn(*mut R)>) -> Self {
             CallHandle {
                 func: unsafe { transmute(func) },
                 ret: TypeId::of::<R>(),
                 args: vec![],
             }
         }
-        fn new_unary<R: 'static, A0: 'static>(func: Box<dyn Fn(*mut R, *const A0)>) -> Self {
+        pub fn new_unary<R: 'static, A0: 'static>(func: Box<dyn Fn(*mut R, *const A0)>) -> Self {
             CallHandle {
                 func: unsafe { transmute(func) },
                 ret: TypeId::of::<R>(),
                 args: vec![TypeId::of::<A0>()],
             }
         }
-        fn new_binary<R: 'static, A0: 'static, A1: 'static>(
+        pub fn new_binary<R: 'static, A0: 'static, A1: 'static>(
             func: Box<dyn Fn(*mut R, *const A0, *const A1)>,
         ) -> Self {
             CallHandle {
@@ -86,7 +70,7 @@ mod outer {
                 args: vec![TypeId::of::<A0>(), TypeId::of::<A1>()],
             }
         }
-        fn new_ternary<R: 'static, A0: 'static, A1: 'static, A2: 'static>(
+        pub fn new_ternary<R: 'static, A0: 'static, A1: 'static, A2: 'static>(
             func: Box<dyn Fn(*mut R, *const A0, *const A1, *const A2)>,
         ) -> Self {
             CallHandle {
@@ -158,12 +142,15 @@ use outer::Name;
 #[derive(Debug)]
 pub enum ProtoBuildError {
     UnavailableData { name: Name, rule_index: usize },
+    UndefinedName { name: Name },
     InstructionHasSideEffects { name: Name, rule_index: usize },
     DuplicateNameDef { name: Name },
     MemoryNotInitialized { name: Name },
 }
 
 mod inner {
+    use crate::outer::CallHandle;
+    use crate::outer::RulePremise;
     use crate::outer::TypeInfo;
     use crate::*;
     use maplit::{hashmap, hashset};
@@ -201,41 +188,68 @@ mod inner {
         let mut allocator = Allocator::default();
         let info = p.info;
 
-        for (name, def) in p.name_defs {
-            let id = LocId(spaces.len());
-            name_mapping.insert(name, id);
-            let space = match def {
-                NameDef::Port { is_putter, type_id } => {
-                    unclaimed.insert(id, (is_putter, type_id));
-                    let ps = PutterSpace::new(std::ptr::null_mut(), type_id);
-                    Space::PoPu(ps, MsgBox)
-                }
-                NameDef::Mem(mem_def) => {
-                    let (ptr, type_id) = match mem_def {
-                        MemDef::Initialized(bx) => {
-                            let q = (data_ptr_of(&bx), bx.my_type_id());
-                            allocator.store(bx);
-                            q
-                        }
-                        MemDef::Uninitialized(type_id) => (std::ptr::null_mut(), type_id),
-                    };
-                    Space::Memo(PutterSpace::new(ptr, type_id))
-                }
-                NameDef::Func(call_handle) => unimplemented!(),
-            };
-            spaces.push(space);
-        }
+        // consume all name defs, creating spaces. retain call_handles to be treated later
+        let call_handles: Vec<CallHandle> = p
+            .name_defs
+            .into_iter()
+            .filter_map(|(name, def)| {
+                let id = LocId(spaces.len());
+                name_mapping.insert(name, id);
+                let space = match def {
+                    NameDef::Port { is_putter, type_id } => {
+                        unclaimed.insert(id, (is_putter, type_id));
+                        let ps = PutterSpace::new(std::ptr::null_mut(), type_id);
+                        Space::PoPu(ps, MsgBox)
+                    }
+                    NameDef::Mem(mem_def) => {
+                        let (ptr, type_id) = match mem_def {
+                            MemDef::Initialized(bx) => {
+                                let q = (data_ptr_of(&bx), bx.my_type_id());
+                                allocator.store(bx);
+                                q
+                            }
+                            MemDef::Uninitialized(type_id) => (std::ptr::null_mut(), type_id),
+                        };
+                        Space::Memo(PutterSpace::new(ptr, type_id))
+                    }
+                    NameDef::Func(call_handle) => return Some(call_handle),
+                };
+                spaces.push(space);
+                None
+            })
+            .collect();
         // temp vars
         // let mut temp_name_2_id = hashmap!{};
         // let mut available_resources = hashset!{};
 
         let rules = p
             .rules
-            .iter()
+            .into_iter()
             .map(|rule| {
-                let ready_ports = hashset! {};
-                let full_mem = hashset! {};
-                let empty_mem = hashset! {};
+                let RulePremise {
+                    ready_ports,
+                    full_mem,
+                    empty_mem,
+                } = rule.premise;
+                let clos = |name| {
+                    name_mapping
+                        .get_by_first(&name)
+                        .copied()
+                        .ok_or(UndefinedName { name })
+                };
+                let ready_ports = ready_ports
+                    .into_iter()
+                    .map(clos)
+                    .collect::<Result<_, ProtoBuildError>>()?;
+                let full_mem = full_mem
+                    .into_iter()
+                    .map(clos)
+                    .collect::<Result<_, ProtoBuildError>>()?;
+                let empty_mem = empty_mem
+                    .into_iter()
+                    .map(clos)
+                    .collect::<Result<_, ProtoBuildError>>()?;
+
                 Ok(inner::Rule {
                     ready_ports,
                     full_mem,
@@ -266,7 +280,6 @@ mod inner {
 
     // invariant. ALL contained bitsets have same length
     use crate::outer::Name;
-    use crate::outer::PortKind;
     use crate::Instruction;
     use crate::Ptr;
     use crate::Term;
@@ -316,17 +329,18 @@ mod inner {
     impl Allocator {
         pub fn store(&mut self, x: Box<dyn PortDatum>) -> bool {
             let to: std::raw::TraitObject = unsafe { transmute(x) };
-            !self.allocated
+            !self
+                .allocated
                 .entry(to.vtable)
                 .or_insert_with(HashSet::new)
                 .insert(to.data)
         }
         pub fn remove(&mut self, to: TraitObject) -> bool {
-        	if let Some(set) = self.free.get_mut(&to.vtable) {
-        		set.remove(&to.data)
-        	} else {
-        		false
-        	}
+            if let Some(set) = self.free.get_mut(&to.vtable) {
+                set.remove(&to.data)
+            } else {
+                false
+            }
         }
     }
     impl Drop for Allocator {
@@ -482,16 +496,14 @@ use std::sync::Arc;
 fn main() -> Result<(), ProtoBuildError> {
     use outer::*;
     use Instruction::*;
-    use PortKind::*;
     use Term::*;
 
-
-	#[derive(Clone, PartialEq)]
+    #[derive(Clone, PartialEq)]
     struct MyType;
     impl Drop for MyType {
-    	fn drop(&mut self) {
-    		println!("droppy!");
-    	}
+        fn drop(&mut self) {
+            println!("droppy!");
+        }
     }
 
     let proto = Proto {
@@ -503,6 +515,9 @@ fn main() -> Result<(), ProtoBuildError> {
             "B" => NameDef::Port { is_putter:true, type_id: TypeId::of::<u32>() },
             "C" => NameDef::Port { is_putter:true, type_id: TypeId::of::<u32>() },
             "D" => NameDef::Mem(MemDef::Initialized(Box::new(MyType))),
+            "E" => NameDef::Func(CallHandle::new_nonary(Box::new(|x: *mut u32| unsafe {
+                x.write(7u32)
+            }))),
         },
         rules: vec![
             Rule {
