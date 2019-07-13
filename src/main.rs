@@ -222,7 +222,7 @@ mod inner {
             })
             .collect();
         // temp vars
-        // let mut temp_name_2_id = hashmap!{};
+        let mut temp_names = hashmap!{};
         // let mut available_resources = hashset!{};
 
         let rules = p
@@ -254,6 +254,7 @@ mod inner {
                     .collect::<Result<_, ProtoBuildError>>()?;
 
                 fn resolve_putter(
+                	temp_names: &HashMap<Name, (LocId, TypeId)>,
                     name_mapping: &BidirMap<Name, LocId>,
                     name: Name,
                 ) -> Result<LocId, ProtoBuildError> {
@@ -265,13 +266,14 @@ mod inner {
 
                 fn term_eval_tid(
                     spaces: &Vec<Space>,
+                	temp_names: &HashMap<Name, (LocId, TypeId)>,
                     name_mapping: &BidirMap<Name, LocId>,
                     term: &Term<Name>,
                 ) -> Result<TypeId, ProtoBuildError> {
                     use Term::*;
                     Ok(match term {
                         Named(name) => {
-                            spaces[resolve_putter(name_mapping, name)?.0]
+                            spaces[resolve_putter(temp_names, name_mapping, name)?.0]
                                 .get_putter_space()
                                 .ok_or(TermNameIsNotPutter { name })?
                                 .type_id
@@ -281,25 +283,26 @@ mod inner {
                 }
                 fn term_eval_loc_id(
                     spaces: &Vec<Space>,
+                	temp_names: &HashMap<Name, (LocId, TypeId)>,
                     name_mapping: &BidirMap<Name, LocId>,
                     term: Term<Name>,
                 ) -> Result<Term<LocId>, ProtoBuildError> {
                     use Term::*;
                     let clos = |fs: Vec<Term<Name>>| {
                         fs.into_iter()
-                            .map(|t: Term<Name>| term_eval_loc_id(spaces, name_mapping, t))
+                            .map(|t: Term<Name>| term_eval_loc_id(spaces, temp_names, name_mapping, t))
                             .collect::<Result<_, ProtoBuildError>>()
                     };
                     Ok(match term {
                         True => True,
                         False => False,
-                        Not(f) => Not(Box::new(term_eval_loc_id(spaces, name_mapping, *f)?)),
+                        Not(f) => Not(Box::new(term_eval_loc_id(spaces, temp_names, name_mapping, *f)?)),
                         And(fs) => And(clos(fs)?),
                         Or(fs) => Or(clos(fs)?),
                         IsEq(tid, box [lhs, rhs]) => {
                             let [t0, t1] = [
-                                term_eval_tid(spaces, name_mapping, &lhs)?,
-                                term_eval_tid(spaces, name_mapping, &rhs)?,
+                                term_eval_tid(spaces, temp_names, name_mapping, &lhs)?,
+                                term_eval_tid(spaces, temp_names, name_mapping, &rhs)?,
                             ];
                             if t0 != t1 || t0 != tid {
                                 return Err(EqForDifferentTypes);
@@ -307,25 +310,31 @@ mod inner {
                             IsEq(
                                 tid,
                                 Box::new([
-                                    term_eval_loc_id(spaces, name_mapping, lhs)?,
-                                    term_eval_loc_id(spaces, name_mapping, rhs)?,
+                                    term_eval_loc_id(spaces, temp_names, name_mapping, lhs)?,
+                                    term_eval_loc_id(spaces, temp_names, name_mapping, rhs)?,
                                 ]),
                             )
                         }
-                        Named(name) => Named(resolve_putter(name_mapping, name)?),
+                        Named(name) => Named(resolve_putter(temp_names, name_mapping, name)?),
                     })
                 }
 
-                for instruction in rule.ins {
+                let instructions = rule.ins.into_iter().map(|instruction| {
                     use Instruction::*;
-                    match instruction {
-                        CreateFromFormula { dest, term } => {}
+                    Ok(match instruction {
+                        CreateFromFormula { dest, term } => {
+                        	let dest_id = resolve_putter(&temp_names, &name_mapping, dest)?;
+                        	let type_id = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
+                        	temp_names.insert(dest, (dest_id, type_id));
+                        	let term = term_eval_loc_id(&spaces, &temp_names, &name_mapping, term)?;
+                        	CreateFromFormula { dest: dest_id, term }
+                        }
                         CreateFromCall { dest, func, args } => {}
                         Check { term } => {
                             // Check { }
                         }
-                    }
-                }
+                    })
+                }).collect::<Result<_, ProtoBuildError>>()?;
 
                 Ok(inner::Rule {
                     ready_ports,
