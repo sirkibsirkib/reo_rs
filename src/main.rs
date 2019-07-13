@@ -253,6 +253,16 @@ mod inner {
                     .map(clos)
                     .collect::<Result<_, ProtoBuildError>>()?;
 
+                fn resolve_putter(
+                    name_mapping: &BidirMap<Name, LocId>,
+                    name: Name,
+                ) -> Result<LocId, ProtoBuildError> {
+                    name_mapping
+                        .get_by_first(&name)
+                        .copied()
+                        .ok_or(UndefinedName { name })
+                }
+
                 fn term_eval_tid(
                     spaces: &Vec<Space>,
                     name_mapping: &BidirMap<Name, LocId>,
@@ -261,11 +271,7 @@ mod inner {
                     use Term::*;
                     Ok(match term {
                         Named(name) => {
-                            let loc_id = name_mapping
-                                .get_by_first(name)
-                                .copied()
-                                .ok_or(UndefinedName { name })?;
-                            spaces[loc_id.0]
+                            spaces[resolve_putter(name_mapping, name)?.0]
                                 .get_putter_space()
                                 .ok_or(TermNameIsNotPutter { name })?
                                 .type_id
@@ -279,10 +285,10 @@ mod inner {
                     term: Term<Name>,
                 ) -> Result<Term<LocId>, ProtoBuildError> {
                     use Term::*;
-                    let clos = |fs: Vec<_>| {
+                    let clos = |fs: Vec<Term<Name>>| {
                         fs.into_iter()
                             .map(|t: Term<Name>| term_eval_loc_id(spaces, name_mapping, t))
-                            .collect()
+                            .collect::<Result<_, ProtoBuildError>>()
                     };
                     Ok(match term {
                         True => True,
@@ -306,13 +312,7 @@ mod inner {
                                 ]),
                             )
                         }
-                        Named(name) => {
-                            let id = name_mapping
-                                .get_by_first(&name)
-                                .copied()
-                                .ok_or(UndefinedName { name })?;
-                            Named(id)
-                        }
+                        Named(name) => Named(resolve_putter(name_mapping, name)?),
                     })
                 }
 
