@@ -310,16 +310,23 @@ mod inner {
 
     #[derive(Debug, Default)]
     pub struct Allocator {
-        allocated: HashMap<TraitVtable, Vec<TraitData>>,
-        free: HashMap<TraitVtable, Vec<TraitData>>,
+        allocated: HashMap<TraitVtable, HashSet<TraitData>>,
+        free: HashMap<TraitVtable, HashSet<TraitData>>,
     }
     impl Allocator {
-        pub fn store(&mut self, x: Box<dyn PortDatum>) {
+        pub fn store(&mut self, x: Box<dyn PortDatum>) -> bool {
             let to: std::raw::TraitObject = unsafe { transmute(x) };
-            self.allocated
+            !self.allocated
                 .entry(to.vtable)
-                .or_insert_with(Vec::new)
-                .push(to.data);
+                .or_insert_with(HashSet::new)
+                .insert(to.data)
+        }
+        pub fn remove(&mut self, to: TraitObject) -> bool {
+        	if let Some(set) = self.free.get_mut(&to.vtable) {
+        		set.remove(&to.data)
+        	} else {
+        		false
+        	}
         }
     }
     impl Drop for Allocator {
