@@ -213,7 +213,7 @@ mod inner {
                 NameDef::Mem(mem_def) => {
                     let (ptr, type_id) = match mem_def {
                         MemDef::Initialized(bx) => {
-                            let q = (data_ptr_of(&bx), bx.type_id());
+                            let q = (data_ptr_of(&bx), bx.my_type_id());
                             allocator.store(bx);
                             q
                         }
@@ -445,25 +445,23 @@ mod inner {
 pub trait PortDatum {
     // const IS_COPY: bool;
     // const TYPE_ID: TypeId;
-    fn type_id(&self) -> TypeId;
-    fn clone(&self, other: Ptr);
+    fn my_type_id(&self) -> TypeId;
+    fn my_clone(&self, other: Ptr);
     fn my_eq(&self, other: Ptr) -> bool;
-    fn do_drop(&mut self);
 }
 
-impl<T: 'static + Copy + PartialEq> PortDatum for T {
-    fn type_id(&self) -> TypeId {
+impl<T: 'static + Clone + PartialEq> PortDatum for T {
+    fn my_type_id(&self) -> TypeId {
         TypeId::of::<T>()
     }
-    fn clone(&self, other: Ptr) {
+    fn my_clone(&self, other: Ptr) {
         let x: *mut Self = unsafe { transmute(other) };
-        unsafe { x.write((self as *const Self).read()) }
+        unsafe { x.write(self.clone()) }
     }
     fn my_eq(&self, other: Ptr) -> bool {
         let x: &Self = unsafe { transmute(other) };
         self == x
     }
-    fn do_drop(&mut self) {}
 }
 
 use maplit::{hashmap, hashset};
@@ -480,6 +478,15 @@ fn main() -> Result<(), ProtoBuildError> {
     use PortKind::*;
     use Term::*;
 
+
+	#[derive(Clone, PartialEq)]
+    struct MyType;
+    impl Drop for MyType {
+    	fn drop(&mut self) {
+    		println!("droppy!");
+    	}
+    }
+
     let proto = Proto {
         info: hashmap! {
             TypeId::of::<u32>() => TypeInfo::of::<u32>(),
@@ -488,7 +495,7 @@ fn main() -> Result<(), ProtoBuildError> {
             "A" => NameDef::Port { is_putter:true, type_id: TypeId::of::<u32>() },
             "B" => NameDef::Port { is_putter:true, type_id: TypeId::of::<u32>() },
             "C" => NameDef::Port { is_putter:true, type_id: TypeId::of::<u32>() },
-            "D" => NameDef::Mem(MemDef::Initialized(Box::new(4u32))),
+            "D" => NameDef::Mem(MemDef::Initialized(Box::new(MyType))),
         },
         rules: vec![
             Rule {
