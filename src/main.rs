@@ -319,9 +319,9 @@ mod inner {
                     })
                 }
 
-                let instructions = rule.ins.into_iter().map(|instruction| {
+                let ins = rule.ins.into_iter().map(|i| {
                     use Instruction::*;
-                    Ok(match instruction {
+                    Ok(match i {
                         CreateFromFormula { dest, term } => {
                         	let dest_id = resolve_putter(&temp_names, &name_mapping, dest)?;
                         	let type_id = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
@@ -329,9 +329,11 @@ mod inner {
                         	let term = term_eval_loc_id(&spaces, &temp_names, &name_mapping, term)?;
                         	CreateFromFormula { dest: dest_id, term }
                         }
-                        CreateFromCall { dest, func, args } => {}
+                        CreateFromCall { dest, func, args } => {
+                        	//todo
+                        }
                         Check { term } => {
-                            // Check { }
+                            Check { term: term_eval_loc_id(&spaces, &temp_names, &name_mapping, term)? }
                         }
                     })
                 }).collect::<Result<_, ProtoBuildError>>()?;
@@ -340,7 +342,7 @@ mod inner {
                     ready_ports,
                     full_mem,
                     empty_mem,
-                    ins: vec![],
+                    ins,
                     output: vec![],
                 })
             })
