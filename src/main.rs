@@ -1,4 +1,5 @@
 #![feature(raw)]
+#![feature(box_patterns)]
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 #![allow(dead_code)]
@@ -146,6 +147,8 @@ pub enum ProtoBuildError {
     InstructionHasSideEffects { name: Name, rule_index: usize },
     DuplicateNameDef { name: Name },
     MemoryNotInitialized { name: Name },
+    TermNameIsNotPutter { name: Name },
+    EqForDifferentTypes,
 }
 
 mod inner {
@@ -189,7 +192,7 @@ mod inner {
         let info = p.info;
 
         // consume all name defs, creating spaces. retain call_handles to be treated later
-        let call_handles: Vec<CallHandle> = p
+        let call_handles: HashMap<Name, CallHandle> = p
             .name_defs
             .into_iter()
             .filter_map(|(name, def)| {
@@ -212,7 +215,7 @@ mod inner {
                         };
                         Space::Memo(PutterSpace::new(ptr, type_id))
                     }
-                    NameDef::Func(call_handle) => return Some(call_handle),
+                    NameDef::Func(call_handle) => return Some((name, call_handle)),
                 };
                 spaces.push(space);
                 None
@@ -249,6 +252,80 @@ mod inner {
                     .into_iter()
                     .map(clos)
                     .collect::<Result<_, ProtoBuildError>>()?;
+
+                fn term_eval_tid(
+                    spaces: &Vec<Space>,
+                    name_mapping: &BidirMap<Name, LocId>,
+                    term: &Term<Name>,
+                ) -> Result<TypeId, ProtoBuildError> {
+                    use Term::*;
+                    Ok(match term {
+                        Named(name) => {
+                            let loc_id = name_mapping
+                                .get_by_first(name)
+                                .copied()
+                                .ok_or(UndefinedName { name })?;
+                            spaces[loc_id.0]
+                                .get_putter_space()
+                                .ok_or(TermNameIsNotPutter { name })?
+                                .type_id
+                        }
+                        _ => TypeId::of::<bool>(),
+                    })
+                }
+                fn term_eval_loc_id(
+                    spaces: &Vec<Space>,
+                    name_mapping: &BidirMap<Name, LocId>,
+                    term: Term<Name>,
+                ) -> Result<Term<LocId>, ProtoBuildError> {
+                    use Term::*;
+                    let clos = |fs: Vec<_>| {
+                        fs.into_iter()
+                            .map(|t: Term<Name>| term_eval_loc_id(spaces, name_mapping, t))
+                            .collect()
+                    };
+                    Ok(match term {
+                        True => True,
+                        False => False,
+                        Not(f) => Not(Box::new(term_eval_loc_id(spaces, name_mapping, *f)?)),
+                        And(fs) => And(clos(fs)?),
+                        Or(fs) => Or(clos(fs)?),
+                        IsEq(tid, box [lhs, rhs]) => {
+                            let [t0, t1] = [
+                                term_eval_tid(spaces, name_mapping, &lhs)?,
+                                term_eval_tid(spaces, name_mapping, &rhs)?,
+                            ];
+                            if t0 != t1 || t0 != tid {
+                                return Err(EqForDifferentTypes);
+                            }
+                            IsEq(
+                                tid,
+                                Box::new([
+                                    term_eval_loc_id(spaces, name_mapping, lhs)?,
+                                    term_eval_loc_id(spaces, name_mapping, rhs)?,
+                                ]),
+                            )
+                        }
+                        Named(name) => {
+                            let id = name_mapping
+                                .get_by_first(&name)
+                                .copied()
+                                .ok_or(UndefinedName { name })?;
+                            Named(id)
+                        }
+                    })
+                }
+
+                for instruction in rule.ins {
+                    use Instruction::*;
+                    match instruction {
+                        CreateFromFormula { dest, term } => {}
+                        CreateFromCall { dest, func, args } => {}
+                        Check { term } => {
+                            // Check { }
+                        }
+                    }
+                }
 
                 Ok(inner::Rule {
                     ready_ports,
@@ -390,19 +467,6 @@ mod inner {
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
     pub struct LocId(usize);
-    impl LocId {
-        const TEMP_FLAG: usize = 1 << 63;
-        fn new(persistent: bool, value: usize) -> Self {
-            let me = LocId(value);
-            if persistent != me.persistent() {
-                panic!("Cannot represent this identifier!");
-            }
-            me
-        }
-        fn persistent(self) -> bool {
-            self.0 & Self::TEMP_FLAG == 0
-        }
-    }
     type BitSet = HashSet<LocId>;
 
     #[inline]
