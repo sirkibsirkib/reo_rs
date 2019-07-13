@@ -7,22 +7,16 @@
 // mod funcbending;
 // use funcbending::*;
 
+use crate::inner::build_proto;
+use std::mem::transmute;
 use std::raw::TraitObject;
 
 type Ptr = *mut ();
-pub struct TypeInfo {}
-impl TypeInfo {
-    fn of<T>() -> Self {
-        unimplemented!()
-    }
-    fn exec_partial_eq(&self, a: Ptr, b: Ptr) -> bool {
-        true // TODO
-    }
-}
 
 type FuncId = usize;
 mod outer {
     use super::*;
+    use crate::inner::TraitVtable;
     use std::any::Any;
     use std::mem::transmute;
     use std::mem::ManuallyDrop;
@@ -44,13 +38,23 @@ mod outer {
 
     use crate::Instruction;
     use crate::Term;
-    use crate::TypeInfo;
     use std::any::TypeId;
     use std::collections::{HashMap, HashSet};
 
     pub enum MemDef {
         Initialized(Box<dyn PortDatum>),
         Uninitialized(TypeId),
+    }
+
+    #[derive(Debug)]
+    pub struct TypeInfo(pub(crate) TraitVtable);
+    impl TypeInfo {
+        pub fn of<T: PortDatum>() -> Self {
+            let bogus: &T = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+            let to: &dyn PortDatum = bogus;
+            let to: TraitObject = unsafe { transmute(to) };
+            Self(to.vtable)
+        }
     }
 
     pub struct CallHandle {
@@ -122,6 +126,7 @@ mod outer {
     pub type Name = &'static str;
 }
 
+#[derive(Debug)]
 pub enum Term<I> {
     True,                         // returns bool
     False,                        // returns bool
@@ -132,6 +137,7 @@ pub enum Term<I> {
     Named(I),                     // type of I
 }
 
+#[derive(Debug)]
 pub enum Instruction<I, F> {
     CreateFromFormula {
         dest: I,
@@ -149,6 +155,7 @@ pub enum Instruction<I, F> {
 
 use outer::Name;
 
+#[derive(Debug)]
 pub enum ProtoBuildError {
     UnavailableData { name: Name, rule_index: usize },
     InstructionHasSideEffects { name: Name, rule_index: usize },
@@ -157,6 +164,7 @@ pub enum ProtoBuildError {
 }
 
 mod inner {
+    use crate::outer::TypeInfo;
     use crate::*;
     use maplit::{hashmap, hashset};
 
@@ -165,6 +173,7 @@ mod inner {
         converted.data
     }
 
+    #[derive(Debug)]
     pub enum Space {
         PoPu(PutterSpace, MsgBox),
         PoGe(MsgBox),
@@ -179,21 +188,10 @@ mod inner {
             }
         }
     }
+    #[derive(Debug)]
     pub struct MsgBox;
 
-    pub trait Initializer {
-        fn initialize(&mut self, name: Name, o: &mut Oathkeeper) -> Option<OathKeptToken>;
-    }
-    pub enum OathKeptToken {}
-    pub struct Oathkeeper {
-        name: Name,
-        type_id: TypeId,
-        dest: Ptr,
-    }
-    fn build_proto<I: Initializer>(
-        p: outer::Proto,
-        i: &mut I,
-    ) -> Result<inner::Proto, ProtoBuildError> {
+    pub fn build_proto(p: outer::Proto) -> Result<inner::Proto, ProtoBuildError> {
         use crate::ProtoBuildError::*;
         use outer::{MemDef, NameDef};
 
@@ -284,13 +282,13 @@ mod inner {
 
     use core::sync::atomic::AtomicBool;
 
-    use crate::TypeInfo;
-
+    #[derive(Debug)]
     pub struct Proto {
         cr: ProtoCr,
         r: ProtoR,
     }
 
+    #[derive(Debug)]
     pub struct ProtoR {
         rules: Vec<Rule>,
         spaces: Vec<Space>,
@@ -299,6 +297,7 @@ mod inner {
     }
 
     type IsPutter = bool;
+    #[derive(Debug)]
     pub struct ProtoCr {
         unclaimed: HashMap<LocId, (IsPutter, TypeId)>,
         ready: BitSet,
@@ -307,7 +306,7 @@ mod inner {
     }
 
     type TraitData = *mut ();
-    type TraitVtable = *mut ();
+    pub type TraitVtable = *mut ();
 
     #[derive(Debug, Default)]
     pub struct Allocator {
@@ -335,10 +334,12 @@ mod inner {
         }
     }
 
+    #[derive(Debug)]
     pub struct Rendesvous {
         countdown: AtomicUsize,
         moved: AtomicBool,
     }
+    #[derive(Debug)]
     pub struct PutterSpace {
         ptr: AtomicPtr<()>,
         type_id: TypeId,
@@ -357,6 +358,7 @@ mod inner {
         }
     }
 
+    #[derive(Debug)]
     pub struct Rule {
         ready_ports: BitSet,
         full_mem: BitSet,
@@ -404,12 +406,7 @@ mod inner {
             Not(t) => bool_to_ptr(!eval_bool(t, r)),
             And(ts) => bool_to_ptr(ts.iter().all(|t| eval_bool(t, r))),
             Or(ts) => bool_to_ptr(ts.iter().any(|t| eval_bool(t, r))),
-            IsEq(tid, terms) => {
-                let ptr0 = eval_ptr(&terms[0], r);
-                let ptr1 = eval_ptr(&terms[1], r);
-                let info = r.info.get(tid).expect("BAD");
-                bool_to_ptr(info.exec_partial_eq(ptr0, ptr1))
-            }
+            IsEq(tid, terms) => bool_to_ptr(eval_bool(term, r)),
         }
     }
     #[inline]
@@ -433,7 +430,13 @@ mod inner {
                 let ptr0 = eval_ptr(&terms[0], r);
                 let ptr1 = eval_ptr(&terms[1], r);
                 let info = r.info.get(tid).expect("BAD");
-                info.exec_partial_eq(ptr0, ptr1)
+                let to: &dyn PortDatum = unsafe {
+                    transmute(TraitObject {
+                        data: ptr0,
+                        vtable: info.0,
+                    })
+                };
+                to.my_eq(ptr0)
             }
         }
     }
@@ -443,12 +446,8 @@ pub trait PortDatum {
     // const IS_COPY: bool;
     // const TYPE_ID: TypeId;
     fn type_id(&self) -> TypeId;
-    fn clone(&self) -> Self
-    where
-        Self: Sized;
-    fn partial_eq(&self, other: &Self) -> bool
-    where
-        Self: Sized;
+    fn clone(&self, other: Ptr);
+    fn my_eq(&self, other: Ptr) -> bool;
     fn do_drop(&mut self);
 }
 
@@ -456,17 +455,13 @@ impl<T: 'static + Copy + PartialEq> PortDatum for T {
     fn type_id(&self) -> TypeId {
         TypeId::of::<T>()
     }
-    fn clone(&self) -> Self
-    where
-        Self: Sized,
-    {
-        *self
+    fn clone(&self, other: Ptr) {
+        let x: *mut Self = unsafe { transmute(other) };
+        unsafe { x.write((self as *const Self).read()) }
     }
-    fn partial_eq(&self, other: &Self) -> bool
-    where
-        Self: Sized,
-    {
-        self == other
+    fn my_eq(&self, other: Ptr) -> bool {
+        let x: &Self = unsafe { transmute(other) };
+        self == x
     }
     fn do_drop(&mut self) {}
 }
@@ -479,7 +474,7 @@ use std::convert::TryInto;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-fn main() {
+fn main() -> Result<(), ProtoBuildError> {
     use outer::*;
     use Instruction::*;
     use PortKind::*;
@@ -520,4 +515,7 @@ fn main() {
             },
         ],
     };
+    let built = build_proto(proto)?;
+    println!("built: {:#?}", &built);
+    Ok(())
 }
