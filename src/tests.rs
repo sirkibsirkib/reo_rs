@@ -24,7 +24,7 @@ pub fn type_info_eq() {
 
         // string and u8 have different vtables
         assert!(info_x.0 != info_y.0);
-        // y and z both use the same String vtable 
+        // y and z both use the same String vtable
         assert_eq!(info_y.0, info_z.0);
     }
     // x,y,z dropped
@@ -113,12 +113,11 @@ pub fn allocator_drop_inside() {
     assert_eq!(drop_ctr, 1);
 
     // dropping it repeatedly fails
-    assert!(! alloc.drop_inside(data, info));  
+    assert!(!alloc.drop_inside(data, info));
     assert_eq!(drop_ctr, 1);
 
     drop(alloc); // box for x itself is dropped
 }
-
 
 #[test]
 pub fn allocator_reuse() {
@@ -136,9 +135,8 @@ pub fn allocator_reuse() {
     for i in 0..5 {
         let new_data = alloc.alloc_uninit(info);
         assert_eq!(new_data, data);
-        let data: &mut Incrementor = unsafe {transmute(new_data)};
+        let data: &mut Incrementor = unsafe { transmute(new_data) };
         data.0 = &mut drop_ctr; // now it's initialized
-
 
         assert_eq!(drop_ctr, i + 1);
         assert!(alloc.drop_inside(new_data, info));
@@ -185,12 +183,11 @@ pub fn allocator_fresh_alloc() {
     let type_info = TypeInfo::of::<Incrementor>();
 
     let new_data = alloc.alloc_uninit(type_info);
-    let data: &mut Incrementor = unsafe {transmute(new_data)};
+    let data: &mut Incrementor = unsafe { transmute(new_data) };
     data.0 = &mut drop_ctr; // now it's initialized
 
-
     let new_data2 = alloc.alloc_uninit(type_info);
-    let data2: &mut Incrementor = unsafe {transmute(new_data2)};
+    let data2: &mut Incrementor = unsafe { transmute(new_data2) };
     data2.0 = &mut drop_ctr; // now it's initialized
 
     alloc.drop_inside(new_data, type_info);

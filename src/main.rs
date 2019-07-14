@@ -5,9 +5,10 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-use std::alloc::Layout;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
+use debug_stub_derive::DebugStub;
+use std::alloc::Layout;
 use std::any::Any;
 use std::collections::HashMap;
 use std::mem::transmute;
@@ -62,14 +63,14 @@ unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
     (to.data, TypeInfo(to.vtable))
 }
 
-type FuncId = usize;
-
 pub enum MemDef {
     Initialized(Box<dyn PortDatum>),
     Uninitialized(TypeInfo),
 }
 
+#[derive(DebugStub)]
 pub struct CallHandle {
+    #[debug_stub = "FuncTraitObject"]
     func: TraitObject,
     ret: TypeInfo,
     args: Vec<TypeInfo>,
@@ -132,7 +133,7 @@ pub struct RulePremise {
 pub struct RuleDef {
     pub premise: RulePremise,
     pub ins: Vec<Instruction<Name, Name>>,
-    pub output: HashMap<Name, HashSet<Name>>,
+    pub output: HashMap<Name, (bool, HashSet<Name>)>,
 }
 pub type Name = &'static str;
 
@@ -154,6 +155,7 @@ pub enum Instruction<I, F> {
         term: Term<I>,
     },
     CreateFromCall {
+        info: TypeInfo,
         dest: I,
         func: F,
         args: Vec<Term<I>>,
@@ -165,12 +167,21 @@ pub enum Instruction<I, F> {
 #[derive(Debug)]
 pub enum ProtoBuildError {
     UnavailableData { name: Name, rule_index: usize },
-    UndefinedName { name: Name },
-    InstructionHasSideEffects { name: Name, rule_index: usize },
+    UndefinedLocName { name: Name },
+    UndefinedFuncName { name: Name },
     DuplicateNameDef { name: Name },
     MemoryNotInitialized { name: Name },
     TermNameIsNotPutter { name: Name },
     EqForDifferentTypes,
+    GetterHasMuliplePutters { name: Name },
+    GetterHasNoPutters { name: Name },
+    PortInMemPremise { name: Name },
+    MemInPortPremise { name: Name },
+    ConflictingMemPremise { name: Name },
+    GettingAndPutting { name: Name },
+    InstructionShadowsName { name: Name },
+    TermNameIsNotGetter { name: Name },
+
 }
 
 #[derive(Debug)]
@@ -199,18 +210,33 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
     let mut unclaimed = hashmap! {};
     let mut allocator = Allocator::default();
 
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum LocKind {
+        PoPu,
+        PoGe,
+        Memo,
+    };
+
+    let mut persistent_loc_kinds = vec![];
+
     // consume all name defs, creating spaces. retain call_handles to be treated later
-    let call_handles: HashMap<Name, CallHandle> = p
+    let call_handles: HashMap<Name, Arc<CallHandle>> = p
         .name_defs
         .into_iter()
         .filter_map(|(name, def)| {
             let id = LocId(spaces.len());
             name_mapping.insert(name, id);
-            let space = match def {
+            let (space, kind) = match def {
                 NameDef::Port { is_putter, type_id } => {
                     unclaimed.insert(id, (is_putter, type_id));
-                    let ps = PutterSpace::new(std::ptr::null_mut(), type_id);
-                    Space::PoPu(ps, MsgBox)
+                    let msgbox = MsgBox;
+                    if is_putter {
+                        let ps = PutterSpace::new(std::ptr::null_mut(), type_id);
+                        (Space::PoPu(ps, msgbox), LocKind::PoPu)
+                    } else {
+                        persistent_loc_kinds.push(LocKind::PoGe);
+                        (Space::PoGe(msgbox), LocKind::PoGe)
+                    }
                 }
                 NameDef::Mem(mem_def) => {
                     let (ptr, info) = match mem_def {
@@ -222,55 +248,85 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                         MemDef::Uninitialized(info) => (std::ptr::null_mut(), info),
                     };
                     // putter space gets a copy too, not owned
-                    Space::Memo(PutterSpace::new(ptr, info))
+                    (Space::Memo(PutterSpace::new(ptr, info)), LocKind::Memo)
                 }
-                NameDef::Func(call_handle) => return Some((name, call_handle)),
+                NameDef::Func(call_handle) => return Some((name, Arc::new(call_handle))),
             };
             spaces.push(space);
+            persistent_loc_kinds.push(kind);
             None
         })
         .collect();
+
     // temp vars
-    let mut temp_names = hashmap! {};
+    let mut temp_names: HashMap<Name, (LocId, TypeInfo)> = hashmap! {};
+    let mut rule_putters: HashSet<LocId> = hashset! {};
     // let mut available_resources = hashset!{};
 
     let rules = p
         .rules
         .into_iter()
         .map(|rule| {
+            rule_putters.clear();
+            temp_names.clear();
+
             let RulePremise {
                 ready_ports,
                 full_mem,
                 empty_mem,
             } = rule.premise;
-            let clos = |name| {
-                name_mapping
+
+            let clos = |name, should_be_port| {
+                let id = name_mapping
                     .get_by_first(&name)
                     .copied()
-                    .ok_or(UndefinedName { name })
+                    .ok_or(UndefinedLocName { name })?;
+                let is_port = persistent_loc_kinds[id.0] != LocKind::Memo;
+                if is_port == should_be_port {
+                    Ok(id)
+                } else if is_port {
+                    Err(PortInMemPremise { name })
+                } else {
+                    Err(MemInPortPremise { name })
+                }
             };
-            let ready_ports = ready_ports
+            let ready_ports: HashSet<LocId> = ready_ports
                 .into_iter()
-                .map(clos)
+                .map(|x| clos(x, true))
                 .collect::<Result<_, ProtoBuildError>>()?;
-            let full_mem = full_mem
+            let full_mem: HashSet<LocId> = full_mem
                 .into_iter()
-                .map(clos)
+                .map(|x| clos(x, false))
                 .collect::<Result<_, ProtoBuildError>>()?;
             let empty_mem = empty_mem
                 .into_iter()
-                .map(clos)
+                .map(|x| clos(x, false))
                 .collect::<Result<_, ProtoBuildError>>()?;
+
+            if let Some(id) = full_mem.intersection(&empty_mem).next() {
+                return Err(ConflictingMemPremise {
+                    name: name_mapping.get_by_second(id).unwrap(),
+                });
+            }
+
+            rule_putters.extend(
+                ready_ports
+                    .iter()
+                    .filter(|id| persistent_loc_kinds[id.0] == LocKind::PoPu)
+                    .chain(full_mem.iter())
+                    .copied(),
+            );
 
             fn resolve_putter(
                 temp_names: &HashMap<Name, (LocId, TypeInfo)>,
                 name_mapping: &BidirMap<Name, LocId>,
                 name: Name,
             ) -> Result<LocId, ProtoBuildError> {
-                name_mapping
-                    .get_by_first(&name)
-                    .copied()
-                    .ok_or(UndefinedName { name })
+                temp_names
+                    .get(&name)
+                    .map(|x| x.0)
+                    .or_else(|| name_mapping.get_by_first(&name).copied())
+                    .ok_or(UndefinedLocName { name })
             }
 
             fn term_eval_tid(
@@ -331,10 +387,12 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                     }
                     Named(name) => Named(resolve_putter(temp_names, name_mapping, name)?),
                 })
-            }
+            };
 
-            let ins = rule
-                .ins
+            let RuleDef {
+                ins, mut output, ..
+            } = rule;
+            let ins = ins
                 .into_iter()
                 .map(|i| {
                     use Instruction::*;
@@ -343,16 +401,42 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                             let dest_id = resolve_putter(&temp_names, &name_mapping, dest)?;
                             let type_id =
                                 term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
-                            temp_names.insert(dest, (dest_id, type_id));
+                            if temp_names.insert(dest, (dest_id, type_id)).is_some() {
+                                return Err(InstructionShadowsName { name: dest });
+                            }
                             let term = term_eval_loc_id(&spaces, &temp_names, &name_mapping, term)?;
                             CreateFromFormula {
                                 dest: dest_id,
                                 term,
                             }
                         }
-                        CreateFromCall { dest, func, args } => {
-                            //todo
-                            unimplemented!()
+                        CreateFromCall {
+                            info,
+                            dest,
+                            func,
+                            args,
+                        } => {
+                            let ch = call_handles
+                                .get(func)
+                                .ok_or(UndefinedFuncName { name: func })?
+                                .clone();
+                            let args = args
+                                .into_iter()
+                                .map(|arg| {
+                                    term_eval_loc_id(&spaces, &temp_names, &name_mapping, arg)
+                                })
+                                .collect::<Result<Vec<_>, ProtoBuildError>>()?;
+                            let temp_id = LocId(spaces.len());
+                            spaces.push(Space::Memo(PutterSpace::new(std::ptr::null_mut(), info)));
+                            if temp_names.insert(func, (temp_id, info)).is_some() {
+                                return Err(InstructionShadowsName { name: dest });
+                            }
+                            CreateFromCall {
+                                info,
+                                dest: temp_id,
+                                func: ch,
+                                args,
+                            }
                         }
                         Check { term } => Check {
                             term: term_eval_loc_id(&spaces, &temp_names, &name_mapping, term)?,
@@ -361,12 +445,48 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                 })
                 .collect::<Result<_, ProtoBuildError>>()?;
 
+
+            let output = rule_putters
+                .iter()
+                .map(|putter| {
+                    let name = name_mapping.get_by_second(putter).unwrap();
+                    let putter = *putter;
+                    Ok(
+                        if let Some((putter_retains, getters)) = output.remove(name) {
+                            let getters = getters
+                                .iter()
+                                .map(|g_name| {
+                                    let gid = name_mapping.get_by_first(g_name).unwrap();
+                                    if rule_putters.contains(gid) {
+                                        return Err(GettingAndPutting { name: g_name })
+                                    } else if persistent_loc_kinds[gid.0] == LocKind::PoPu {
+                                        return Err(TermNameIsNotGetter { name: g_name })
+                                    }
+                                    Ok(*gid)
+                                })
+                                .collect::<Result<_, _>>()?;
+                            Movement {
+                                putter,
+                                getters,
+                                putter_retains,
+                            }
+                        } else {
+                            Movement {
+                                putter,
+                                getters: vec![],
+                                putter_retains: true,
+                            }
+                        },
+                    )
+                })
+                .collect::<Result<_, _>>()?;
+
             Ok(Rule {
                 ready_ports,
                 full_mem,
                 empty_mem,
                 ins,
-                output: vec![],
+                output,
             })
         })
         .collect::<Result<_, ProtoBuildError>>()?;
@@ -421,8 +541,7 @@ pub struct Allocator {
 impl Allocator {
     pub fn store(&mut self, x: Box<dyn PortDatum>) -> bool {
         let (data, info) = unsafe { trait_obj_break(x) };
-        self
-            .allocated
+        self.allocated
             .entry(info)
             .or_insert_with(HashSet::new)
             .insert(data)
@@ -438,7 +557,7 @@ impl Allocator {
                     .or_insert_with(HashSet::new)
                     .insert(data);
                 assert!(success);
-                return data
+                return data;
             }
         }
         // crate a new allocation
@@ -447,7 +566,7 @@ impl Allocator {
             let data = transmute(std::alloc::alloc(layout));
             let success = self.store(trait_obj_build(data, type_info));
             assert!(success);
-            data        
+            data
         }
     }
     pub fn drop_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
@@ -522,13 +641,20 @@ impl PutterSpace {
     }
 }
 
+// putters by default retain their da
 #[derive(Debug)]
 pub struct Rule {
     ready_ports: BitSet,
     full_mem: BitSet,
     empty_mem: BitSet,
-    ins: Vec<Instruction<LocId, FuncId>>, // dummy
-    output: Vec<(LocId, Vec<LocId>)>,
+    ins: Vec<Instruction<LocId, Arc<CallHandle>>>, // dummy
+    output: Vec<Movement>,
+}
+#[derive(Debug)]
+pub struct Movement {
+    putter: LocId,
+    getters: Vec<LocId>,
+    putter_retains: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -637,8 +763,8 @@ fn main() -> Result<(), ProtoBuildError> {
     let proto = ProtoDef {
         name_defs: hashmap! {
             "A" => NameDef::Port { is_putter:true, type_id: TypeInfo::of::<u32>() },
-            "B" => NameDef::Port { is_putter:true, type_id: TypeInfo::of::<u32>() },
-            "C" => NameDef::Port { is_putter:true, type_id: TypeInfo::of::<u32>() },
+            "B" => NameDef::Port { is_putter:false, type_id: TypeInfo::of::<u32>() },
+            "C" => NameDef::Port { is_putter:false, type_id: TypeInfo::of::<u32>() },
             "D" => NameDef::Mem(MemDef::Initialized(Box::new(MyType))),
             "E" => NameDef::Func(CallHandle::new_nonary(Box::new(|x: *mut u32| unsafe {
                 x.write(7u32)
@@ -653,7 +779,7 @@ fn main() -> Result<(), ProtoBuildError> {
                 },
                 ins: vec![],
                 output: hashmap! {
-                    "A" => hashset!{"B", "C"},
+                    "A" => (false, hashset!{"B", "C"}),
                 },
             },
             RuleDef {
@@ -664,7 +790,7 @@ fn main() -> Result<(), ProtoBuildError> {
                 },
                 ins: vec![],
                 output: hashmap! {
-                    "A" => hashset!{"B"},
+                    "A" => (false, hashset!{"B"}),
                 },
             },
         ],
