@@ -203,6 +203,83 @@ impl Space {
 #[derive(Debug)]
 pub struct MsgBox;
 
+
+fn resolve_putter(
+    temp_names: &HashMap<Name, (LocId, TypeInfo)>,
+    name_mapping: &BidirMap<Name, LocId>,
+    name: Name,
+) -> Result<LocId, ProtoBuildError> {
+    use ProtoBuildError::*;
+    temp_names
+        .get(&name)
+        .map(|x| x.0)
+        .or_else(|| name_mapping.get_by_first(&name).copied())
+        .ok_or(UndefinedLocName { name })
+}
+
+fn term_eval_tid(
+    spaces: &Vec<Space>,
+    temp_names: &HashMap<Name, (LocId, TypeInfo)>,
+    name_mapping: &BidirMap<Name, LocId>,
+    term: &Term<Name>,
+) -> Result<TypeInfo, ProtoBuildError> {
+    use ProtoBuildError::*;
+    use Term::*;
+    Ok(match term {
+        Named(name) => {
+            spaces[resolve_putter(temp_names, name_mapping, name)?.0]
+                .get_putter_space()
+                .ok_or(TermNameIsNotPutter { name })?
+                .type_id
+        }
+        _ => TypeInfo::of::<bool>(),
+    })
+}
+
+fn term_eval_loc_id(
+    spaces: &Vec<Space>,
+    temp_names: &HashMap<Name, (LocId, TypeInfo)>,
+    name_mapping: &BidirMap<Name, LocId>,
+    term: Term<Name>,
+) -> Result<Term<LocId>, ProtoBuildError> {
+    use ProtoBuildError::*;
+    use Term::*;
+    let clos = |fs: Vec<Term<Name>>| {
+        fs.into_iter()
+            .map(|t: Term<Name>| term_eval_loc_id(spaces, temp_names, name_mapping, t))
+            .collect::<Result<_, ProtoBuildError>>()
+    };
+    Ok(match term {
+        True => True,
+        False => False,
+        Not(f) => Not(Box::new(term_eval_loc_id(
+            spaces,
+            temp_names,
+            name_mapping,
+            *f,
+        )?)),
+        And(fs) => And(clos(fs)?),
+        Or(fs) => Or(clos(fs)?),
+        IsEq(tid, box [lhs, rhs]) => {
+            let [t0, t1] = [
+                term_eval_tid(spaces, temp_names, name_mapping, &lhs)?,
+                term_eval_tid(spaces, temp_names, name_mapping, &rhs)?,
+            ];
+            if t0 != t1 || t0 != tid {
+                return Err(EqForDifferentTypes);
+            }
+            IsEq(
+                tid,
+                Box::new([
+                    term_eval_loc_id(spaces, temp_names, name_mapping, lhs)?,
+                    term_eval_loc_id(spaces, temp_names, name_mapping, rhs)?,
+                ]),
+            )
+        }
+        Named(name) => Named(resolve_putter(temp_names, name_mapping, name)?),
+    })
+}
+
 pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
     use crate::ProtoBuildError::*;
 
@@ -314,78 +391,6 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                 .copied(),
         );
         println!("{:?}", &rule_putters);
-
-        fn resolve_putter(
-            temp_names: &HashMap<Name, (LocId, TypeInfo)>,
-            name_mapping: &BidirMap<Name, LocId>,
-            name: Name,
-        ) -> Result<LocId, ProtoBuildError> {
-            temp_names
-                .get(&name)
-                .map(|x| x.0)
-                .or_else(|| name_mapping.get_by_first(&name).copied())
-                .ok_or(UndefinedLocName { name })
-        }
-
-        fn term_eval_tid(
-            spaces: &Vec<Space>,
-            temp_names: &HashMap<Name, (LocId, TypeInfo)>,
-            name_mapping: &BidirMap<Name, LocId>,
-            term: &Term<Name>,
-        ) -> Result<TypeInfo, ProtoBuildError> {
-            use Term::*;
-            Ok(match term {
-                Named(name) => {
-                    spaces[resolve_putter(temp_names, name_mapping, name)?.0]
-                        .get_putter_space()
-                        .ok_or(TermNameIsNotPutter { name })?
-                        .type_id
-                }
-                _ => TypeInfo::of::<bool>(),
-            })
-        }
-        fn term_eval_loc_id(
-            spaces: &Vec<Space>,
-            temp_names: &HashMap<Name, (LocId, TypeInfo)>,
-            name_mapping: &BidirMap<Name, LocId>,
-            term: Term<Name>,
-        ) -> Result<Term<LocId>, ProtoBuildError> {
-            use Term::*;
-            let clos = |fs: Vec<Term<Name>>| {
-                fs.into_iter()
-                    .map(|t: Term<Name>| term_eval_loc_id(spaces, temp_names, name_mapping, t))
-                    .collect::<Result<_, ProtoBuildError>>()
-            };
-            Ok(match term {
-                True => True,
-                False => False,
-                Not(f) => Not(Box::new(term_eval_loc_id(
-                    spaces,
-                    temp_names,
-                    name_mapping,
-                    *f,
-                )?)),
-                And(fs) => And(clos(fs)?),
-                Or(fs) => Or(clos(fs)?),
-                IsEq(tid, box [lhs, rhs]) => {
-                    let [t0, t1] = [
-                        term_eval_tid(spaces, temp_names, name_mapping, &lhs)?,
-                        term_eval_tid(spaces, temp_names, name_mapping, &rhs)?,
-                    ];
-                    if t0 != t1 || t0 != tid {
-                        return Err(EqForDifferentTypes);
-                    }
-                    IsEq(
-                        tid,
-                        Box::new([
-                            term_eval_loc_id(spaces, temp_names, name_mapping, lhs)?,
-                            term_eval_loc_id(spaces, temp_names, name_mapping, rhs)?,
-                        ]),
-                    )
-                }
-                Named(name) => Named(resolve_putter(temp_names, name_mapping, name)?),
-            })
-        };
 
         let RuleDef {
             ins, mut output, ..
