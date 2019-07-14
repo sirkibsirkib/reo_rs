@@ -73,7 +73,6 @@ unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
     (to.data, TypeInfo(to.vtable))
 }
 
-
 #[derive(DebugStub)]
 pub struct CallHandle {
     #[debug_stub = "FuncTraitObject"]
@@ -194,7 +193,7 @@ type IsPutter = bool;
 pub struct ProtoCr {
     unclaimed: HashMap<LocId, (IsPutter, TypeInfo)>,
     ready: BitSet,
-    mem: BitSet,
+    mem: BitSet, // presence means FULL
     allocator: Allocator,
     ref_counts: HashMap<TraitData, usize>,
 }
@@ -212,11 +211,14 @@ impl ProtoCr {
         }
     }
     fn coordinate(&mut self, r: &ProtoR) {
+        println!("COORDINATE");
+        println!("READAY {:?}", &self.ready);
+        println!("MEM {:?}", &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
-                if !rule.ready_ports.is_subset(&self.ready)
-                // || !rule.full_mem.is_subset(&self.mem)
-                // || rule.empty_mem.is_disjoint(&self.mem)
+                if rule.bit_guard.ready.is_subset(&self.ready)
+                    || rule.bit_guard.full_mem.is_subset(&self.mem)
+                    || rule.bit_guard.empty_mem.is_disjoint(&self.mem)
                 {
                     // failed guard
                     println!("FAILED G for {:?}", rule);
@@ -289,6 +291,15 @@ impl ProtoCr {
                     }
                 }
                 // made it past the instructions! time to commit!
+                for q in rule.bit_guard.ready.iter() {
+                    self.ready.remove(q);
+                }
+                for q in rule.bit_assign.empty_mem.iter() {
+                    self.mem.remove(q);
+                }
+                for &q in rule.bit_assign.full_mem.iter() {
+                    self.mem.insert(q);
+                }
                 // TODO
                 continue 'outer; // reconsider all rules
             }
@@ -410,11 +421,19 @@ impl PutterSpace {
 // putters by default retain their da
 #[derive(Debug)]
 pub struct Rule {
-    ready_ports: BitSet,
+    bit_guard: BitStatePredicate<BitSet>,
+    ins: Vec<Instruction<LocId, Arc<CallHandle>>>, // dummy
+    /// COMMITMENTS BELOW HERE
+    output: Vec<Movement>,
+    // .ready is always identical to bit_guard.ready. use that instead
+    bit_assign: BitStatePredicate<()>,
+}
+
+#[derive(Debug)]
+struct BitStatePredicate<P> {
+    ready: P,
     full_mem: BitSet,
     empty_mem: BitSet,
-    ins: Vec<Instruction<LocId, Arc<CallHandle>>>, // dummy
-    output: Vec<Movement>,
 }
 
 #[derive(Debug)]
@@ -523,7 +542,7 @@ fn main() -> Result<(), (usize, ProtoBuildError)> {
             }))),
         },
         rules: vec![RuleDef {
-            premise: RulePremise {
+            state_guard: StatePredicate {
                 ready_ports: hashset! {"B"},
                 full_mem: hashset! {},
                 empty_mem: hashset! {},

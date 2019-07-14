@@ -14,7 +14,10 @@ impl std::fmt::Debug for MemDef {
 }
 #[derive(Debug)]
 pub enum NameDef {
-    Port { is_putter: bool, type_info: TypeInfo },
+    Port {
+        is_putter: bool,
+        type_info: TypeInfo,
+    },
     Mem(MemDef),
     Func(CallHandle),
 }
@@ -26,14 +29,14 @@ pub struct ProtoDef {
 }
 
 #[derive(Debug)]
-pub struct RulePremise {
+pub struct StatePredicate {
     pub ready_ports: HashSet<Name>,
     pub full_mem: HashSet<Name>,
     pub empty_mem: HashSet<Name>,
 }
 #[derive(Debug)]
 pub struct RuleDef {
-    pub premise: RulePremise,
+    pub state_guard: StatePredicate,
     pub ins: Vec<Instruction<Name, Name>>,
     pub output: HashMap<Name, (bool, HashSet<Name>)>,
 }
@@ -161,7 +164,10 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
             let id = LocId(spaces.len());
             name_mapping.insert(name, id);
             let (space, kind) = match def {
-                NameDef::Port { is_putter, type_info } => {
+                NameDef::Port {
+                    is_putter,
+                    type_info,
+                } => {
                     unclaimed.insert(id, (is_putter, type_info));
                     let msgbox = MsgBox;
                     if is_putter {
@@ -199,11 +205,11 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
         rule_putters.clear();
         temp_names.clear();
 
-        let RulePremise {
+        let StatePredicate {
             ready_ports,
             full_mem,
             empty_mem,
-        } = rule.premise;
+        } = rule.state_guard;
 
         rule_putters.extend(
             ready_ports
@@ -230,24 +236,35 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                 Err(MemInPortPremise { name })
             }
         };
-        let ready_ports: HashSet<LocId> = ready_ports
-            .into_iter()
-            .map(|x| map_id(x, true))
-            .collect::<Result<_, ProtoBuildError>>()?;
-        let full_mem: HashSet<LocId> = full_mem
-            .into_iter()
-            .map(|x| map_id(x, false))
-            .collect::<Result<_, ProtoBuildError>>()?;
-        let empty_mem = empty_mem
-            .into_iter()
-            .map(|x| map_id(x, false))
-            .collect::<Result<_, ProtoBuildError>>()?;
+        let bit_guard = {
+            let full_mem: HashSet<LocId> = full_mem
+                .into_iter()
+                .map(|x| map_id(x, false))
+                .collect::<Result<_, ProtoBuildError>>()?;
+            let empty_mem: HashSet<LocId> = empty_mem
+                .into_iter()
+                .map(|x| map_id(x, false))
+                .collect::<Result<_, ProtoBuildError>>()?;
 
-        if let Some(id) = full_mem.intersection(&empty_mem).next() {
-            return Err(ConflictingMemPremise {
-                name: name_mapping.get_by_second(id).unwrap(),
-            });
-        }
+            if let Some(id) = full_mem.intersection(&empty_mem).next() {
+                return Err(ConflictingMemPremise {
+                    name: name_mapping.get_by_second(id).unwrap(),
+                });
+            }
+
+            let mut ready: HashSet<LocId> = ready_ports
+                .into_iter()
+                .map(|x| map_id(x, true))
+                .collect::<Result<_, ProtoBuildError>>()?;
+            ready.extend(full_mem.iter().copied());
+            ready.extend(empty_mem.iter().copied());
+            BitStatePredicate {
+                ready,
+                full_mem,
+                empty_mem,
+            }
+        };
+
         let RuleDef {
             ins, mut output, ..
         } = rule;
@@ -262,6 +279,10 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                         if type_info != TypeInfo::of::<bool>() {
                             return Err(CreatingNonBoolFromFormula);
                         }
+                        spaces.push(Space::Memo(PutterSpace::new(
+                            std::ptr::null_mut(),
+                            type_info,
+                        )));
                         if temp_names.insert(dest, (dest_id, type_info)).is_some() {
                             return Err(InstructionShadowsName { name: dest });
                         }
@@ -313,7 +334,13 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
             })
             .collect::<Result<_, ProtoBuildError>>()?;
         println!("temp names {:?}", &temp_names);
+        println!("spaces {:?}", &spaces);
 
+        let mut bit_assign = BitStatePredicate {
+            ready: (), // always identical to bit_guard.ready. use that instead
+            empty_mem: hashset! {},
+            full_mem: hashset! {},
+        };
         let new_output = rule_putters
             .iter()
             .map(|putter| {
@@ -321,6 +348,12 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                 let putter = *putter;
                 Ok(
                     if let Some((putter_retains, getters)) = output.remove(putter) {
+                        let putter_kind: LocKind = *persistent_loc_kinds
+                            .get(putter_id.0)
+                            .unwrap_or(&LocKind::Memo);
+                        if !putter_retains && putter_kind == LocKind::Memo {
+                            bit_assign.empty_mem.insert(putter_id);
+                        }
                         let getters = getters
                             .iter()
                             .map(|g_name| {
@@ -333,14 +366,15 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                                         return Err(PutterPortCannotGet { name: g_name })
                                     }
                                     LocKind::PoGe => {
-                                        if !ready_ports.contains(gid) {
+                                        if !bit_guard.ready.contains(gid) {
                                             return Err(PortNotInSyncSet { name: g_name });
                                         }
                                     }
                                     LocKind::Memo => {
-                                        if !full_mem.contains(gid) {
+                                        if !bit_guard.full_mem.contains(gid) {
                                             return Err(MemCannotGetWhileFull { name: g_name });
                                         }
+                                        bit_assign.full_mem.insert(putter_id);
                                     }
                                 };
                                 Ok(*gid)
@@ -366,11 +400,10 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
         }
 
         Ok(Rule {
-            ready_ports,
-            full_mem,
-            empty_mem,
+            bit_guard,
             ins,
             output: new_output,
+            bit_assign,
         })
     };
 

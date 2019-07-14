@@ -197,7 +197,6 @@ pub fn allocator_fresh_alloc() {
     assert_eq!(drop_ctr, 2);
 }
 
-
 #[test]
 fn call_handle() {
     let mut x = 5;
@@ -216,7 +215,6 @@ fn call_handle() {
     std::mem::forget(funcy);
     println!("x={:?}", x);
 }
-
 
 #[test]
 fn call_handle_2() {
