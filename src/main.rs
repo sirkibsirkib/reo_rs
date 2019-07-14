@@ -180,8 +180,9 @@ pub enum ProtoBuildError {
     ConflictingMemPremise { name: Name },
     GettingAndPutting { name: Name },
     InstructionShadowsName { name: Name },
-    TermNameIsNotGetter { name: Name },
-
+    PutterPortCannotGet { name: Name },
+    PortNotInSyncSet { name: Name },
+    MemCannotGetWhileFull { name: Name },
 }
 
 #[derive(Debug)]
@@ -445,7 +446,6 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                 })
                 .collect::<Result<_, ProtoBuildError>>()?;
 
-
             let output = rule_putters
                 .iter()
                 .map(|putter| {
@@ -458,10 +458,24 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                                 .map(|g_name| {
                                     let gid = name_mapping.get_by_first(g_name).unwrap();
                                     if rule_putters.contains(gid) {
-                                        return Err(GettingAndPutting { name: g_name })
-                                    } else if persistent_loc_kinds[gid.0] == LocKind::PoPu {
-                                        return Err(TermNameIsNotGetter { name: g_name })
+                                        return Err(GettingAndPutting { name: g_name });
                                     }
+                                    match persistent_loc_kinds[gid.0] {
+                                        LocKind::PoPu => {
+                                            return Err(PutterPortCannotGet { name: g_name })
+                                        }
+                                        LocKind::PoGe => {
+                                            if !ready_ports.contains(gid) {
+                                                return Err(PortNotInSyncSet { name: g_name });
+                                            }
+                                        }
+                                        LocKind::Memo => {
+                                            if !full_mem.contains(gid) {
+                                                return Err(MemCannotGetWhileFull { name: g_name });
+                                            }
+                                        }
+                                    };
+
                                     Ok(*gid)
                                 })
                                 .collect::<Result<_, _>>()?;
@@ -765,7 +779,7 @@ fn main() -> Result<(), ProtoBuildError> {
             "A" => NameDef::Port { is_putter:true, type_id: TypeInfo::of::<u32>() },
             "B" => NameDef::Port { is_putter:false, type_id: TypeInfo::of::<u32>() },
             "C" => NameDef::Port { is_putter:false, type_id: TypeInfo::of::<u32>() },
-            "D" => NameDef::Mem(MemDef::Initialized(Box::new(MyType))),
+            "D" => NameDef::Mem(MemDef::Initialized(Box::new(8u32))),
             "E" => NameDef::Func(CallHandle::new_nonary(Box::new(|x: *mut u32| unsafe {
                 x.write(7u32)
             }))),
