@@ -177,17 +177,15 @@ pub fn get_layout_raw_eq() {
     assert_eq!(x.my_layout(), i.get_layout());
 }
 
-// #[test]
-// pub fn allocator_fresh_alloc() {
-//     let mut drop_ctr: usize = 0;
+#[test]
+pub fn allocator_fresh_alloc() {
+    let mut drop_ctr: usize = 0;
 
-//     let real = 
+    let mut alloc = Allocator::default();
+    let new_data = alloc.alloc_uninit(TypeInfo::of::<Incrementor>());
+    let data: &mut Incrementor = unsafe {transmute(new_data)};
+    data.0 = &mut drop_ctr; // now it's initialized
 
-//     let mut alloc = Allocator::default();
-//     let new_data = alloc.alloc_uninit(TypeInfo::of::<Incrementor>());
-//     // let data: &mut Incrementor = unsafe {transmute(new_data)};
-//     // data.0 = &mut drop_ctr; // now it's initialized
-
-//     // drop(alloc);
-//     // assert_eq!(drop_ctr, 1);
-// }
+    drop(alloc);
+    assert_eq!(drop_ctr, 1);
+}
