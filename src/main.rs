@@ -32,6 +32,13 @@ impl TypeInfo {
         // return the legitimate vtable
         Self(to.vtable)
     }
+    pub fn get_layout(self) -> Layout {
+        let bogus = self.0;
+        let to = unsafe { trait_obj_build(bogus, self) };
+        let layout = to.my_layout();
+        std::mem::forget(to);
+        layout
+    }
 }
 
 #[inline]
@@ -436,11 +443,11 @@ impl Allocator {
         }
         // crate a new allocation
         unsafe {
-            let to = trait_obj_build(std::ptr::null_mut(), type_info);
-            let layout = to.my_layout();
-            let data: *mut u8 = std::alloc::alloc(layout);
-            std::mem::forget(to);
-            transmute(data)
+            let layout = type_info.get_layout();
+            let data = transmute(std::alloc::alloc(layout));
+            let success = self.store(trait_obj_build(data, type_info));
+            assert!(success);
+            data        
         }
     }
     pub fn drop_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {

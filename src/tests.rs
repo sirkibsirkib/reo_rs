@@ -148,3 +148,46 @@ pub fn allocator_reuse() {
     drop(alloc);
     assert_eq!(drop_ctr, 6);
 }
+
+#[test]
+pub fn get_layout_from_trait() {
+    let mut x: usize = 0;
+
+    let x: Box<dyn PortDatum> = Box::new(Incrementor(&mut x));
+    let layout = x.my_layout();
+    assert_eq!(layout.size(), 8);
+    assert_eq!(layout.align(), 8);
+
+    let x: Box<dyn PortDatum> = Box::new(true);
+    let layout = x.my_layout();
+    assert_eq!(layout.size(), 1);
+    assert_eq!(layout.align(), 1);
+}
+
+#[test]
+pub fn get_layout_raw_eq() {
+    let mut x: usize = 0;
+
+    let x: Box<dyn PortDatum> = Box::new(Incrementor(&mut x));
+    let (_, i) = unsafe { trait_obj_read(&x) };
+    assert_eq!(x.my_layout(), i.get_layout());
+
+    let x: Box<dyn PortDatum> = Box::new(true);
+    let (_, i) = unsafe { trait_obj_read(&x) };
+    assert_eq!(x.my_layout(), i.get_layout());
+}
+
+// #[test]
+// pub fn allocator_fresh_alloc() {
+//     let mut drop_ctr: usize = 0;
+
+//     let real = 
+
+//     let mut alloc = Allocator::default();
+//     let new_data = alloc.alloc_uninit(TypeInfo::of::<Incrementor>());
+//     // let data: &mut Incrementor = unsafe {transmute(new_data)};
+//     // data.0 = &mut drop_ctr; // now it's initialized
+
+//     // drop(alloc);
+//     // assert_eq!(drop_ctr, 1);
+// }
