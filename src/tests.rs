@@ -2,7 +2,7 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
-pub fn type_info_eq() {
+pub fn type_info_neq() {
     assert!(TypeInfo::of::<u8>() != TypeInfo::of::<u16>());
     assert!(TypeInfo::of::<u8>() != TypeInfo::of::<u32>());
     assert!(TypeInfo::of::<u8>() != TypeInfo::of::<u64>());
@@ -13,13 +13,35 @@ pub fn type_info_eq() {
 }
 
 #[test]
+pub fn type_info_eq() {
+    let x: Box<dyn PortDatum> = Box::new(5u8);
+    let y: Box<dyn PortDatum> = Box::new(String::from("Hello"));
+    let z: Box<dyn PortDatum> = Box::new(String::from("Howdy"));
+    unsafe {
+        let (data_x, info_x) = trait_obj_break(x);
+        let (data_y, info_y) = trait_obj_break(y);
+        let (data_z, info_z) = trait_obj_break(z);
+
+        // string and u8 have different vtables
+        assert!(info_x.0 != info_y.0);
+        // y and z both use the same String vtable 
+        assert_eq!(info_y.0, info_z.0);
+
+        // reconstruct them so we don't leak memory
+        let x = trait_obj_build(data_x, info_x);
+        let y = trait_obj_build(data_y, info_y);
+        let z = trait_obj_build(data_z, info_z);
+    }
+}
+
+#[test]
 pub fn type_info_break() {
     let x: Box<dyn PortDatum> = Box::new(String::from("Oh hello, doggy."));
     let y: Box<dyn PortDatum> = Box::new(String::from("My, you're a tall one!"));
     let to_x: TraitObject = unsafe { transmute(x) };
     let to_y: TraitObject = unsafe { transmute(y) };
     assert_eq!(to_x.vtable, to_y.vtable);
-    assert_eq!(to_x.vtable, TypeInfo::of::<Box<String>>().0);
+    // assert_eq!(to_x.vtable, TypeInfo::of::<Box<dyn String>>().0);
 
     for data in [to_x.data, to_y.data].iter().copied() {
         let to = TraitObject {
@@ -49,7 +71,6 @@ pub fn drop_ok() {
     let to_x: TraitObject = unsafe { transmute(x) };
     let to_y: TraitObject = unsafe { transmute(y) };
     assert_eq!(to_x.vtable, to_y.vtable);
-    assert_eq!(to_x.vtable, TypeInfo::of::<Box<Incrementor>>().0);
 
     // transmute does not invoke destructors
     assert_eq!(drop_ctr, 0);
@@ -78,4 +99,13 @@ pub fn allocator_ok() {
     assert_eq!(drop_ctr, 0);
     drop(alloc);
     assert_eq!(drop_ctr, 5);
+}
+
+#[test]
+pub fn re_use_allocation() {
+    // let mut drop_ctr: usize = 0;
+
+    // let mut alloc = Allocator::default();
+
+    // let x = Box::new(Incrementor(&mut drop_ctr));
 }

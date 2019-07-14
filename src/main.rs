@@ -22,8 +22,13 @@ mod tests;
 pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
     pub fn of<T: PortDatum>() -> Self {
-        let bx: Box<dyn PortDatum> = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-        let to: TraitObject = unsafe { transmute(bx) };
+        // fabricate the data itself
+        let bx: Box<T> = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+        // have the compiler insert the correct vtable, using bogus data
+        let dy_bx: Box<dyn PortDatum> = bx;
+        // change compiler's view of the object
+        let to: TraitObject = unsafe { transmute(dy_bx) };
+        // return the legitimate vtable
         Self(to.vtable)
     }
 }
@@ -411,6 +416,43 @@ impl Allocator {
             .or_insert_with(HashSet::new)
             .insert(data)
     }
+    pub fn alloc_uninit(&mut self, info: TypeInfo) -> TraitData {
+        if let Some(set) = self.free.get_mut(&info) {
+            // re-using freed
+            if let Some(data) = set.iter().copied().next() {
+                set.remove(&data);
+                let was = self
+                    .allocated
+                    .entry(info)
+                    .or_insert_with(HashSet::new)
+                    .insert(data);
+                assert_eq!(was, false);
+                return data;
+            }
+        }
+        // allocating new
+        unimplemented!()
+    }
+    pub fn drop_inside(&mut self, to: TraitObject) -> bool {
+        let info = TypeInfo(to.vtable);
+        if let Some(set) = self.free.get_mut(&info) {
+            if set.remove(&to.data) {
+                unsafe {
+                    let mut bx = trait_obj_build(to.data, info);
+                    bx.drop_in_place();
+                    trait_obj_break(bx);
+                }
+                let was = self
+                    .free
+                    .entry(info)
+                    .or_insert_with(HashSet::new)
+                    .insert(to.data);
+                assert_eq!(was, false);
+                return true
+            }
+        }
+        false
+    }
     pub fn remove(&mut self, to: TraitObject) -> bool {
         if let Some(set) = self.free.get_mut(&TypeInfo(to.vtable)) {
             set.remove(&to.data)
@@ -421,9 +463,17 @@ impl Allocator {
 }
 impl Drop for Allocator {
     fn drop(&mut self) {
+        // drop all owned values
         for (&vtable, data_vec) in self.allocated.iter() {
             for &data in data_vec.iter() {
                 drop(unsafe { trait_obj_build(data, vtable) })
+            }
+        }
+        // drop all empty boxes
+        let empty_box_vtable = TypeInfo::of::<Box<()>>();
+        for (&vtable, data_vec) in self.free.iter() {
+            for &data in data_vec.iter() {
+                drop(unsafe { trait_obj_build(data, empty_box_vtable) })
             }
         }
     }
@@ -525,6 +575,7 @@ fn eval_bool(term: &Term<LocId>, r: &ProtoR) -> bool {
 pub trait PortDatum {
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
+    unsafe fn drop_in_place(&mut self);
 }
 
 impl<T: 'static + Clone + PartialEq> PortDatum for T {
@@ -535,6 +586,9 @@ impl<T: 'static + Clone + PartialEq> PortDatum for T {
     fn my_eq(&self, other: TraitData) -> bool {
         let x: &Self = unsafe { transmute(other) };
         self == x
+    }
+    unsafe fn drop_in_place(&mut self) {
+        std::intrinsics::drop_in_place(self)
     }
 }
 
