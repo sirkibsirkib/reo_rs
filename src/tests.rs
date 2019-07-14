@@ -18,20 +18,16 @@ pub fn type_info_eq() {
     let y: Box<dyn PortDatum> = Box::new(String::from("Hello"));
     let z: Box<dyn PortDatum> = Box::new(String::from("Howdy"));
     unsafe {
-        let (data_x, info_x) = trait_obj_break(x);
-        let (data_y, info_y) = trait_obj_break(y);
-        let (data_z, info_z) = trait_obj_break(z);
+        let (data_x, info_x) = trait_obj_read(&x);
+        let (data_y, info_y) = trait_obj_read(&y);
+        let (data_z, info_z) = trait_obj_read(&z);
 
         // string and u8 have different vtables
         assert!(info_x.0 != info_y.0);
         // y and z both use the same String vtable 
         assert_eq!(info_y.0, info_z.0);
-
-        // reconstruct them so we don't leak memory
-        let x = trait_obj_build(data_x, info_x);
-        let y = trait_obj_build(data_y, info_y);
-        let z = trait_obj_build(data_z, info_z);
     }
+    // x,y,z dropped
 }
 
 #[test]
@@ -102,10 +98,53 @@ pub fn allocator_ok() {
 }
 
 #[test]
-pub fn re_use_allocation() {
-    // let mut drop_ctr: usize = 0;
+pub fn allocator_drop_inside() {
+    let mut drop_ctr: usize = 0;
 
-    // let mut alloc = Allocator::default();
+    let mut alloc = Allocator::default();
+    let x: Box<dyn PortDatum> = Box::new(Incrementor(&mut drop_ctr));
+    let (data, info) = unsafe { trait_obj_read(&x) };
+    alloc.store(x);
 
-    // let x = Box::new(Incrementor(&mut drop_ctr));
+    assert_eq!(drop_ctr, 0);
+    // contents of x are dropped
+    assert!(alloc.drop_inside(data, info));
+
+    assert_eq!(drop_ctr, 1);
+
+    // dropping it repeatedly fails
+    assert!(! alloc.drop_inside(data, info));  
+    assert_eq!(drop_ctr, 1);
+
+    drop(alloc); // box for x itself is dropped
+}
+
+
+#[test]
+pub fn allocator_reuse() {
+    let mut drop_ctr: usize = 0;
+
+    let mut alloc = Allocator::default();
+    let x: Box<dyn PortDatum> = Box::new(Incrementor(&mut drop_ctr));
+    let (data, info) = unsafe { trait_obj_read(&x) };
+    alloc.store(x);
+
+    assert_eq!(drop_ctr, 0);
+    assert!(alloc.drop_inside(data, info));
+    assert_eq!(drop_ctr, 1);
+
+    for i in 0..5 {
+        let new_data = alloc.alloc_uninit(info);
+        assert_eq!(new_data, data);
+        let data: &mut Incrementor = unsafe {transmute(new_data)};
+        data.0 = &mut drop_ctr; // now it's initialized
+
+
+        assert_eq!(drop_ctr, i + 1);
+        assert!(alloc.drop_inside(new_data, info));
+        assert_eq!(drop_ctr, i + 2);
+    }
+
+    drop(alloc);
+    assert_eq!(drop_ctr, 6);
 }

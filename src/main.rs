@@ -5,6 +5,7 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+use std::alloc::Layout;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use std::any::Any;
@@ -47,6 +48,11 @@ unsafe fn trait_obj_build(data: TraitData, info: TypeInfo) -> Box<dyn PortDatum>
         vtable: info.0,
     };
     transmute(x)
+}
+#[inline]
+unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
+    let to: &TraitObject = transmute(x);
+    (to.data, TypeInfo(to.vtable))
 }
 
 type FuncId = usize;
@@ -202,9 +208,7 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, ProtoBuildError> {
                 NameDef::Mem(mem_def) => {
                     let (ptr, info) = match mem_def {
                         MemDef::Initialized(bx) => unsafe {
-                            let (data, info) = trait_obj_break(bx);
-                            let bx = trait_obj_build(data, info);
-                            // allocator gets an owning copy.
+                            let (data, info) = trait_obj_read(&bx);
                             allocator.store(bx);
                             (data, info)
                         },
@@ -410,52 +414,60 @@ pub struct Allocator {
 impl Allocator {
     pub fn store(&mut self, x: Box<dyn PortDatum>) -> bool {
         let (data, info) = unsafe { trait_obj_break(x) };
-        !self
+        self
             .allocated
             .entry(info)
             .or_insert_with(HashSet::new)
             .insert(data)
     }
-    pub fn alloc_uninit(&mut self, info: TypeInfo) -> TraitData {
-        if let Some(set) = self.free.get_mut(&info) {
+    pub fn alloc_uninit(&mut self, type_info: TypeInfo) -> TraitData {
+        if let Some(set) = self.free.get_mut(&type_info) {
             // re-using freed
             if let Some(data) = set.iter().copied().next() {
                 set.remove(&data);
-                let was = self
+                let success = self
                     .allocated
-                    .entry(info)
+                    .entry(type_info)
                     .or_insert_with(HashSet::new)
                     .insert(data);
-                assert_eq!(was, false);
-                return data;
+                assert!(success);
+                return data
             }
         }
-        // allocating new
-        unimplemented!()
+        // crate a new allocation
+        unsafe {
+            let to = trait_obj_build(std::ptr::null_mut(), type_info);
+            let layout = to.my_layout();
+            let data: *mut u8 = std::alloc::alloc(layout);
+            std::mem::forget(to);
+            transmute(data)
+        }
     }
-    pub fn drop_inside(&mut self, to: TraitObject) -> bool {
-        let info = TypeInfo(to.vtable);
-        if let Some(set) = self.free.get_mut(&info) {
-            if set.remove(&to.data) {
+    pub fn drop_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
+        if let Some(set) = self.allocated.get_mut(&type_info) {
+            if set.remove(&data) {
                 unsafe {
-                    let mut bx = trait_obj_build(to.data, info);
+                    let mut bx = trait_obj_build(data, type_info);
                     bx.drop_in_place();
                     trait_obj_break(bx);
                 }
-                let was = self
+                let success = self
                     .free
-                    .entry(info)
+                    .entry(type_info)
                     .or_insert_with(HashSet::new)
-                    .insert(to.data);
-                assert_eq!(was, false);
-                return true
+                    .insert(data);
+                return success;
+            } else {
+                println!("NOT FOR THIS DATUM");
             }
+        } else {
+            println!("NOT FOR THIS INFO");
         }
         false
     }
-    pub fn remove(&mut self, to: TraitObject) -> bool {
-        if let Some(set) = self.free.get_mut(&TypeInfo(to.vtable)) {
-            set.remove(&to.data)
+    pub fn remove(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
+        if let Some(set) = self.free.get_mut(&type_info) {
+            set.remove(&data)
         } else {
             false
         }
@@ -473,7 +485,7 @@ impl Drop for Allocator {
         let empty_box_vtable = TypeInfo::of::<Box<()>>();
         for (&vtable, data_vec) in self.free.iter() {
             for &data in data_vec.iter() {
-                drop(unsafe { trait_obj_build(data, empty_box_vtable) })
+                drop(unsafe { trait_obj_build(data, empty_box_vtable) });
             }
         }
     }
@@ -576,6 +588,7 @@ pub trait PortDatum {
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
     unsafe fn drop_in_place(&mut self);
+    fn my_layout(&self) -> Layout;
 }
 
 impl<T: 'static + Clone + PartialEq> PortDatum for T {
@@ -589,6 +602,9 @@ impl<T: 'static + Clone + PartialEq> PortDatum for T {
     }
     unsafe fn drop_in_place(&mut self) {
         std::intrinsics::drop_in_place(self)
+    }
+    fn my_layout(&self) -> Layout {
+        Layout::new::<T>()
     }
 }
 
