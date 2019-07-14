@@ -182,10 +182,20 @@ pub fn allocator_fresh_alloc() {
     let mut drop_ctr: usize = 0;
 
     let mut alloc = Allocator::default();
-    let new_data = alloc.alloc_uninit(TypeInfo::of::<Incrementor>());
+    let type_info = TypeInfo::of::<Incrementor>();
+
+    let new_data = alloc.alloc_uninit(type_info);
     let data: &mut Incrementor = unsafe {transmute(new_data)};
     data.0 = &mut drop_ctr; // now it's initialized
 
-    drop(alloc);
+
+    let new_data2 = alloc.alloc_uninit(type_info);
+    let data2: &mut Incrementor = unsafe {transmute(new_data2)};
+    data2.0 = &mut drop_ctr; // now it's initialized
+
+    alloc.drop_inside(new_data, type_info);
     assert_eq!(drop_ctr, 1);
+
+    drop(alloc);
+    assert_eq!(drop_ctr, 2);
 }
