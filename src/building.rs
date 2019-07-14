@@ -40,6 +40,14 @@ pub struct RuleDef {
     pub ins: Vec<Instruction<Name, Name>>,
     pub output: HashMap<Name, (bool, HashSet<Name>)>,
 }
+
+/*
+an instruction starts with a premise which guarantees which port
+
+
+
+*/
+
 #[derive(Debug)]
 pub enum ProtoBuildError {
     UnavailableData { name: Name, rule_index: usize },
@@ -144,7 +152,8 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
 
     let mut spaces = vec![];
     let mut name_mapping = BidirMap::<Name, LocId>::new();
-    let mut unclaimed = hashmap! {};
+    let mut unclaimed = hashset! {};
+    let mut port_info = hashmap! {};
     let mut allocator = Allocator::default();
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -168,8 +177,9 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                     is_putter,
                     type_info,
                 } => {
-                    unclaimed.insert(id, (is_putter, type_info));
-                    let msgbox = MsgBox;
+                    unclaimed.insert(id);
+                    port_info.insert(id, (is_putter, type_info));
+                    let msgbox = MsgBox::default();
                     if is_putter {
                         let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
                         (Space::PoPu(ps, msgbox), LocKind::PoPu)
@@ -211,6 +221,7 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
             empty_mem,
         } = rule.state_guard;
 
+        // keeps track of which values are FULL (and therefore must be emptied on commit)
         rule_putters.extend(
             ready_ports
                 .iter()
@@ -273,6 +284,16 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
             .map(|i| {
                 use Instruction::*;
                 Ok(match i {
+                    MemMove { src, dest } => {
+                        // let src_id = resolve_putter(&temp_names, &name_mapping, src)?;
+                        // let putter_id = spaces[src_id.0].get_putter_space().ok_or(TermNameIsNotPutter { src })?;
+                        // if let Ok(existing_dest) = resolve_putter(&temp_names, &name_mapping, dest) {
+
+                        // } else {
+
+                        // }
+                        unimplemented!()
+                    }
                     CreateFromFormula { dest, term } => {
                         let dest_id = resolve_putter(&temp_names, &name_mapping, dest)?;
                         let type_info = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
@@ -421,6 +442,7 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
             rules,
             spaces,
             name_mapping,
+            port_info,
         },
         cr: Mutex::new(ProtoCr {
             unclaimed,

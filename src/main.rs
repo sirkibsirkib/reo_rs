@@ -147,7 +147,10 @@ pub enum Instruction<I, F> {
     Check {
         term: Term<I>,
     },
-    // TODO move data between memcells
+    MemMove {
+        src: I,
+        dest: I,
+    }, // TODO move data between memcells
 }
 #[derive(Debug)]
 pub enum Space {
@@ -165,7 +168,24 @@ impl Space {
     }
 }
 #[derive(Debug)]
-pub struct MsgBox;
+pub struct MsgBox {
+    s: crossbeam_channel::Sender<usize>,
+    r: crossbeam_channel::Receiver<usize>,
+}
+impl Default for MsgBox {
+    fn default() -> Self {
+        let (s, r) = crossbeam_channel::bounded(1);
+        Self { s, r }
+    }
+}
+impl MsgBox {
+    pub fn try_send(&self, msg: usize) {
+        self.s.send(msg).unwrap();
+    }
+    pub fn recv(&self) -> usize {
+        self.r.recv().unwrap()
+    }
+}
 
 #[derive(Debug)]
 pub struct Proto {
@@ -181,17 +201,74 @@ impl Proto {
     }
 }
 
+impl Eq for ProtoHandle {}
+#[derive(Debug, Clone)]
+struct ProtoHandle(Arc<Proto>);
+impl PartialEq for ProtoHandle {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+pub enum ClaimError {
+    WrongPortDirection,
+    TypeMismatch(TypeInfo),
+    UnknownName,
+    AlreadyClaimed,
+}
+
+struct PortCommon {
+    id: LocId,
+    p: ProtoHandle,
+}
+struct Putter<T: PortDatum>(PortCommon, PhantomData<T>);
+impl<T: PortDatum> Putter<T> {
+    fn claim(name: Name, p: &ProtoHandle) -> Result<Self, ClaimError> {
+        use ClaimError::*;
+        if let Some(id) = p.0.r.name_mapping.get_by_first(&name) {
+            let (is_putter, type_info) = *p.0.r.port_info.get(id).unwrap();
+            if !is_putter {
+                return Err(WrongPortDirection);
+            }
+            if TypeInfo::of::<T>() != type_info {
+                return Err(TypeMismatch(type_info));
+            }
+            let mut x = p.0.cr.lock();
+            if x.unclaimed.remove(id) {
+                Ok(Self(
+                    PortCommon {
+                        id: *id,
+                        p: p.clone(),
+                    },
+                    Default::default(),
+                ))
+            } else {
+                Err(AlreadyClaimed)
+            }
+        } else {
+            Err(ClaimError::UnknownName)
+        }
+    }
+
+    fn put(&mut self, mut datum: T) -> Option<T> {
+        let ptr: TraitData = unsafe { transmute(&mut datum) };
+        let mut x = self.0.p.0.cr.lock();
+        unimplemented!()
+    }
+}
+
 #[derive(Debug)]
 pub struct ProtoR {
     rules: Vec<Rule>,
     spaces: Vec<Space>,
     name_mapping: BidirMap<Name, LocId>,
+    port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
 }
 
 type IsPutter = bool;
 #[derive(Debug)]
 pub struct ProtoCr {
-    unclaimed: HashMap<LocId, (IsPutter, TypeInfo)>,
+    unclaimed: HashSet<LocId>,
     ready: BitSet,
     mem: BitSet, // presence means FULL
     allocator: Allocator,
@@ -229,6 +306,7 @@ impl ProtoCr {
                 for (i_id, i) in rule.ins.iter().enumerate() {
                     use Instruction::*;
                     match i {
+                        MemMove { src, dest } => unimplemented!(),
                         CreateFromFormula { dest, term } => {
                             let dest_ptr = self.allocator.alloc_uninit(TypeInfo::of::<bool>());
                             // MUST BE BOOL. creation ensures it
@@ -281,6 +359,7 @@ impl ProtoCr {
                                         CreateFromFormula { dest, .. } => self.drop_memo(r, *dest),
                                         CreateFromCall { dest, .. } => self.drop_memo(r, *dest),
                                         Check { .. } => {}
+                                        MemMove { src, dest } => unimplemented!(),
                                     }
                                 }
                                 println!("DID CreateFromCall");
