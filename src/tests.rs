@@ -196,3 +196,46 @@ pub fn allocator_fresh_alloc() {
     drop(alloc);
     assert_eq!(drop_ctr, 2);
 }
+
+
+#[test]
+fn call_handle() {
+    let mut x = 5;
+
+    let b: Box<dyn Fn(*mut u32)> = Box::new(|dest| unsafe { dest.write(3) });
+    let ch = CallHandle {
+        func: unsafe { transmute(b) },
+        ret: TypeInfo::of::<u32>(),
+        args: vec![],
+    };
+
+    let dest: *mut u32 = &mut x;
+    let funcy: Box<dyn Fn(*mut u32)> = unsafe { transmute(ch.func) };
+    funcy(dest);
+
+    std::mem::forget(funcy);
+    println!("x={:?}", x);
+}
+
+
+#[test]
+fn call_handle_2() {
+    unsafe {
+        let mut x = 5;
+
+        let b: Box<dyn Fn(*mut u32)> = Box::new(|dest| dest.write(3));
+        let ch = CallHandle {
+            func: transmute(b),
+            ret: TypeInfo::of::<u32>(),
+            args: vec![],
+        };
+
+        let dest: *mut u32 = &mut x;
+        let dest: TraitData = transmute(dest);
+        let funcy: &Box<dyn Fn(TraitData)> = transmute(&ch.func);
+        funcy(dest);
+
+        std::mem::forget(funcy);
+        println!("x={:?}", x);
+    }
+}
