@@ -555,6 +555,16 @@ fn prod_cons_no_leak() {
     assert_eq!(*x.0.lock(), 3);
 }
 
+#[test]
+fn deref_bool() {
+    let x: *mut bool = &mut true;
+    let y: bool = unsafe {*x};
+    assert!(y);
+    let x: *mut bool = &mut false;
+    let y: bool = unsafe {*x};
+    assert!(!y);
+}
+
 // lazy_static::lazy_static! {
 //     static ref THREE_COUNTER: ProtoDef = ProtoDef {
 //         name_defs: hashmap! {

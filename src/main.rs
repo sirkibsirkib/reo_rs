@@ -110,6 +110,20 @@ pub struct CallHandle {
     args: Vec<TypeInfo>,
 }
 impl CallHandle {
+    pub(crate) unsafe fn exec(&self, dest_ptr: TraitData, args: &[TraitData]) {
+        let to: &Arc<dyn Fn()> = &self.func;
+        let to: &TraitObject = transmute(to);
+        let to: TraitObject = *to;
+        assert_eq!(self.args.len(), args.len());
+        let dest_ptr = match args.len() {
+            0 => {
+                let funcy: &dyn Fn(TraitData) = transmute(to);
+                funcy(dest_ptr);
+            }
+            // TODO
+            _ => unreachable!(),
+        };
+    }
     pub fn new_nonary<R: PortDatum>(func: Arc<dyn Fn(*mut R) + Sync>) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
@@ -761,6 +775,12 @@ impl ProtoCr {
                             func,
                             args,
                         } => {
+                            let dest_ptr = unsafe { self.allocator.alloc_uninit(*info) };
+                            // TODO MAKE LESS CLUNKY
+                            let arg_stack = args.iter().map(|arg| {
+                                eval_ptr(arg, r)
+                            }).collect::<Vec<_>>();
+                            unsafe { func.exec(dest_ptr, &arg_stack[..]) };
                             let to: &Arc<dyn Fn()> = &func.func;
                             let to: &TraitObject = unsafe { transmute(to) };
                             let to: TraitObject = *to;
@@ -1122,9 +1142,9 @@ type BitSet = HashSet<LocId>;
 fn bool_to_ptr(x: bool) -> TraitData {
     unsafe {
         transmute(if x {
-            &mut true as *mut bool
+            &true
         } else {
-            &mut false as *mut bool
+            &false
         })
     }
 }
@@ -1134,13 +1154,18 @@ fn eval_ptr(term: &Term<LocId, CallHandle>, r: &ProtoR) -> TraitData {
     match term {
         // NOT NECESSARILY BOOL
         Named(i) => r.spaces[i.0].get_putter_space().unwrap().ptr.load(SeqCst),
-        // MUST BE BOOL
-        True => bool_to_ptr(true),
-        False => bool_to_ptr(false),
-        Not(t) => bool_to_ptr(!eval_bool(t, r)),
-        And(ts) => bool_to_ptr(ts.iter().all(|t| eval_bool(t, r))),
-        Or(ts) => bool_to_ptr(ts.iter().any(|t| eval_bool(t, r))),
-        IsEq(tid, terms) => bool_to_ptr(eval_bool(term, r)),
+        other => bool_to_ptr(eval_bool(term, r)),
+        // // MUST BE BOOL
+        // BoolCall { func, args } => {
+        //     // TODOun
+        //     unimplemented!()
+        // }
+        // True => bool_to_ptr(true),
+        // False => bool_to_ptr(false),
+        // Not(t) => bool_to_ptr(!eval_bool(t, r)),
+        // And(ts) => bool_to_ptr(ts.iter().all(|t| eval_bool(t, r))),
+        // Or(ts) => bool_to_ptr(ts.iter().any(|t| eval_bool(t, r))),
+        // IsEq(tid, terms) => bool_to_ptr(eval_bool(term, r)),
     }
 }
 #[inline]
@@ -1155,6 +1180,11 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
         // PTR points to BOOL
         Named(i) => ptr_to_bool(eval_ptr(term, r)),
         // INHERENTLY BOOL
+        BoolCall { func, args } => {
+            let mut ret = false;
+
+            unimplemented!()
+        }
         True => true,
         False => false,
         Not(t) => !eval_bool(t, r),
