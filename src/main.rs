@@ -65,6 +65,7 @@ impl TypeInfo {
         let to = trait_obj_build(src, self);
         let layout = to.my_layout();
         let [src_u8, dest_u8]: [*mut u8; 2] = transmute([src, dest]);
+        println!("COPYING with layout {:?}", layout);
         std::ptr::copy(src_u8, dest_u8, layout.size());
         std::mem::forget(to);
     }
@@ -340,6 +341,7 @@ impl<T: PubPortDatum> Getter<T> {
         println!("GET DATA");
         let ptr: TraitData = ps.ptr.load(SeqCst);
         assert!(ptr != NULL);
+        println!("GETTER GOT PTR {:p}", ptr);
         let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
             let s: *const T = transmute(ptr);
             dest.as_mut_ptr().write(s.read());
@@ -356,6 +358,7 @@ impl<T: PubPortDatum> Getter<T> {
             }
             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
             if was == 1 {
+                    println!("I LAST (B)");
                 let somebody_moved = ps.rendesvous.move_flags.did_someone_move();
                 finalize(somebody_moved);
             }
@@ -363,6 +366,7 @@ impl<T: PubPortDatum> Getter<T> {
             if let Some(dest) = maybe_dest {
                 let won = !ps.rendesvous.move_flags.ask_for_move_permission();
                 if won {
+                    println!("I WIN (B)");
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                     if was == 1 {
                         do_move(dest);
@@ -372,6 +376,7 @@ impl<T: PubPortDatum> Getter<T> {
                     finalize(true);
                 } else {
                     // lose
+                    println!("I LOSE (B)");
                     do_clone(dest);
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                     if was == 1 {
@@ -384,6 +389,7 @@ impl<T: PubPortDatum> Getter<T> {
             } else {
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                 if was == 1 {
+                    println!("I WIN (C)");
                     // all clones done
                     let nobody_else_won = !ps.rendesvous.move_flags.ask_for_move_permission();
                     if nobody_else_won {
@@ -418,6 +424,7 @@ impl<T: PubPortDatum> Getter<T> {
                 }),
                 Space::Memo { ps } => Self::get_data(ps, Some(&mut ret), |was_moved| {
                     // finalization function
+                    println!("was moved? {:?}", was_moved);
                     self.0
                         .p
                         .0
@@ -631,6 +638,9 @@ impl ProtoCr {
             self.ref_counts.remove(&(ptr as usize));
             if !was_moved {
                 assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
+            } else {
+                assert!(self.allocator.forget_inside(ptr, putter_space.type_info));
+
             }
         } else {
             assert!(!was_moved);
@@ -770,6 +780,7 @@ impl ProtoCr {
                         let dest_space = r.spaces[mem_0.0].get_putter_space().unwrap();
                         assert_eq!(dest_space.type_info, ps.type_info);
                         let dest_ptr = unsafe { self.allocator.alloc_uninit(ps.type_info) };
+                        println!("ALLOCATED {:p}", dest_ptr);
                         // do the movement, then release the putter with a message
                         if !putter_retains {
                             let src_ptr = ps.ptr.swap(NULL, SeqCst);
@@ -897,7 +908,14 @@ impl Allocator {
         }
         false
     }
-    pub fn remove(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
+    pub fn forget_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
+        if let Some(set) = self.allocated.get_mut(&type_info) {
+            set.remove(&(data as usize))
+        } else {
+            false
+        }
+    }
+    pub fn remove_free(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
         if let Some(set) = self.free.get_mut(&type_info) {
             set.remove(&(data as usize))
         } else {
@@ -907,6 +925,7 @@ impl Allocator {
 }
 impl Drop for Allocator {
     fn drop(&mut self) {
+        println!("ALLOCATOR DROPPING...");
         // drop all owned values
         for (&vtable, data_vec) in self.allocated.iter() {
             for &data in data_vec.iter() {
@@ -920,6 +939,7 @@ impl Drop for Allocator {
                 drop(unsafe { trait_obj_build(data as TraitData, empty_box_vtable) });
             }
         }
+        println!("ALLOCATOR DROPPING DONE");
     }
 }
 

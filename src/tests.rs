@@ -417,4 +417,6 @@ fn prod_cons_single() {
     let x = g.get();
     println!("got!");
     assert_eq!(&x, "HI!");
+    println!("DATUM READS {:?}", &x);
+    println!("cool");
 }
