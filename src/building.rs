@@ -219,6 +219,9 @@ pub fn build_proto(
         persistent_loc_kinds.push(kind);
     }
 
+    // NO MORE PERSISTENT THINGS
+    let persistent_kind = |name: Name| persistent_loc_kinds[name_mapping.get_by_first(&name).unwrap().0];
+
     // temp vars
     let mut temp_names: HashMap<Name, (LocId, TypeInfo)> = hashmap! {};
     let mut to_put: HashSet<Name> = hashset! {};
@@ -238,10 +241,7 @@ pub fn build_proto(
         to_put.extend(
             ready_ports
                 .iter()
-                .filter(|&name| {
-                    persistent_loc_kinds[name_mapping.get_by_first(name).unwrap().0]
-                        == LocKind::PoPu
-                })
+                .filter(|&name| persistent_kind(name) == LocKind::PoPu)
                 .chain(full_mem.iter())
                 .copied(),
         );

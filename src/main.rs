@@ -32,6 +32,8 @@ use building::*;
 
 mod tests;
 
+unsafe impl Send for TypeInfo {}
+unsafe impl Sync for TypeInfo {}
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
@@ -95,6 +97,10 @@ unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
     (to.data, TypeInfo(to.vtable))
 }
 
+
+
+unsafe impl Send for CallHandle {}
+unsafe impl Sync for CallHandle {}
 #[allow(bare_trait_objects)] // DebugStub can't parse the new dyn syntax :(
 #[derive(DebugStub, Clone)]
 pub struct CallHandle {
@@ -104,14 +110,14 @@ pub struct CallHandle {
     args: Vec<TypeInfo>,
 }
 impl CallHandle {
-    pub fn new_nonary<R: PortDatum>(func: Arc<dyn Fn(*mut R)>) -> Self {
+    pub fn new_nonary<R: PortDatum>(func: Arc<dyn Fn(*mut R) + Sync>) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
             ret: TypeInfo::of::<R>(),
             args: vec![],
         }
     }
-    pub fn new_unary<R: PortDatum, A0: PortDatum>(func: Arc<dyn Fn(*mut R, *const A0)>) -> Self {
+    pub fn new_unary<R: PortDatum, A0: PortDatum>(func: Arc<dyn Fn(*mut R, *const A0) + Sync>) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
             ret: TypeInfo::of::<R>(),
@@ -119,7 +125,7 @@ impl CallHandle {
         }
     }
     pub fn new_binary<R: PortDatum, A0: PortDatum, A1: PortDatum>(
-        func: Arc<dyn Fn(*mut R, *const A0, *const A1)>,
+        func: Arc<dyn Fn(*mut R, *const A0, *const A1) + Sync>,
     ) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
@@ -128,7 +134,7 @@ impl CallHandle {
         }
     }
     pub fn new_ternary<R: PortDatum, A0: PortDatum, A1: PortDatum, A2: PortDatum>(
-        func: Arc<dyn Fn(*mut R, *const A0, *const A1, *const A2)>,
+        func: Arc<dyn Fn(*mut R, *const A0, *const A1, *const A2) + Sync>,
     ) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
@@ -473,12 +479,14 @@ impl ProtoCr {
                     match i {
                         MemMove { src, dest } => unimplemented!(),
                         CreateFromFormula { dest, term } => {
-                            let dest_ptr = self.allocator.alloc_uninit(TypeInfo::of::<bool>());
+                            
                             // MUST BE BOOL. creation ensures it
-                            unsafe {
+                            let dest_ptr = unsafe {
+                                let dest_ptr = self.allocator.alloc_uninit(TypeInfo::of::<bool>());
                                 let dest: *mut bool = transmute(dest_ptr);
                                 *dest = eval_bool(term, r);
-                            }
+                                dest_ptr
+                            };
                             r.spaces[dest.0]
                                 .get_putter_space()
                                 .unwrap()
@@ -499,9 +507,11 @@ impl ProtoCr {
                             let dest_ptr = match args.len() {
                                 0 => {
                                     let funcy: &dyn Fn(TraitData) = unsafe { transmute(to) };
-                                    let dest_ptr = self.allocator.alloc_uninit(*info);
-                                    funcy(dest_ptr);
-                                    dest_ptr
+                                    unsafe {
+                                        let dest_ptr = self.allocator.alloc_uninit(*info);
+                                        funcy(dest_ptr);
+                                        dest_ptr
+                                    }
                                 }
                                 // TODO
                                 _ => unreachable!(),
@@ -580,9 +590,7 @@ impl ProtoCr {
                         // 3. we don't yet know if any port-getters want to MOVE (they may want signals)
                         let dest_space = r.spaces[mem_0.0].get_putter_space().unwrap();
                         assert_eq!(dest_space.type_info, ps.type_info);
-                        let dest_ptr = self.allocator.alloc_uninit(ps.type_info);
-                        assert_eq!(NULL, dest_space.ptr.swap(dest_ptr, SeqCst));
-
+                        let dest_ptr = unsafe { self.allocator.alloc_uninit(ps.type_info) };
                         // do the movement, then release the putter with a message
                         if !putter_retains {
                             let src_ptr = ps.ptr.swap(NULL, SeqCst);
@@ -595,6 +603,8 @@ impl ProtoCr {
                             unsafe { ps.type_info.clone(src_ptr, dest_ptr) };
                             mb.send(MsgBox::UNMOVED_MSG);
                         }
+                        assert_eq!(NULL, dest_space.ptr.swap(dest_ptr, SeqCst));
+
                         // mem_0 becomes the putter, and retains the value
                         putter_retains = true;
                         putter = mem_0;
@@ -666,7 +676,7 @@ impl Allocator {
             .or_insert_with(HashSet::new)
             .insert(data)
     }
-    pub fn alloc_uninit(&mut self, type_info: TypeInfo) -> TraitData {
+    pub unsafe fn alloc_uninit(&mut self, type_info: TypeInfo) -> TraitData {
         if let Some(set) = self.free.get_mut(&type_info) {
             // re-using freed
             if let Some(data) = set.iter().copied().next() {
@@ -681,13 +691,11 @@ impl Allocator {
             }
         }
         // crate a new allocation
-        unsafe {
-            let layout = type_info.get_layout();
-            let data = transmute(std::alloc::alloc(layout));
-            let success = self.store(trait_obj_build(data, type_info));
-            assert!(success);
-            data
-        }
+        let layout = type_info.get_layout();
+        let data = transmute(std::alloc::alloc(layout));
+        let success = self.store(trait_obj_build(data, type_info));
+        assert!(success);
+        data
     }
     pub fn drop_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
         if let Some(set) = self.allocated.get_mut(&type_info) {
@@ -881,13 +889,13 @@ fn eval_bool(term: &Term<LocId>, r: &ProtoR) -> bool {
     }
 }
 
-pub trait PubPortDatum: 'static {
+pub trait PubPortDatum: 'static + Send + Sync {
     const IS_COPY: bool;
     fn my_clone2(&self) -> Self;
     fn my_eq2(&self, other: &Self) -> bool;
 }
 
-impl<T: 'static + Clone + PartialEq> PubPortDatum for T {
+impl<T: 'static + Clone + PartialEq + Send + Sync> PubPortDatum for T {
     const IS_COPY: bool = false;
     fn my_clone2(&self) -> Self {
         <Self as Clone>::clone(self)
@@ -897,7 +905,7 @@ impl<T: 'static + Clone + PartialEq> PubPortDatum for T {
     }
 }
 
-pub trait PortDatum {
+pub trait PortDatum: Send + Sync {
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
     unsafe fn drop_in_place(&mut self);
