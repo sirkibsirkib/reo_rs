@@ -172,6 +172,8 @@ pub fn build_proto(
     let mut persistent_loc_kinds = vec![];
 
     // consume all name defs, creating spaces. retain call_handles to be treated later
+    let mut mem = hashset!{};
+    let mut ready = mem.clone();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
     for (name, def) in p.name_defs.iter() {
         let id = LocId(spaces.len());
@@ -192,12 +194,14 @@ pub fn build_proto(
                 }
             }
             NameDef::Mem(type_info) => {
+                ready.insert(id);
                 let ptr = if let Some(bx) = init.strg.remove(name) {
                     let (data, info) = unsafe { trait_obj_read(&bx) };
                     if info != *type_info {
                         return Err((None, InitialTypeMismatch { name }));
                     }
                     allocator.store(bx);
+                    mem.insert(id);
                     data
                 } else {
                     std::ptr::null_mut()
@@ -336,10 +340,10 @@ pub fn build_proto(
                             &mut po_ge
                         }
                         LocKind::Memo => {
-                            if !bit_guard.full_mem.contains(gid) {
+                            if !bit_guard.empty_mem.contains(gid) {
                                 return Err(MemCannotGetWhileFull { name });
                             }
-                            bit_assign.full_mem.insert(putter_id);
+                            bit_assign.full_mem.insert(*gid);
                             &mut me_ge
                         }
                     }
@@ -376,9 +380,6 @@ pub fn build_proto(
         .enumerate()
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
-
-    let mem = BitSet::default();
-    let ready = BitSet::default();
     let r = ProtoR {
         rules,
         spaces,

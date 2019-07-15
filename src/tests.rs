@@ -335,13 +335,86 @@ fn sync_put_get() {
         Putter::claim(&p, "A").unwrap(),
         Getter::claim(&p, "B").unwrap(),
     );
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..10 {
+                p.put(i);
+            }
+        }),
+        spawn(move || {
+            for i in 0..10 {
+                let x = g.get();
+                assert_eq!(x, i);
+            }
+        }),
+    ];
+    for x in handles {
+        x.join().unwrap();
+    }
+}
 
-    let a = std::thread::spawn(move || {
-        p.put(32);
-    });
-    let b = std::thread::spawn(move || {
-        let x = g.get();
-    });
-    a.join().unwrap();
-    b.join().unwrap();
+
+lazy_static::lazy_static! {
+    static ref FIFO1_STRING: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "Producer" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<String>() },
+            "Consumer" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<String>() },
+            "Memory" => NameDef::Mem(TypeInfo::of::<String>()),
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"Producer"},
+                full_mem: hashset! {},
+                empty_mem: hashset! {"Memory"},
+            },
+            ins: vec![],
+            output: hashmap! {
+                "Producer" => (false, hashset!{"Memory"})
+            },
+        },
+        RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"Consumer"},
+                full_mem: hashset! {"Memory"},
+                empty_mem: hashset! {},
+            },
+            ins: vec![],
+            output: hashmap! {
+                "Memory" => (false, hashset!{"Consumer"})
+            },
+        }],
+    };
+}
+
+#[test]
+fn prod_cons_init() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+}
+
+
+#[test]
+fn prod_cons_claim() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let (p, g): (Putter<String>, Getter<String>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+}
+
+
+#[test]
+fn prod_cons_single() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<String>, Getter<String>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+    println!("OK");
+    p.put(String::from("HI!"));
+    println!("PUT SUCCEEDED");
+    println!("getting...");
+    let x = g.get();
+    println!("got!");
+    assert_eq!(&x, "HI!");
 }

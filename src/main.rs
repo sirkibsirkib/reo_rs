@@ -1,6 +1,6 @@
 #![feature(raw)]
 #![feature(box_patterns)]
-// #![feature(specialization)]
+#![feature(specialization)]
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 #![allow(dead_code)]
@@ -215,8 +215,8 @@ impl Default for MsgBox {
     }
 }
 impl MsgBox {
-    const MOVED_MSG: usize = 0xffff;
-    const UNMOVED_MSG: usize = 0xaaaa;
+    const MOVED_MSG: usize = 0xadded;
+    const UNMOVED_MSG: usize = 0xdeaf;
     pub fn send(&self, msg: usize) {
         self.s.try_send(msg).unwrap();
     }
@@ -248,6 +248,7 @@ pub enum ClaimError {
     AlreadyClaimed,
 }
 
+#[derive(Debug)]
 struct PortCommon {
     id: LocId,
     type_info: TypeInfo,
@@ -270,11 +271,13 @@ impl PortCommon {
             }
             let mut x = p.0.cr.lock();
             if x.unclaimed.remove(id) {
-                Ok(Self {
+                let q = Ok(Self {
                     id: *id,
                     type_info,
                     p: p.clone(),
-                })
+                });
+                println!("{:?}", q);
+                q
             } else {
                 Err(AlreadyClaimed)
             }
@@ -300,10 +303,11 @@ impl<T: PortDatum> Putter<T> {
             assert_eq!(NULL, ps.ptr.swap(ptr, SeqCst));
             {
                 let mut x = self.0.p.0.cr.lock();
-                x.ready.insert(self.0.id);
+                assert!(x.ready.insert(self.0.id));
                 x.coordinate(&self.0.p.0.r);
             }
             let msg = mb.recv();
+            println!("MSG 0x{:X}", msg);
             ps.ptr.swap(NULL, SeqCst);
             match msg {
                 MsgBox::MOVED_MSG => {
@@ -333,8 +337,9 @@ impl<T: PubPortDatum> Getter<T> {
         finalize: F,
     ) {
         // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
-
+        println!("GET DATA");
         let ptr: TraitData = ps.ptr.load(SeqCst);
+        assert!(ptr != NULL);
         let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
             let s: *const T = transmute(ptr);
             dest.as_mut_ptr().write(s.read());
@@ -397,7 +402,7 @@ impl<T: PubPortDatum> Getter<T> {
         if let Space::PoGe { mb } = space {
             {
                 let mut x = self.0.p.0.cr.lock();
-                x.ready.insert(self.0.id);
+                assert!(x.ready.insert(self.0.id));
                 x.coordinate(&self.0.p.0.r);
             }
             let putter_id = LocId(mb.recv());
@@ -564,12 +569,12 @@ impl ProtoR {
                 assert!(busy_doing.insert(p, true).is_none());
 
                 assert_eq!(
-                    cap.mem && movement.putter_retains,
+                    cap.mem && !movement.putter_retains,
                     rule.bit_assign.empty_mem.contains(&p)
                 );
                 assert_eq!(
                     cap.mem && !movement.putter_retains,
-                    rule.bit_assign.full_mem.contains(&p)
+                    rule.bit_assign.empty_mem.contains(&p)
                 );
                 for g in movement.me_ge.iter().copied() {
                     let gcap = &capabilities[g.0];
@@ -590,10 +595,18 @@ impl ProtoR {
             }
             // make sure every READY-requested location is doing something
             for p in rule.bit_guard.ready.iter().copied() {
-                println!("{:?}", p);
                 assert!(busy_doing.contains_key(&p));
             }
             // todo check NON putters in assignment set
+            for p in rule
+                .bit_assign
+                .empty_mem
+                .iter()
+                .chain(rule.bit_assign.full_mem.iter())
+                .copied()
+            {
+                assert!(busy_doing.contains_key(&p));
+            }
         }
     }
 }
@@ -612,32 +625,32 @@ impl ProtoCr {
         let putter_space = r.spaces[id.0].get_putter_space().unwrap();
         let ptr = putter_space.ptr.swap(NULL, SeqCst);
         let ref_count = self.ref_counts.get_mut(&(ptr as usize)).unwrap();
-        if *ref_count == 1 {
+        assert!(*ref_count > 0);
+        *ref_count -= 1;
+        if *ref_count == 0 {
             self.ref_counts.remove(&(ptr as usize));
             if !was_moved {
                 assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
             }
         } else {
             assert!(!was_moved);
-            *ref_count -= 1;
         }
         self.ready.insert(id);
     }
     fn coordinate(&mut self, r: &ProtoR) {
-        println!("COORDINATE");
-        println!("READAY {:?}", &self.ready);
-        println!("MEM {:?}", &self.mem);
+        println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
-                if rule.bit_guard.ready.is_subset(&self.ready)
-                    || rule.bit_guard.full_mem.is_subset(&self.mem)
-                    || rule.bit_guard.empty_mem.is_disjoint(&self.mem)
-                {
+                let g1 = rule.bit_guard.ready.is_subset(&self.ready);
+                let g2 = rule.bit_guard.full_mem.is_subset(&self.mem);
+                let g3 = rule.bit_guard.empty_mem.is_disjoint(&self.mem);
+                if !(g1 && g2 && g3) {
                     // failed guard
-                    println!("FAILED G for {:?}", rule);
+                    println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
                 }
-                println!("going to eval ins for rule {:?}", rule);
+                println!("SUCCESS");
+                // println!("going to eval ins for rule {:?}", rule);
                 for (i_id, i) in rule.ins.iter().enumerate() {
                     use Instruction::*;
                     match i {
@@ -679,7 +692,7 @@ impl ProtoCr {
                                 // TODO
                                 _ => unreachable!(),
                             };
-                            println!("dest is {:?}", dest_ptr);
+                            // println!("dest is {:?}", dest_ptr);
                             let old = r.spaces[dest.0]
                                 .get_putter_space()
                                 .unwrap()
@@ -692,9 +705,9 @@ impl ProtoCr {
                         Check { term } => {
                             if !eval_bool(term, r) {
                                 // ROLLBACK!
-                                println!("ROLLBACK!");
+                                // println!("ROLLBACK!");
                                 for (i_id, i) in rule.ins[0..i_id].iter().enumerate() {
-                                    println!("... rolling back {:?}", i);
+                                    // println!("... rolling back {:?}", i);
                                     match i {
                                         CreateFromFormula { dest, .. } => {
                                             self.finalize_memo(r, *dest, false)
@@ -706,10 +719,10 @@ impl ProtoCr {
                                         MemMove { src, dest } => unimplemented!(),
                                     }
                                 }
-                                println!("DID CreateFromCall");
+                                // println!("DID CreateFromCall");
                                 continue 'rules;
                             }
-                            println!("Passed check!");
+                            // println!("Passed check!");
                         }
                     }
                 }
@@ -723,12 +736,14 @@ impl ProtoCr {
                 for &q in rule.bit_assign.full_mem.iter() {
                     self.mem.insert(q);
                 }
+                println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
                     self.do_movement(r, movement)
                 }
                 continue 'outer; // reconsider all rules
             }
             // finished all rules
+            println!("COORDINATE OVER. READY={:?} MEM={:?}", &self.ready, &self.mem);
             return;
         }
     }
@@ -744,6 +759,7 @@ impl ProtoCr {
             match &r.spaces[putter.0] {
                 Space::PoGe { .. } => panic!("CANNOT BE!"),
                 Space::PoPu { ps, mb } => {
+                    println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
                     if let Some(mem_0) = me_ge_iter.next() {
                         // SPECIAL CASE! storing external value into protocol memory
@@ -766,6 +782,7 @@ impl ProtoCr {
                             unsafe { ps.type_info.clone(src_ptr, dest_ptr) };
                             mb.send(MsgBox::UNMOVED_MSG);
                         }
+                        assert!(self.ref_counts.insert(dest_ptr as usize, 1).is_none());
                         assert_eq!(NULL, dest_space.ptr.swap(dest_ptr, SeqCst));
 
                         // mem_0 becomes the putter, and retains the value
@@ -777,13 +794,11 @@ impl ProtoCr {
                     }
                 }
                 Space::Memo { ps } => {
+                    println!("MEMO MOVEMENT");
+                    println!("PTR IS {:p}", ps.ptr.load(SeqCst));
                     // FINAL LOOP
                     // alias the memory in all memory getters. datum itself does not move.
-                    let src = if putter_retains {
-                        ps.ptr.load(SeqCst)
-                    } else {
-                        ps.ptr.swap(NULL, SeqCst)
-                    };
+                    let src = ps.ptr.load(SeqCst);
                     assert!(src != NULL);
                     let ref_count: &mut usize = self.ref_counts.get_mut(&(src as usize)).unwrap();
                     for m in me_ge_iter {
@@ -791,22 +806,26 @@ impl ProtoCr {
                         let getter_space = r.spaces[m.0].get_putter_space().unwrap();
                         assert_eq!(NULL, getter_space.ptr.swap(src, SeqCst));
                     }
-                    if !putter_retains && movement.po_ge.is_empty() {
-                        // last port getter would clean up, but there isn't one!
+                    if movement.po_ge.is_empty() {
                         self.ready.insert(putter); // memory cell is again stable
-                        *ref_count -= 1;
-                        if *ref_count == 0 {
-                            // I was the last reference! drop datum IN CIRCUIT
-                            self.ref_counts.remove(&(src as usize));
-                            self.allocator.drop_inside(src, ps.type_info);
+                        if !putter_retains {
+                            // last port getter would clean up, but there isn't one!
+                            *ref_count -= 1;
+                            assert!(NULL != ps.ptr.swap(NULL, SeqCst));
+                            if *ref_count == 0 {
+                                // I was the last reference! drop datum IN CIRCUIT
+                                self.ref_counts.remove(&(src as usize));
+                                self.allocator.drop_inside(src, ps.type_info);
+                            }
                         }
-                        return;
                     }
                     break ps;
                 }
             }
         };
         // PHASE 2: "take care of port getters"
+        println!("releasing getters!");
+        println!("PTR IS {:p}", ps.ptr.load(SeqCst));
         if !movement.po_ge.is_empty() {
             ps.rendesvous.move_flags.reset(!putter_retains);
             assert_eq!(
@@ -992,8 +1011,14 @@ pub struct Movement {
     putter_retains: bool,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct LocId(usize);
+impl std::fmt::Debug for LocId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "LocId({})", self.0)
+    }
+}
+
 type BitSet = HashSet<LocId>;
 
 #[inline]
@@ -1078,6 +1103,14 @@ pub trait PortDatum: Send + Sync {
 
 impl<T> PortDatum for T
 where
+    T: PubPortDatum + Copy,
+{
+    fn is_copy(&self) -> bool {
+        true
+    }
+}
+impl<T> PortDatum for T
+where
     T: PubPortDatum,
 {
     fn my_clone(&self, other: TraitData) {
@@ -1094,7 +1127,7 @@ where
     fn my_layout(&self) -> Layout {
         Layout::new::<T>()
     }
-    fn is_copy(&self) -> bool {
+    default fn is_copy(&self) -> bool {
         <Self as PubPortDatum>::IS_COPY
     }
 }
