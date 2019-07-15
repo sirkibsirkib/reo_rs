@@ -102,7 +102,10 @@ pub fn drop_ok() {
 
     for (i, data) in [to_x.data, to_y.data].iter().copied().enumerate() {
         let vtable = to_y.vtable;
-        let to = TraitObject { data, vtable };
+        let to = TraitObject {
+            data,
+            vtable,
+        };
         let x: Box<dyn PortDatum> = unsafe { transmute(to) };
         assert_eq!(*m.lock(), i);
         // destructors called as expected. memory has not been leaked
@@ -313,10 +316,8 @@ pub fn send_sync_proto() {
 #[test]
 fn sync_claim() {
     let p = build_proto(&SYNC_U32, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<u32>, Getter<u32>) = (
-        Putter::claim(&p, "A").unwrap(),
-        Getter::claim(&p, "B").unwrap(),
-    );
+    let (mut p, mut g): (Putter<u32>, Getter<u32>) =
+        (Putter::claim(&p, "A").unwrap(), Getter::claim(&p, "B").unwrap());
 
     let a = std::thread::spawn(move || {
         p.put(32);
@@ -331,10 +332,8 @@ fn sync_claim() {
 #[test]
 fn sync_put_get() {
     let p = build_proto(&SYNC_U32, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<u32>, Getter<u32>) = (
-        Putter::claim(&p, "A").unwrap(),
-        Getter::claim(&p, "B").unwrap(),
-    );
+    let (mut p, mut g): (Putter<u32>, Getter<u32>) =
+        (Putter::claim(&p, "A").unwrap(), Getter::claim(&p, "B").unwrap());
     use std::thread::spawn;
     let handles = vec![
         spawn(move || {
@@ -394,19 +393,15 @@ fn prod_cons_init() {
 #[test]
 fn prod_cons_claim() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (p, g): (Putter<String>, Getter<String>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
+    let (p, g): (Putter<String>, Getter<String>) =
+        (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
 }
 
 #[test]
 fn prod_cons_single() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<String>, Getter<String>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
+    let (mut p, mut g): (Putter<String>, Getter<String>) =
+        (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     println!("OK");
     p.put(String::from("HI!"));
     println!("PUT SUCCEEDED");
@@ -421,10 +416,8 @@ fn prod_cons_single() {
 #[test]
 fn prod_cons_mult() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<String>, Getter<String>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
+    let (mut p, mut g): (Putter<String>, Getter<String>) =
+        (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     use std::thread::spawn;
     let handles = vec![
         spawn(move || {
@@ -448,10 +441,8 @@ fn prod_cons_mult() {
 #[test]
 fn fifo_get_signal() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<String>, Getter<String>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
+    let (mut p, mut g): (Putter<String>, Getter<String>) =
+        (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     use std::thread::spawn;
     let handles = vec![
         spawn(move || {
@@ -473,10 +464,8 @@ fn fifo_get_signal() {
 #[test]
 fn fifo_get_timeout() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<String>, Getter<String>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
+    let (mut p, mut g): (Putter<String>, Getter<String>) =
+        (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     let d = Duration::from_millis(50);
     assert_eq!(false, g.get_signal_timeout(d));
     assert_eq!(false, g.get_signal_timeout(d));
@@ -524,10 +513,8 @@ lazy_static::lazy_static! {
 #[test]
 fn prod_cons_no_leak() {
     let p = build_proto(&FIFO1_INCREMENTOR, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<Incrementor>, Getter<Incrementor>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
+    let (mut p, mut g): (Putter<Incrementor>, Getter<Incrementor>) =
+        (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     let x = Incrementor(Arc::new(Mutex::new(0)));
     let x1 = x.clone();
     use std::thread::spawn;
@@ -558,10 +545,10 @@ fn prod_cons_no_leak() {
 #[test]
 fn deref_bool() {
     let x: *mut bool = &mut true;
-    let y: bool = unsafe {*x};
+    let y: bool = unsafe { *x };
     assert!(y);
     let x: *mut bool = &mut false;
-    let y: bool = unsafe {*x};
+    let y: bool = unsafe { *x };
     assert!(!y);
 }
 
@@ -596,7 +583,6 @@ fn deref_bool() {
 //         }],
 //     };
 // }
-
 
 // lazy_static::lazy_static! {
 //     static ref POS_NEG: ProtoDef = ProtoDef {

@@ -51,28 +51,68 @@ an instruction starts with a premise which guarantees which port
 
 #[derive(Debug)]
 pub enum ProtoBuildError {
-    UnavailableData { name: Name, rule_index: usize },
-    UndefinedLocName { name: Name },
-    UndefinedFuncName { name: Name },
-    DuplicateNameDef { name: Name },
-    MemoryNotInitialized { name: Name },
-    TermNameIsNotPutter { name: Name },
+    UnavailableData {
+        name: Name,
+        rule_index: usize,
+    },
+    UndefinedLocName {
+        name: Name,
+    },
+    UndefinedFuncName {
+        name: Name,
+    },
+    DuplicateNameDef {
+        name: Name,
+    },
+    MemoryNotInitialized {
+        name: Name,
+    },
+    TermNameIsNotPutter {
+        name: Name,
+    },
     EqForDifferentTypes,
-    GetterHasMuliplePutters { name: Name },
-    GetterHasNoPutters { name: Name },
-    PortInMemPremise { name: Name },
-    MemInPortPremise { name: Name },
-    ConflictingMemPremise { name: Name },
-    GettingAndPutting { name: Name },
-    InstructionShadowsName { name: Name },
-    PutterPortCannotGet { name: Name },
-    PortNotInSyncSet { name: Name },
-    MemCannotGetWhileFull { name: Name },
+    GetterHasMuliplePutters {
+        name: Name,
+    },
+    GetterHasNoPutters {
+        name: Name,
+    },
+    PortInMemPremise {
+        name: Name,
+    },
+    MemInPortPremise {
+        name: Name,
+    },
+    ConflictingMemPremise {
+        name: Name,
+    },
+    GettingAndPutting {
+        name: Name,
+    },
+    InstructionShadowsName {
+        name: Name,
+    },
+    PutterPortCannotGet {
+        name: Name,
+    },
+    PortNotInSyncSet {
+        name: Name,
+    },
+    MemCannotGetWhileFull {
+        name: Name,
+    },
     CheckingNonBoolType,
     CreatingNonBoolFromFormula,
-    InitialTypeMismatch { name: Name },
-    PutterCannotPutWhenEmpty { name: Name },
-    MovementTypeMismatch { getter: Name, putter: Name },
+    InitialTypeMismatch {
+        name: Name,
+    },
+    PutterCannotPutWhenEmpty {
+        name: Name,
+    },
+    MovementTypeMismatch {
+        getter: Name,
+        putter: Name,
+    },
 }
 
 fn resolve_putter(
@@ -81,11 +121,11 @@ fn resolve_putter(
     name: Name,
 ) -> Result<LocId, ProtoBuildError> {
     use ProtoBuildError::*;
-    temp_names
-        .get(&name)
-        .map(|x| x.0)
-        .or_else(|| name_mapping.get_by_first(&name).copied())
-        .ok_or(UndefinedLocName { name })
+    temp_names.get(&name).map(|x| x.0).or_else(|| name_mapping.get_by_first(&name).copied()).ok_or(
+        UndefinedLocName {
+            name,
+        },
+    )
 }
 
 fn term_eval_tid(
@@ -100,7 +140,9 @@ fn term_eval_tid(
         Named(name) => {
             spaces[resolve_putter(temp_names, name_mapping, name)?.0]
                 .get_putter_space()
-                .ok_or(TermNameIsNotPutter { name })?
+                .ok_or(TermNameIsNotPutter {
+                    name,
+                })?
                 .type_info
         }
         _ => TypeInfo::of::<bool>(),
@@ -127,15 +169,14 @@ fn term_convert(
     Ok(match term {
         True => True,
         False => False,
-        Not(f) => Not(Box::new(term_convert(
-            spaces,
-            temp_names,
-            name_mapping,
-            f,
-        )?)),
-        BoolCall { func, args } => {
-            BoolCall { func: func_convert(func)?, args: clos(args)? }
-        }
+        Not(f) => Not(Box::new(term_convert(spaces, temp_names, name_mapping, f)?)),
+        BoolCall {
+            func,
+            args,
+        } => BoolCall {
+            func: func_convert(func)?,
+            args: clos(args)?,
+        },
         And(fs) => And(clos(fs)?),
         Or(fs) => Or(clos(fs)?),
         IsEq(tid, box [lhs, rhs]) => {
@@ -196,9 +237,20 @@ pub fn build_proto(
                 let mb = MsgBox::default();
                 if *is_putter {
                     let ps = PutterSpace::new(std::ptr::null_mut(), *type_info);
-                    (Space::PoPu { ps, mb }, LocKind::PoPu)
+                    (
+                        Space::PoPu {
+                            ps,
+                            mb,
+                        },
+                        LocKind::PoPu,
+                    )
                 } else {
-                    (Space::PoGe { mb }, LocKind::PoGe)
+                    (
+                        Space::PoGe {
+                            mb,
+                        },
+                        LocKind::PoGe,
+                    )
                 }
             }
             NameDef::Mem(type_info) => {
@@ -206,7 +258,12 @@ pub fn build_proto(
                 let ptr = if let Some(bx) = init.strg.remove(name) {
                     let (data, info) = unsafe { trait_obj_read(&bx) };
                     if info != *type_info {
-                        return Err((None, InitialTypeMismatch { name }));
+                        return Err((
+                            None,
+                            InitialTypeMismatch {
+                                name,
+                            },
+                        ));
                     }
                     allocator.store(bx);
                     mem.insert(id);
@@ -261,17 +318,20 @@ pub fn build_proto(
 
         // build guard BitStatePredicate
         let map_id = |name, should_be_port| {
-            let id = name_mapping
-                .get_by_first(&name)
-                .copied()
-                .ok_or(UndefinedLocName { name })?;
+            let id = name_mapping.get_by_first(&name).copied().ok_or(UndefinedLocName {
+                name,
+            })?;
             let is_port = persistent_loc_kinds[id.0] != LocKind::Memo;
             if is_port == should_be_port {
                 Ok(id)
             } else if is_port {
-                Err(PortInMemPremise { name })
+                Err(PortInMemPremise {
+                    name,
+                })
             } else {
-                Err(MemInPortPremise { name })
+                Err(MemInPortPremise {
+                    name,
+                })
             }
         };
         let bit_guard = {
@@ -306,19 +366,23 @@ pub fn build_proto(
         let ins = rule
             .ins
             .iter()
-            .map(|i| Ok(match i {
-                Instruction::Check { term } => {
-                    if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
-                        != TypeInfo::of::<bool>()
-                    {
-                        return Err(CheckingNonBoolType);
-                    }
+            .map(|i| {
+                Ok(match i {
                     Instruction::Check {
-                        term: term_convert(&spaces, &temp_names, &name_mapping, term)?,
-                    }                    
-                },
-                _ => unimplemented!(),
-            }))
+                        term,
+                    } => {
+                        if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
+                            != TypeInfo::of::<bool>()
+                        {
+                            return Err(CheckingNonBoolType);
+                        }
+                        Instruction::Check {
+                            term: term_convert(&spaces, &temp_names, &name_mapping, term)?,
+                        }
+                    }
+                    _ => unimplemented!(),
+                })
+            })
             .collect::<Result<Vec<_>, ProtoBuildError>>()?;
 
         // COMMITTED BELOW THIS LINE. to_put is FINAL
@@ -335,13 +399,14 @@ pub fn build_proto(
             .iter()
             .map(|(&putter, (putter_retains, getters))| {
                 if !to_put.remove(putter) {
-                    return Err(PutterCannotPutWhenEmpty { name: putter });
+                    return Err(PutterCannotPutWhenEmpty {
+                        name: putter,
+                    });
                 }
                 let putter_id: LocId = resolve_putter(&temp_names, &name_mapping, putter)?;
                 let putter_type_info = spaces[putter_id.0].get_putter_space().unwrap().type_info;
-                let putter_kind: LocKind = *persistent_loc_kinds
-                    .get(putter_id.0)
-                    .unwrap_or(&LocKind::Memo);
+                let putter_kind: LocKind =
+                    *persistent_loc_kinds.get(putter_id.0).unwrap_or(&LocKind::Memo);
                 if !putter_retains && putter_kind == LocKind::Memo {
                     bit_assign.empty_mem.insert(putter_id);
                 }
@@ -350,10 +415,16 @@ pub fn build_proto(
                 for name in getters {
                     let gid = name_mapping.get_by_first(name).unwrap();
                     if outputting.contains(name) {
-                        return Err(GettingAndPutting { name });
+                        return Err(GettingAndPutting {
+                            name,
+                        });
                     }
                     match persistent_loc_kinds[gid.0] {
-                        LocKind::PoPu => return Err(PutterPortCannotGet { name }),
+                        LocKind::PoPu => {
+                            return Err(PutterPortCannotGet {
+                                name,
+                            })
+                        }
                         LocKind::PoGe => {
                             if port_info.get(gid).unwrap().1 != putter_type_info {
                                 return Err(MovementTypeMismatch {
@@ -362,7 +433,9 @@ pub fn build_proto(
                                 });
                             }
                             if !bit_guard.ready.contains(gid) {
-                                return Err(PortNotInSyncSet { name });
+                                return Err(PortNotInSyncSet {
+                                    name,
+                                });
                             }
                             &mut po_ge
                         }
@@ -376,7 +449,9 @@ pub fn build_proto(
                                 });
                             }
                             if !bit_guard.empty_mem.contains(gid) {
-                                return Err(MemCannotGetWhileFull { name });
+                                return Err(MemCannotGetWhileFull {
+                                    name,
+                                });
                             }
                             bit_assign.full_mem.insert(*gid);
                             &mut me_ge
