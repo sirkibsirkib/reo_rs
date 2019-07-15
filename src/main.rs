@@ -5,7 +5,6 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-use std::time::Duration;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use debug_stub_derive::DebugStub;
@@ -26,6 +25,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Arc;
+use std::time::Duration;
 use std_semaphore::Semaphore;
 
 mod building;
@@ -266,7 +266,7 @@ impl PortCommon {
     fn msg_recv(&self, mb: &MsgBox, maybe_timeout: Option<Duration>) -> Option<usize> {
         if let Some(timeout) = maybe_timeout {
             if let Some(msg) = mb.recv_timeout(timeout) {
-                return Some(msg)
+                return Some(msg);
             } else {
                 if self.p.0.cr.lock().ready.remove(&self.id) {
                     return None;
@@ -316,8 +316,8 @@ impl<T: PortDatum> Putter<T> {
         ))
     }
 
-    pub fn put(&mut self, mut datum: T) -> Option<T> {
-        let ptr: TraitData = unsafe { transmute(&mut datum) };
+    // returns whether the value was CONSUMED
+    pub fn put_entirely(&mut self, ptr: TraitData) -> bool {
         let space = &self.0.p.0.r.spaces[self.0.id.0];
         if let Space::PoPu { ps, mb } = space {
             assert_eq!(NULL, ps.ptr.swap(ptr, SeqCst));
@@ -332,15 +332,22 @@ impl<T: PortDatum> Putter<T> {
             println!("MSG 0x{:X}", msg);
             ps.ptr.swap(NULL, SeqCst);
             match msg {
-                MsgBox::MOVED_MSG => {
-                    std::mem::forget(datum);
-                    None
-                }
-                MsgBox::UNMOVED_MSG => Some(datum),
+                MsgBox::MOVED_MSG => true,
+                MsgBox::UNMOVED_MSG => false,
                 _ => panic!("BAD MSG"),
             }
         } else {
             panic!("WRONG SPACE")
+        }
+    }
+
+    pub fn put(&mut self, mut datum: T) -> Option<T> {
+        let ptr: TraitData = unsafe { transmute(&mut datum) };
+        if self.put_entirely(ptr) {
+            std::mem::forget(datum);
+            None
+        } else {
+            Some(datum)
         }
     }
 }
@@ -379,7 +386,7 @@ impl<T: PubPortDatum> Getter<T> {
             }
             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
             if was == 1 {
-                    println!("I LAST (B)");
+                println!("I LAST (B)");
                 let somebody_moved = ps.rendesvous.move_flags.did_someone_move();
                 finalize(somebody_moved);
             }
@@ -424,7 +431,11 @@ impl<T: PubPortDatum> Getter<T> {
     }
 
     // returns false if it doesn't participate in a rule
-    fn get_entirely(&mut self, maybe_timeout: Option<Duration>, maybe_dest: Option<&mut MaybeUninit<T>>) -> bool {
+    fn get_entirely(
+        &mut self,
+        maybe_timeout: Option<Duration>,
+        maybe_dest: Option<&mut MaybeUninit<T>>,
+    ) -> bool {
         let space = &self.0.p.0.r.spaces[self.0.id.0];
         if let Space::PoGe { mb } = space {
             {
@@ -469,16 +480,19 @@ impl<T: PubPortDatum> Getter<T> {
         assert!(self.get_entirely(None, Some(&mut ret)));
         unsafe { ret.assume_init() }
     }
-    pub fn get_timeout(&mut self, timeout: Duration) -> T {
+    pub fn get_timeout(&mut self, timeout: Duration) -> Option<T> {
         let mut ret = MaybeUninit::uninit();
-        assert!(self.get_entirely(Some(timeout), Some(&mut ret)));
-        unsafe { ret.assume_init() }
+        if self.get_entirely(Some(timeout), Some(&mut ret)) {
+            Some(unsafe { ret.assume_init() })
+        } else {
+            None
+        }
     }
     pub fn get_signal(&mut self) {
         assert!(self.get_entirely(None, None));
     }
-    pub fn get_signal_timeout(&mut self, timeout: Duration) {
-        assert!(self.get_entirely(Some(timeout), None));
+    pub fn get_signal_timeout(&mut self, timeout: Duration) -> bool {
+        self.get_entirely(Some(timeout), None)
     }
 }
 
@@ -692,7 +706,10 @@ impl ProtoCr {
         self.coordinate(r);
     }
     fn coordinate(&mut self, r: &ProtoR) {
-        println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
+        println!(
+            "COORDINATE START. READY={:?} MEM={:?}",
+            &self.ready, &self.mem
+        );
         'outer: loop {
             'rules: for rule in r.rules.iter() {
                 let g1 = rule.bit_guard.ready.is_subset(&self.ready);
@@ -797,7 +814,10 @@ impl ProtoCr {
                 continue 'outer; // reconsider all rules
             }
             // finished all rules
-            println!("COORDINATE OVER. READY={:?} MEM={:?}", &self.ready, &self.mem);
+            println!(
+                "COORDINATE OVER. READY={:?} MEM={:?}",
+                &self.ready, &self.mem
+            );
             return;
         }
     }

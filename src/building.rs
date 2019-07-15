@@ -173,7 +173,7 @@ pub fn build_proto(
     let mut persistent_loc_kinds = vec![];
 
     // consume all name defs, creating spaces. retain call_handles to be treated later
-    let mut mem = hashset!{};
+    let mut mem = hashset! {};
     let mut ready = mem.clone();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
     for (name, def) in p.name_defs.iter() {
@@ -337,7 +337,10 @@ pub fn build_proto(
                         LocKind::PoPu => return Err(PutterPortCannotGet { name }),
                         LocKind::PoGe => {
                             if port_info.get(gid).unwrap().1 != putter_type_info {
-                                return Err(MovementTypeMismatch { putter, getter: name });
+                                return Err(MovementTypeMismatch {
+                                    putter,
+                                    getter: name,
+                                });
                             }
                             if !bit_guard.ready.contains(gid) {
                                 return Err(PortNotInSyncSet { name });
@@ -345,8 +348,13 @@ pub fn build_proto(
                             &mut po_ge
                         }
                         LocKind::Memo => {
-                            if spaces[gid.0].get_putter_space().unwrap().type_info != putter_type_info {
-                                return Err(MovementTypeMismatch { putter, getter: name });
+                            if spaces[gid.0].get_putter_space().unwrap().type_info
+                                != putter_type_info
+                            {
+                                return Err(MovementTypeMismatch {
+                                    putter,
+                                    getter: name,
+                                });
                             }
                             if !bit_guard.empty_mem.contains(gid) {
                                 return Err(MemCannotGetWhileFull { name });

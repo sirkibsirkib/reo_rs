@@ -354,7 +354,6 @@ fn sync_put_get() {
     }
 }
 
-
 lazy_static::lazy_static! {
     static ref FIFO1_STRING: ProtoDef = ProtoDef {
         name_defs: hashmap! {
@@ -392,7 +391,6 @@ fn prod_cons_init() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
 }
 
-
 #[test]
 fn prod_cons_claim() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
@@ -401,7 +399,6 @@ fn prod_cons_claim() {
         Getter::claim(&p, "Consumer").unwrap(),
     );
 }
-
 
 #[test]
 fn prod_cons_single() {
@@ -420,7 +417,6 @@ fn prod_cons_single() {
     println!("DATUM READS {:?}", &x);
     println!("cool");
 }
-
 
 #[test]
 fn prod_cons_mult() {
@@ -474,6 +470,25 @@ fn fifo_get_signal() {
     }
 }
 
+#[test]
+fn fifo_get_timeout() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<String>, Getter<String>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+    let d = Duration::from_millis(50);
+    assert_eq!(false, g.get_signal_timeout(d));
+    assert_eq!(false, g.get_signal_timeout(d));
+    assert_eq!(false, g.get_signal_timeout(d));
+
+    p.put(String::from("HEY"));
+    assert_eq!(true, g.get_signal_timeout(d));
+
+    assert_eq!(false, g.get_signal_timeout(d));
+    assert_eq!(false, g.get_signal_timeout(d));
+}
+
 lazy_static::lazy_static! {
     static ref FIFO1_INCREMENTOR: ProtoDef = ProtoDef {
         name_defs: hashmap! {
@@ -508,7 +523,7 @@ lazy_static::lazy_static! {
 
 #[test]
 fn prod_cons_no_leak() {
-        let p = build_proto(&FIFO1_INCREMENTOR, MemInitial::default()).unwrap();
+    let p = build_proto(&FIFO1_INCREMENTOR, MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<Incrementor>, Getter<Incrementor>) = (
         Putter::claim(&p, "Producer").unwrap(),
         Getter::claim(&p, "Consumer").unwrap(),
@@ -539,8 +554,6 @@ fn prod_cons_no_leak() {
     println!("FINISHING UP");
     assert_eq!(*x.0.lock(), 3);
 }
-
-
 
 // lazy_static::lazy_static! {
 //     static ref THREE_COUNTER: ProtoDef = ProtoDef {
