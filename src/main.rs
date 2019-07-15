@@ -1225,9 +1225,17 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
             func,
             args,
         } => {
-            let mut ret = false;
-
-            unimplemented!()
+            let mut ret: AtomicBool = false.into();
+            // TODO make this less clunky
+            let args = args.iter().map(|arg| {
+                eval_ptr(arg, r)
+            }).collect::<Vec<_>>();
+            let p = &mut ret;
+            unsafe {
+                let p = transmute(p);
+                func.exec(p, &args[..]);
+                ret.load(SeqCst)
+            }
         }
         True => true,
         False => false,
