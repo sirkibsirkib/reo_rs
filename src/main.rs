@@ -578,20 +578,17 @@ impl ProtoR {
                         cap.ty
                     }
                     // MUST BE BOOL
-                    True | False => TypeInfo::of::<bool>(),
+                    True | False => tbool,
                     Not(t) => {
                         assert_eq!(check_and_ret_type(capabilities, known_filled, t), tbool);
                         tbool
                     },
                     BoolCall { func, args } => {
-
-
-
-    TODO also traverse the func thingy
-
-
-                        for t in args.iter() {
-                            assert_eq!(check_and_ret_type(capabilities, known_filled, t), tbool);
+                        assert_eq!(func.ret, tbool);
+                        assert_eq!(func.args.len(), args.len());
+                        for (&t0, term) in func.args.iter().zip(args.iter()) {
+                            let t1 = check_and_ret_type(&capabilities, &known_filled, term);
+                            assert_eq!(t0, t1);
                         }
                         tbool
                     }
@@ -622,6 +619,7 @@ impl ProtoR {
                     } => {
                         let cap = &capabilities[dest.0];
                         assert_eq!(*info, cap.ty);
+                        assert_eq!(func.ret, cap.ty);
                         assert_eq!(func.args.len(), args.len());
                         for (&t0, term) in func.args.iter().zip(args.iter()) {
                             let t1 = check_and_ret_type(&capabilities, &known_filled, term);
