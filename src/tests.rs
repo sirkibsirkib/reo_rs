@@ -586,3 +586,37 @@ fn prod_cons_no_leak() {
 //         }],
 //     };
 // }
+
+
+// lazy_static::lazy_static! {
+//     static ref POS_NEG: ProtoDef = ProtoDef {
+//         name_defs: hashmap! {
+//             "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<f32>() },
+//             "Cpos" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<f32>() },
+//             "Cneg" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<f32>() },
+//             // "is_pos" => NameDef::Mem(TypeInfo::of::<String>()),
+//         },
+//         rules: vec![RuleDef {
+//             state_guard: StatePredicate {
+//                 ready_ports: hashset! {"Producer"},
+//                 full_mem: hashset! {},
+//                 empty_mem: hashset! {"Memory"},
+//             },
+//             ins: vec![],
+//             output: hashmap! {
+//                 "Producer" => (false, hashset!{"Memory"})
+//             },
+//         },
+//         RuleDef {
+//             state_guard: StatePredicate {
+//                 ready_ports: hashset! {"Consumer"},
+//                 full_mem: hashset! {"Memory"},
+//                 empty_mem: hashset! {},
+//             },
+//             ins: vec![],
+//             output: hashmap! {
+//                 "Memory" => (false, hashset!{"Consumer"})
+//             },
+//         }],
+//     };
+// }

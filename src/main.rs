@@ -153,12 +153,13 @@ impl CallHandle {
 pub type Name = &'static str;
 
 #[derive(Debug)]
-pub enum Term<I> {
+pub enum Term<I, F> {
     True,                           // returns bool
     False,                          // returns bool
     Not(Box<Self>),                 // returns bool
     And(Vec<Self>),                 // returns bool
     Or(Vec<Self>),                  // returns bool
+    BoolCall { func: F, args: Vec<Term<I, F>>}, // returns bool
     IsEq(TypeInfo, Box<[Self; 2]>), // returns bool
     Named(I),                       // type of I
 }
@@ -167,16 +168,16 @@ pub enum Term<I> {
 pub enum Instruction<I, F> {
     CreateFromFormula {
         dest: I,
-        term: Term<I>,
+        term: Term<I, F>,
     },
     CreateFromCall {
         info: TypeInfo,
         dest: I,
         func: F,
-        args: Vec<Term<I>>,
+        args: Vec<Term<I, F>>,
     },
     Check {
-        term: Term<I>,
+        term: Term<I, F>,
     },
     MemMove {
         src: I,
@@ -561,11 +562,13 @@ impl ProtoR {
                     known_filled.insert(x, cap.put);
                 }
             }
-            fn check_ret_type(
+            fn check_and_ret_type(
                 capabilities: &Vec<Cap>,
                 known_filled: &HashMap<LocId, bool>,
-                term: &Term<LocId>,
+                term: &Term<LocId, CallHandle>,
             ) -> TypeInfo {
+                // TODO do I really need to recurse here??
+
                 use Term::*;
                 let tbool = TypeInfo::of::<bool>();
                 match term {
@@ -577,18 +580,30 @@ impl ProtoR {
                     // MUST BE BOOL
                     True | False => TypeInfo::of::<bool>(),
                     Not(t) => {
-                        assert_eq!(check_ret_type(capabilities, known_filled, t), tbool);
+                        assert_eq!(check_and_ret_type(capabilities, known_filled, t), tbool);
+                        tbool
+                    },
+                    BoolCall { func, args } => {
+
+
+
+    TODO also traverse the func thingy
+
+
+                        for t in args.iter() {
+                            assert_eq!(check_and_ret_type(capabilities, known_filled, t), tbool);
+                        }
                         tbool
                     }
                     And(ts) | Or(ts) => {
                         for t in ts.iter() {
-                            assert_eq!(check_ret_type(capabilities, known_filled, t), tbool);
+                            assert_eq!(check_and_ret_type(capabilities, known_filled, t), tbool);
                         }
                         tbool
                     }
                     IsEq(tid, terms) => {
-                        assert_eq!(check_ret_type(capabilities, known_filled, &terms[0]), *tid);
-                        assert_eq!(check_ret_type(capabilities, known_filled, &terms[1]), *tid);
+                        assert_eq!(check_and_ret_type(capabilities, known_filled, &terms[0]), *tid);
+                        assert_eq!(check_and_ret_type(capabilities, known_filled, &terms[1]), *tid);
                         tbool
                     }
                 }
@@ -597,7 +612,7 @@ impl ProtoR {
                 match i {
                     Instruction::Check { term } => assert_eq!(
                         TypeInfo::of::<bool>(),
-                        check_ret_type(&capabilities, &known_filled, term)
+                        check_and_ret_type(&capabilities, &known_filled, term)
                     ),
                     Instruction::CreateFromCall {
                         info,
@@ -609,13 +624,13 @@ impl ProtoR {
                         assert_eq!(*info, cap.ty);
                         assert_eq!(func.args.len(), args.len());
                         for (&t0, term) in func.args.iter().zip(args.iter()) {
-                            let t1 = check_ret_type(&capabilities, &known_filled, term);
+                            let t1 = check_and_ret_type(&capabilities, &known_filled, term);
                             assert_eq!(t0, t1);
                         }
                     }
                     Instruction::CreateFromFormula { dest, term } => {
                         let cap = &capabilities[dest.0];
-                        assert_eq!(cap.ty, check_ret_type(&capabilities, &known_filled, term))
+                        assert_eq!(cap.ty, check_and_ret_type(&capabilities, &known_filled, term))
                     }
                     Instruction::MemMove { src, dest } => {
                         assert_eq!(known_filled.get(src), Some(&true));
@@ -1116,7 +1131,7 @@ fn bool_to_ptr(x: bool) -> TraitData {
     }
 }
 
-fn eval_ptr(term: &Term<LocId>, r: &ProtoR) -> TraitData {
+fn eval_ptr(term: &Term<LocId, CallHandle>, r: &ProtoR) -> TraitData {
     use Term::*;
     match term {
         // NOT NECESSARILY BOOL
@@ -1136,7 +1151,7 @@ fn ptr_to_bool(x: TraitData) -> bool {
     unsafe { *x }
 }
 
-fn eval_bool(term: &Term<LocId>, r: &ProtoR) -> bool {
+fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
     use Term::*;
     match term {
         // PTR points to BOOL
@@ -1185,23 +1200,18 @@ pub trait PortDatum: Send + Sync {
     fn is_copy(&self) -> bool;
 }
 
-impl<T> PortDatum for T
-where
-    T: PubPortDatum + Copy,
-{
+impl<T: PubPortDatum + Copy> PortDatum for T {
     fn is_copy(&self) -> bool {
         true
     }
 }
-impl<T> PortDatum for T
-where
-    T: PubPortDatum,
-{
+
+impl<T: PubPortDatum> PortDatum for T {
     fn my_clone(&self, other: TraitData) {
         let x: *mut Self = unsafe { transmute(other) };
         unsafe { x.write(self.my_clone2()) }
     }
-    fn my_eq(&self, other: TraitData) -> bool {
+    default fn my_eq(&self, other: TraitData) -> bool {
         let x: &Self = unsafe { transmute(other) };
         self.my_eq2(x)
     }

@@ -92,7 +92,7 @@ fn term_eval_tid(
     spaces: &Vec<Space>,
     temp_names: &HashMap<Name, (LocId, TypeInfo)>,
     name_mapping: &BidirMap<Name, LocId>,
-    term: &Term<Name>,
+    term: &Term<Name, Name>,
 ) -> Result<TypeInfo, ProtoBuildError> {
     use ProtoBuildError::*;
     use Term::*;
@@ -107,28 +107,35 @@ fn term_eval_tid(
     })
 }
 
-fn term_eval_loc_id(
+fn func_convert(name: Name) -> Result<CallHandle, ProtoBuildError> {
+    unimplemented!()
+}
+
+fn term_convert(
     spaces: &Vec<Space>,
     temp_names: &HashMap<Name, (LocId, TypeInfo)>,
     name_mapping: &BidirMap<Name, LocId>,
-    term: &Term<Name>,
-) -> Result<Term<LocId>, ProtoBuildError> {
+    term: &Term<Name, Name>,
+) -> Result<Term<LocId, CallHandle>, ProtoBuildError> {
     use ProtoBuildError::*;
     use Term::*;
-    let clos = |fs: &Vec<Term<Name>>| {
+    let clos = |fs: &Vec<Term<Name, Name>>| {
         fs.iter()
-            .map(|t: &Term<Name>| term_eval_loc_id(spaces, temp_names, name_mapping, t))
+            .map(|t: &Term<Name, Name>| term_convert(spaces, temp_names, name_mapping, t))
             .collect::<Result<_, ProtoBuildError>>()
     };
     Ok(match term {
         True => True,
         False => False,
-        Not(f) => Not(Box::new(term_eval_loc_id(
+        Not(f) => Not(Box::new(term_convert(
             spaces,
             temp_names,
             name_mapping,
             f,
         )?)),
+        BoolCall { func, args } => {
+            BoolCall { func: func_convert(func)?, args: clos(args)? }
+        }
         And(fs) => And(clos(fs)?),
         Or(fs) => Or(clos(fs)?),
         IsEq(tid, box [lhs, rhs]) => {
@@ -142,8 +149,8 @@ fn term_eval_loc_id(
             IsEq(
                 *tid,
                 Box::new([
-                    term_eval_loc_id(spaces, temp_names, name_mapping, lhs)?,
-                    term_eval_loc_id(spaces, temp_names, name_mapping, rhs)?,
+                    term_convert(spaces, temp_names, name_mapping, lhs)?,
+                    term_convert(spaces, temp_names, name_mapping, rhs)?,
                 ]),
             )
         }
@@ -299,7 +306,19 @@ pub fn build_proto(
         let ins = rule
             .ins
             .iter()
-            .map(|x| unimplemented!())
+            .map(|i| Ok(match i {
+                Instruction::Check { term } => {
+                    if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
+                        != TypeInfo::of::<bool>()
+                    {
+                        return Err(CheckingNonBoolType);
+                    }
+                    Instruction::Check {
+                        term: term_convert(&spaces, &temp_names, &name_mapping, term)?,
+                    }                    
+                },
+                _ => unimplemented!(),
+            }))
             .collect::<Result<Vec<_>, ProtoBuildError>>()?;
 
         // COMMITTED BELOW THIS LINE. to_put is FINAL
@@ -436,7 +455,7 @@ pub fn build_proto(
 //                     return Err(InstructionShadowsName { name: dest });
 //                 }
 //                 rule_putters.insert(dest);
-//                 let term = term_eval_loc_id(&spaces, &temp_names, &name_mapping, &term)?;
+//                 let term = term_convert(&spaces, &temp_names, &name_mapping, &term)?;
 //                 CreateFromFormula {
 //                     dest: dest_id,
 //                     term,
@@ -454,7 +473,7 @@ pub fn build_proto(
 //                     .clone();
 //                 let args = args
 //                     .into_iter()
-//                     .map(|arg| term_eval_loc_id(&spaces, &temp_names, &name_mapping, arg))
+//                     .map(|arg| term_convert(&spaces, &temp_names, &name_mapping, arg))
 //                     .collect::<Result<Vec<_>, ProtoBuildError>>()?;
 //                 let temp_id = LocId(spaces.len());
 //                 let ps = PutterSpace::new(std::ptr::null_mut(), *info);
@@ -477,7 +496,7 @@ pub fn build_proto(
 //                     return Err(CheckingNonBoolType);
 //                 }
 //                 Check {
-//                     term: term_eval_loc_id(&spaces, &temp_names, &name_mapping, term)?,
+//                     term: term_convert(&spaces, &temp_names, &name_mapping, term)?,
 //                 }
 //             }
 //         })
