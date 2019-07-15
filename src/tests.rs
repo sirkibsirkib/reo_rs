@@ -422,6 +422,57 @@ fn prod_cons_single() {
 }
 
 
+#[test]
+fn prod_cons_mult() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<String>, Getter<String>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..10 {
+                p.put(format!("i={}", i));
+            }
+        }),
+        spawn(move || {
+            for i in 0..10 {
+                let x = g.get();
+                let expected = format!("i={}", i);
+                assert_eq!(expected, x);
+            }
+        }),
+    ];
+    for x in handles {
+        x.join().unwrap();
+    }
+}
+
+#[test]
+fn fifo_get_signal() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<String>, Getter<String>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..10 {
+                p.put(format!("i={}", i));
+            }
+        }),
+        spawn(move || {
+            for i in 0..10 {
+                let x = g.get_signal();
+            }
+        }),
+    ];
+    for x in handles {
+        x.join().unwrap();
+    }
+}
 
 lazy_static::lazy_static! {
     static ref FIFO1_INCREMENTOR: ProtoDef = ProtoDef {
@@ -489,29 +540,36 @@ fn prod_cons_no_leak() {
     assert_eq!(*x.0.lock(), 3);
 }
 
-#[test]
-fn prod_cons_mult() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (mut p, mut g): (Putter<String>, Getter<String>) = (
-        Putter::claim(&p, "Producer").unwrap(),
-        Getter::claim(&p, "Consumer").unwrap(),
-    );
-    use std::thread::spawn;
-    let handles = vec![
-        spawn(move || {
-            for i in 0..10 {
-                p.put(format!("i={}", i));
-            }
-        }),
-        spawn(move || {
-            for i in 0..10 {
-                let x = g.get();
-                let expected = format!("i={}", i);
-                assert_eq!(expected, x);
-            }
-        }),
-    ];
-    for x in handles {
-        x.join().unwrap();
-    }
-}
+
+
+// lazy_static::lazy_static! {
+//     static ref THREE_COUNTER: ProtoDef = ProtoDef {
+//         name_defs: hashmap! {
+//             "Producer" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<()>() },
+//             "Consumer" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<()>() },
+//             "Memory" => NameDef::Mem(TypeInfo::of::<Incrementor>()),
+//         },
+//         rules: vec![RuleDef {
+//             state_guard: StatePredicate {
+//                 ready_ports: hashset! {"Producer"},
+//                 full_mem: hashset! {},
+//                 empty_mem: hashset! {"Memory"},
+//             },
+//             ins: vec![],
+//             output: hashmap! {
+//                 "Producer" => (false, hashset!{"Memory"})
+//             },
+//         },
+//         RuleDef {
+//             state_guard: StatePredicate {
+//                 ready_ports: hashset! {"Consumer"},
+//                 full_mem: hashset! {"Memory"},
+//                 empty_mem: hashset! {},
+//             },
+//             ins: vec![],
+//             output: hashmap! {
+//                 "Memory" => (false, hashset!{"Consumer"})
+//             },
+//         }],
+//     };
+// }

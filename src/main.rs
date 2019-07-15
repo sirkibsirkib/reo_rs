@@ -5,6 +5,7 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+use std::time::Duration;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use debug_stub_derive::DebugStub;
@@ -227,6 +228,9 @@ impl MsgBox {
         println!("<<< recved {:X}", msg);
         msg
     }
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<usize> {
+        self.r.recv_timeout(timeout).ok()
+    }
 }
 
 #[derive(Debug)]
@@ -259,6 +263,18 @@ struct PortCommon {
     p: ProtoHandle,
 }
 impl PortCommon {
+    fn msg_recv(&self, mb: &MsgBox, maybe_timeout: Option<Duration>) -> Option<usize> {
+        if let Some(timeout) = maybe_timeout {
+            if let Some(msg) = mb.recv_timeout(timeout) {
+                return Some(msg)
+            } else {
+                if self.p.0.cr.lock().ready.remove(&self.id) {
+                    return None;
+                }
+            }
+        }
+        Some(mb.recv())
+    }
     fn claim(
         name: Name,
         want_putter: bool,
@@ -407,18 +423,21 @@ impl<T: PubPortDatum> Getter<T> {
         }
     }
 
-    pub fn get(&mut self) -> T {
+    // returns false if it doesn't participate in a rule
+    fn get_entirely(&mut self, maybe_timeout: Option<Duration>, maybe_dest: Option<&mut MaybeUninit<T>>) -> bool {
         let space = &self.0.p.0.r.spaces[self.0.id.0];
-        let mut ret = MaybeUninit::uninit();
         if let Space::PoGe { mb } = space {
             {
                 let mut x = self.0.p.0.cr.lock();
                 assert!(x.ready.insert(self.0.id));
                 x.coordinate(&self.0.p.0.r);
             }
-            let putter_id = LocId(mb.recv());
+            let putter_id = match self.0.msg_recv(mb, maybe_timeout) {
+                None => return false,
+                Some(msg) => LocId(msg),
+            };
             match &self.0.p.0.r.spaces[putter_id.0] {
-                Space::PoPu { ps, mb } => Self::get_data(ps, Some(&mut ret), move |was_moved| {
+                Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |was_moved| {
                     // finalization function
                     if was_moved {
                         assert!(NULL != ps.ptr.swap(NULL, SeqCst));
@@ -427,7 +446,7 @@ impl<T: PubPortDatum> Getter<T> {
                         mb.send(MsgBox::UNMOVED_MSG)
                     };
                 }),
-                Space::Memo { ps } => Self::get_data(ps, Some(&mut ret), |was_moved| {
+                Space::Memo { ps } => Self::get_data(ps, maybe_dest, |was_moved| {
                     // finalization function
                     println!("was moved? {:?}", was_moved);
                     self.0
@@ -439,8 +458,27 @@ impl<T: PubPortDatum> Getter<T> {
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
             };
+        } else {
+            panic!("am I not a getter?");
         }
+        true
+    }
+
+    pub fn get(&mut self) -> T {
+        let mut ret = MaybeUninit::uninit();
+        assert!(self.get_entirely(None, Some(&mut ret)));
         unsafe { ret.assume_init() }
+    }
+    pub fn get_timeout(&mut self, timeout: Duration) -> T {
+        let mut ret = MaybeUninit::uninit();
+        assert!(self.get_entirely(Some(timeout), Some(&mut ret)));
+        unsafe { ret.assume_init() }
+    }
+    pub fn get_signal(&mut self) {
+        assert!(self.get_entirely(None, None));
+    }
+    pub fn get_signal_timeout(&mut self, timeout: Duration) {
+        assert!(self.get_entirely(Some(timeout), None));
     }
 }
 
