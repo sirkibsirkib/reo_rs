@@ -97,8 +97,6 @@ unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
     (to.data, TypeInfo(to.vtable))
 }
 
-
-
 unsafe impl Send for CallHandle {}
 unsafe impl Sync for CallHandle {}
 #[allow(bare_trait_objects)] // DebugStub can't parse the new dyn syntax :(
@@ -117,7 +115,9 @@ impl CallHandle {
             args: vec![],
         }
     }
-    pub fn new_unary<R: PortDatum, A0: PortDatum>(func: Arc<dyn Fn(*mut R, *const A0) + Sync>) -> Self {
+    pub fn new_unary<R: PortDatum, A0: PortDatum>(
+        func: Arc<dyn Fn(*mut R, *const A0) + Sync>,
+    ) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
             ret: TypeInfo::of::<R>(),
@@ -233,13 +233,14 @@ pub struct Proto {
 
 impl Eq for ProtoHandle {}
 #[derive(Debug, Clone)]
-struct ProtoHandle(Arc<Proto>);
+pub struct ProtoHandle(Arc<Proto>);
 impl PartialEq for ProtoHandle {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
+#[derive(Debug)]
 pub enum ClaimError {
     WrongPortDirection,
     TypeMismatch(TypeInfo),
@@ -285,7 +286,7 @@ impl PortCommon {
 
 struct Putter<T: PortDatum>(PortCommon, PhantomData<T>);
 impl<T: PortDatum> Putter<T> {
-    fn claim(name: Name, p: &ProtoHandle) -> Result<Self, ClaimError> {
+    fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(
             PortCommon::claim(name, true, TypeInfo::of::<T>(), p)?,
             Default::default(),
@@ -319,7 +320,7 @@ impl<T: PortDatum> Putter<T> {
 }
 struct Getter<T: PubPortDatum>(PortCommon, PhantomData<T>);
 impl<T: PubPortDatum> Getter<T> {
-    fn claim(name: Name, p: &ProtoHandle) -> Result<Self, ClaimError> {
+    fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(
             PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?,
             Default::default(),
@@ -433,6 +434,169 @@ pub struct ProtoR {
     name_mapping: BidirMap<Name, LocId>,
     port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
 }
+impl ProtoR {
+    pub fn sanity_check(&self) {
+        struct Cap {
+            put: bool,
+            msg: bool,
+            mem: bool,
+            ty: TypeInfo,
+        };
+        let capabilities: Vec<Cap> = self
+            .spaces
+            .iter()
+            .enumerate()
+            .map(|(id, x)| match x {
+                Space::PoPu { ps, .. } => Cap {
+                    put: true,
+                    msg: true,
+                    mem: false,
+                    ty: ps.type_info,
+                },
+                Space::PoGe { .. } => Cap {
+                    put: false,
+                    msg: true,
+                    mem: false,
+                    ty: self.port_info.get(&LocId(id)).unwrap().1,
+                },
+                Space::Memo { ps } => Cap {
+                    put: true,
+                    msg: false,
+                    mem: true,
+                    ty: ps.type_info,
+                },
+            })
+            .collect();
+        for (k, (putter, tinfo)) in self.port_info.iter() {
+            let cap = &capabilities[k.0];
+            assert!(!cap.mem);
+            assert_eq!(cap.put, *putter);
+            assert_eq!(cap.ty, *tinfo);
+        }
+        for rule in self.rules.iter() {
+            let mut known_filled = hashmap! {};
+            for x in rule.bit_guard.ready.iter().copied() {
+                let cap = &capabilities[x.0];
+                if cap.mem {
+                    // implies put
+                    let f = rule.bit_guard.full_mem.contains(&x);
+                    let e = rule.bit_guard.empty_mem.contains(&x);
+                    assert!(!(f && e));
+                    if f {
+                        known_filled.insert(x, true);
+                    }
+                    if e {
+                        known_filled.insert(x, false);
+                    }
+                } else {
+                    known_filled.insert(x, cap.put);
+                }
+            }
+            fn check_ret_type(
+                capabilities: &Vec<Cap>,
+                known_filled: &HashMap<LocId, bool>,
+                term: &Term<LocId>,
+            ) -> TypeInfo {
+                use Term::*;
+                let tbool = TypeInfo::of::<bool>();
+                match term {
+                    Named(i) => {
+                        let cap = &capabilities[i.0];
+                        assert_eq!(known_filled[i], true);
+                        cap.ty
+                    }
+                    // MUST BE BOOL
+                    True | False => TypeInfo::of::<bool>(),
+                    Not(t) => {
+                        assert_eq!(check_ret_type(capabilities, known_filled, t), tbool);
+                        tbool
+                    }
+                    And(ts) | Or(ts) => {
+                        for t in ts.iter() {
+                            assert_eq!(check_ret_type(capabilities, known_filled, t), tbool);
+                        }
+                        tbool
+                    }
+                    IsEq(tid, terms) => {
+                        assert_eq!(check_ret_type(capabilities, known_filled, &terms[0]), *tid);
+                        assert_eq!(check_ret_type(capabilities, known_filled, &terms[1]), *tid);
+                        tbool
+                    }
+                }
+            }
+            for i in rule.ins.iter() {
+                match i {
+                    Instruction::Check { term } => assert_eq!(
+                        TypeInfo::of::<bool>(),
+                        check_ret_type(&capabilities, &known_filled, term)
+                    ),
+                    Instruction::CreateFromCall {
+                        info,
+                        dest,
+                        func,
+                        args,
+                    } => {
+                        let cap = &capabilities[dest.0];
+                        assert_eq!(*info, cap.ty);
+                        assert_eq!(func.args.len(), args.len());
+                        for (&t0, term) in func.args.iter().zip(args.iter()) {
+                            let t1 = check_ret_type(&capabilities, &known_filled, term);
+                            assert_eq!(t0, t1);
+                        }
+                    }
+                    Instruction::CreateFromFormula { dest, term } => {
+                        let cap = &capabilities[dest.0];
+                        assert_eq!(cap.ty, check_ret_type(&capabilities, &known_filled, term))
+                    }
+                    Instruction::MemMove { src, dest } => {
+                        assert_eq!(known_filled.get(src), Some(&true));
+                        assert_eq!(known_filled.get(dest), Some(&false));
+                        known_filled.insert(*src, false);
+                        known_filled.insert(*dest, true);
+                    }
+                }
+            }
+            let mut busy_doing = hashmap! {}; // => true for put, => false for get
+            for movement in rule.output.iter() {
+                let p = movement.putter;
+                assert_eq!(known_filled.get(&p), Some(&true));
+                let cap = &capabilities[p.0];
+                assert!(busy_doing.insert(p, true).is_none());
+
+                assert_eq!(
+                    cap.mem && movement.putter_retains,
+                    rule.bit_assign.empty_mem.contains(&p)
+                );
+                assert_eq!(
+                    cap.mem && !movement.putter_retains,
+                    rule.bit_assign.full_mem.contains(&p)
+                );
+                for g in movement.me_ge.iter().copied() {
+                    let gcap = &capabilities[g.0];
+                    assert!(gcap.mem);
+                    assert_eq!(cap.ty, gcap.ty);
+                    assert_eq!(known_filled.get(&g), Some(&false));
+                    assert!(rule.bit_assign.full_mem.contains(&g));
+                    assert!(busy_doing.insert(g, false).is_none());
+                }
+                for g in movement.po_ge.iter().copied() {
+                    let gcap = &capabilities[g.0];
+                    assert!(!gcap.mem);
+                    assert_eq!(cap.ty, gcap.ty);
+                    assert_eq!(known_filled.get(&g), Some(&false));
+                    assert!(!rule.bit_assign.full_mem.contains(&g));
+                    assert!(busy_doing.insert(g, false).is_none());
+                }
+            }
+            // make sure every READY-requested location is doing something
+            for p in rule.bit_guard.ready.iter().copied() {
+                println!("{:?}", p);
+                assert!(busy_doing.contains_key(&p));
+            }
+            // todo check NON putters in assignment set
+        }
+    }
+}
 
 type IsPutter = bool;
 #[derive(Debug)]
@@ -441,15 +605,15 @@ pub struct ProtoCr {
     ready: BitSet,
     mem: BitSet, // presence means FULL
     allocator: Allocator,
-    ref_counts: HashMap<TraitData, usize>,
+    ref_counts: HashMap<usize, usize>,
 }
 impl ProtoCr {
     fn finalize_memo(&mut self, r: &ProtoR, id: LocId, was_moved: bool) {
         let putter_space = r.spaces[id.0].get_putter_space().unwrap();
         let ptr = putter_space.ptr.swap(NULL, SeqCst);
-        let ref_count = self.ref_counts.get_mut(&ptr).unwrap();
+        let ref_count = self.ref_counts.get_mut(&(ptr as usize)).unwrap();
         if *ref_count == 1 {
-            self.ref_counts.remove(&ptr);
+            self.ref_counts.remove(&(ptr as usize));
             if !was_moved {
                 assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
             }
@@ -479,7 +643,6 @@ impl ProtoCr {
                     match i {
                         MemMove { src, dest } => unimplemented!(),
                         CreateFromFormula { dest, term } => {
-                            
                             // MUST BE BOOL. creation ensures it
                             let dest_ptr = unsafe {
                                 let dest_ptr = self.allocator.alloc_uninit(TypeInfo::of::<bool>());
@@ -492,7 +655,7 @@ impl ProtoCr {
                                 .unwrap()
                                 .ptr
                                 .store(dest_ptr, SeqCst);
-                            let was = self.ref_counts.insert(dest_ptr, 0);
+                            let was = self.ref_counts.insert(dest_ptr as usize, 0);
                             assert!(was.is_none());
                         }
                         CreateFromCall {
@@ -523,7 +686,7 @@ impl ProtoCr {
                                 .ptr
                                 .swap(dest_ptr, SeqCst);
                             assert_eq!(old, NULL);
-                            let was = self.ref_counts.insert(dest_ptr, 1);
+                            let was = self.ref_counts.insert(dest_ptr as usize, 1);
                             assert!(was.is_none());
                         }
                         Check { term } => {
@@ -622,7 +785,7 @@ impl ProtoCr {
                         ps.ptr.swap(NULL, SeqCst)
                     };
                     assert!(src != NULL);
-                    let ref_count: &mut usize = self.ref_counts.get_mut(&src).unwrap();
+                    let ref_count: &mut usize = self.ref_counts.get_mut(&(src as usize)).unwrap();
                     for m in me_ge_iter {
                         *ref_count += 1;
                         let getter_space = r.spaces[m.0].get_putter_space().unwrap();
@@ -634,7 +797,7 @@ impl ProtoCr {
                         *ref_count -= 1;
                         if *ref_count == 0 {
                             // I was the last reference! drop datum IN CIRCUIT
-                            self.ref_counts.remove(&src);
+                            self.ref_counts.remove(&(src as usize));
                             self.allocator.drop_inside(src, ps.type_info);
                         }
                         return;
@@ -665,8 +828,8 @@ pub type TraitVtable = *mut ();
 
 #[derive(Debug, Default)]
 pub struct Allocator {
-    allocated: HashMap<TypeInfo, HashSet<TraitData>>,
-    free: HashMap<TypeInfo, HashSet<TraitData>>,
+    allocated: HashMap<TypeInfo, HashSet<usize>>,
+    free: HashMap<TypeInfo, HashSet<usize>>,
 }
 impl Allocator {
     pub fn store(&mut self, x: Box<dyn PortDatum>) -> bool {
@@ -674,7 +837,7 @@ impl Allocator {
         self.allocated
             .entry(info)
             .or_insert_with(HashSet::new)
-            .insert(data)
+            .insert(data as usize)
     }
     pub unsafe fn alloc_uninit(&mut self, type_info: TypeInfo) -> TraitData {
         if let Some(set) = self.free.get_mut(&type_info) {
@@ -687,7 +850,7 @@ impl Allocator {
                     .or_insert_with(HashSet::new)
                     .insert(data);
                 assert!(success);
-                return data;
+                return data as TraitData;
             }
         }
         // crate a new allocation
@@ -699,7 +862,7 @@ impl Allocator {
     }
     pub fn drop_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
         if let Some(set) = self.allocated.get_mut(&type_info) {
-            if set.remove(&data) {
+            if set.remove(&(data as usize)) {
                 unsafe {
                     let mut bx = trait_obj_build(data, type_info);
                     bx.drop_in_place();
@@ -709,7 +872,7 @@ impl Allocator {
                     .free
                     .entry(type_info)
                     .or_insert_with(HashSet::new)
-                    .insert(data);
+                    .insert(data as usize);
                 return success;
             }
         }
@@ -717,7 +880,7 @@ impl Allocator {
     }
     pub fn remove(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
         if let Some(set) = self.free.get_mut(&type_info) {
-            set.remove(&data)
+            set.remove(&(data as usize))
         } else {
             false
         }
@@ -728,14 +891,14 @@ impl Drop for Allocator {
         // drop all owned values
         for (&vtable, data_vec) in self.allocated.iter() {
             for &data in data_vec.iter() {
-                drop(unsafe { trait_obj_build(data, vtable) })
+                drop(unsafe { trait_obj_build(data as TraitData, vtable) })
             }
         }
         // drop all empty boxes
         let empty_box_vtable = TypeInfo::of::<Box<()>>();
         for (&vtable, data_vec) in self.free.iter() {
             for &data in data_vec.iter() {
-                drop(unsafe { trait_obj_build(data, empty_box_vtable) });
+                drop(unsafe { trait_obj_build(data as TraitData, empty_box_vtable) });
             }
         }
     }
@@ -966,11 +1129,5 @@ fn main() -> Result<(), (Option<usize>, ProtoBuildError)> {
         }],
     };
     let built = build_proto(&proto, MemInitial::default())?;
-    // let b1
-
-    let b = built.r.name_mapping.get_by_first(&"B").unwrap();
-    // built.ready_set_coordinate(*b);
-
-    // println!("built: {:#?}", &built);
     Ok(())
 }

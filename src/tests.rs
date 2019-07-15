@@ -83,7 +83,7 @@ impl PartialEq for Incrementor {
 struct Incrementor(Arc<Mutex<usize>>);
 impl Drop for Incrementor {
     fn drop(&mut self) {
-        unsafe { *self.0.lock() += 1 }
+        *self.0.lock() += 1
     }
 }
 
@@ -276,7 +276,7 @@ fn call_handle_2() {
 }
 
 lazy_static::lazy_static! {
-    static ref SYNC_u32: ProtoDef = ProtoDef {
+    static ref SYNC_U32: ProtoDef = ProtoDef {
         name_defs: hashmap! {
             "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
             "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
@@ -289,8 +289,59 @@ lazy_static::lazy_static! {
             },
             ins: vec![],
             output: hashmap! {
-                "D" => (false, hashset!{"B"})
+                "A" => (false, hashset!{"B"})
             },
         }],
     };
+}
+
+#[test]
+fn sync_create() {
+    build_proto(&SYNC_U32, MemInitial::default()).unwrap();
+}
+
+#[test]
+pub fn send_sync_proto() {
+    let x: MaybeUninit<ProtoCr> = MaybeUninit::uninit();
+    let b = std::thread::spawn(move || {
+        let y = x;
+        std::mem::forget(y);
+    });
+    b.join().unwrap();
+}
+
+#[test]
+fn sync_claim() {
+    let p = build_proto(&SYNC_U32, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<u32>, Getter<u32>) = (
+        Putter::claim(&p, "A").unwrap(),
+        Getter::claim(&p, "B").unwrap(),
+    );
+
+    let a = std::thread::spawn(move || {
+        p.put(32);
+    });
+    let b = std::thread::spawn(move || {
+        let x = g.get();
+    });
+    a.join().unwrap();
+    b.join().unwrap();
+}
+
+#[test]
+fn sync_put_get() {
+    let p = build_proto(&SYNC_U32, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<u32>, Getter<u32>) = (
+        Putter::claim(&p, "A").unwrap(),
+        Getter::claim(&p, "B").unwrap(),
+    );
+
+    let a = std::thread::spawn(move || {
+        p.put(32);
+    });
+    let b = std::thread::spawn(move || {
+        let x = g.get();
+    });
+    a.join().unwrap();
+    b.join().unwrap();
 }

@@ -153,7 +153,7 @@ fn term_eval_loc_id(
 pub fn build_proto(
     p: &ProtoDef,
     mut init: MemInitial,
-) -> Result<Proto, (Option<usize>, ProtoBuildError)> {
+) -> Result<ProtoHandle, (Option<usize>, ProtoBuildError)> {
     use ProtoBuildError::*;
 
     let mut spaces = vec![];
@@ -220,7 +220,8 @@ pub fn build_proto(
     }
 
     // NO MORE PERSISTENT THINGS
-    let persistent_kind = |name: Name| persistent_loc_kinds[name_mapping.get_by_first(&name).unwrap().0];
+    let persistent_kind =
+        |name: Name| persistent_loc_kinds[name_mapping.get_by_first(&name).unwrap().0];
 
     // temp vars
     let mut temp_names: HashMap<Name, (LocId, TypeInfo)> = hashmap! {};
@@ -378,13 +379,16 @@ pub fn build_proto(
 
     let mem = BitSet::default();
     let ready = BitSet::default();
-    Ok(Proto {
-        r: ProtoR {
-            rules,
-            spaces,
-            name_mapping,
-            port_info,
-        },
+    let r = ProtoR {
+        rules,
+        spaces,
+        name_mapping,
+        port_info,
+    };
+    println!("PROTO R {:#?}", &r);
+    r.sanity_check(); // DEBUG
+    Ok(ProtoHandle(Arc::new(Proto {
+        r,
         cr: Mutex::new(ProtoCr {
             unclaimed,
             allocator,
@@ -392,7 +396,7 @@ pub fn build_proto(
             ready,
             ref_counts: hashmap! {},
         }),
-    })
+    })))
 }
 
 // let ins = ins
