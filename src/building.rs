@@ -179,12 +179,12 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                 } => {
                     unclaimed.insert(id);
                     port_info.insert(id, (is_putter, type_info));
-                    let msgbox = MsgBox::default();
+                    let mb = MsgBox::default();
                     if is_putter {
                         let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
-                        (Space::PoPu(ps, msgbox), LocKind::PoPu)
+                        (Space::PoPu { ps, mb }, LocKind::PoPu)
                     } else {
-                        (Space::PoGe(msgbox), LocKind::PoGe)
+                        (Space::PoGe { mb }, LocKind::PoGe)
                     }
                 }
                 NameDef::Mem(mem_def) => {
@@ -197,7 +197,12 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                         MemDef::Uninitialized(info) => (std::ptr::null_mut(), info),
                     };
                     // putter space gets a copy too, not owned
-                    (Space::Memo(PutterSpace::new(ptr, info)), LocKind::Memo)
+                    (
+                        Space::Memo {
+                            ps: PutterSpace::new(ptr, info),
+                        },
+                        LocKind::Memo,
+                    )
                 }
                 NameDef::Func(call_handle) => return Some((name, Arc::new(call_handle))),
             };
@@ -300,10 +305,8 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                         if type_info != TypeInfo::of::<bool>() {
                             return Err(CreatingNonBoolFromFormula);
                         }
-                        spaces.push(Space::Memo(PutterSpace::new(
-                            std::ptr::null_mut(),
-                            type_info,
-                        )));
+                        let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
+                        spaces.push(Space::Memo { ps });
                         if temp_names.insert(dest, (dest_id, type_info)).is_some() {
                             return Err(InstructionShadowsName { name: dest });
                         }
@@ -329,7 +332,8 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                             .map(|arg| term_eval_loc_id(&spaces, &temp_names, &name_mapping, arg))
                             .collect::<Result<Vec<_>, ProtoBuildError>>()?;
                         let temp_id = LocId(spaces.len());
-                        spaces.push(Space::Memo(PutterSpace::new(std::ptr::null_mut(), info)));
+                        let ps = PutterSpace::new(std::ptr::null_mut(), info);
+                        spaces.push(Space::Memo { ps });
                         rule_putters.insert(dest);
                         if temp_names.insert(dest, (temp_id, info)).is_some() {
                             return Err(InstructionShadowsName { name: dest });
@@ -375,41 +379,42 @@ pub fn build_proto(p: ProtoDef) -> Result<Proto, (usize, ProtoBuildError)> {
                         if !putter_retains && putter_kind == LocKind::Memo {
                             bit_assign.empty_mem.insert(putter_id);
                         }
-                        let getters = getters
-                            .iter()
-                            .map(|g_name| {
-                                let gid = name_mapping.get_by_first(g_name).unwrap();
-                                if rule_putters.contains(g_name) {
-                                    return Err(GettingAndPutting { name: g_name });
+                        let mut po_ge = vec![];
+                        let mut me_ge = vec![];
+                        for name in getters {
+                            let gid = name_mapping.get_by_first(&name).unwrap();
+                            if rule_putters.contains(name) {
+                                return Err(GettingAndPutting { name });
+                            }
+                            match persistent_loc_kinds[gid.0] {
+                                LocKind::PoPu => return Err(PutterPortCannotGet { name }),
+                                LocKind::PoGe => {
+                                    if !bit_guard.ready.contains(gid) {
+                                        return Err(PortNotInSyncSet { name });
+                                    }
+                                    &mut po_ge
                                 }
-                                match persistent_loc_kinds[gid.0] {
-                                    LocKind::PoPu => {
-                                        return Err(PutterPortCannotGet { name: g_name })
+                                LocKind::Memo => {
+                                    if !bit_guard.full_mem.contains(gid) {
+                                        return Err(MemCannotGetWhileFull { name });
                                     }
-                                    LocKind::PoGe => {
-                                        if !bit_guard.ready.contains(gid) {
-                                            return Err(PortNotInSyncSet { name: g_name });
-                                        }
-                                    }
-                                    LocKind::Memo => {
-                                        if !bit_guard.full_mem.contains(gid) {
-                                            return Err(MemCannotGetWhileFull { name: g_name });
-                                        }
-                                        bit_assign.full_mem.insert(putter_id);
-                                    }
-                                };
-                                Ok(*gid)
-                            })
-                            .collect::<Result<_, _>>()?;
+                                    bit_assign.full_mem.insert(putter_id);
+                                    &mut me_ge
+                                }
+                            }
+                            .push(*gid);
+                        }
                         Movement {
                             putter: putter_id,
-                            getters,
+                            po_ge,
+                            me_ge,
                             putter_retains,
                         }
                     } else {
                         Movement {
                             putter: putter_id,
-                            getters: vec![],
+                            po_ge: vec![],
+                            me_ge: vec![],
                             putter_retains: true,
                         }
                     },

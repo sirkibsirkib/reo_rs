@@ -5,8 +5,6 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-use std_semaphore::Semaphore;
-use std::mem::MaybeUninit;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use debug_stub_derive::DebugStub;
@@ -20,12 +18,14 @@ use std::convert::TryInto;
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::mem::ManuallyDrop;
+use std::mem::MaybeUninit;
 use std::raw::TraitObject;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Arc;
+use std_semaphore::Semaphore;
 
 mod building;
 use building::*;
@@ -48,10 +48,36 @@ impl TypeInfo {
     pub fn get_layout(self) -> Layout {
         let bogus = self.0;
         let to = unsafe { trait_obj_build(bogus, self) };
-        let layout = to.my_layout();
+        let r = to.my_layout();
         std::mem::forget(to);
-        layout
+        r
     }
+    pub unsafe fn copy(self, src: TraitData, dest: TraitData) {
+        let to = unsafe { trait_obj_build(src, self) };
+        let layout = to.my_layout();
+        unsafe {
+            let [src_u8, dest_u8]: [*mut u8; 2] = transmute([src, dest]);
+            std::ptr::copy(src_u8, dest_u8, layout.size());
+        }
+        std::mem::forget(to);
+    }
+    pub unsafe fn clone(self, src: TraitData, dest: TraitData) {
+        let to = unsafe { trait_obj_build(src, self) };
+        let r = to.my_clone(dest);
+        std::mem::forget(to);
+        r
+    }
+    // pub fn query<R>(self, f: fn(&dyn PortDatum) -> R) -> R {
+    //     let bogus = self.0;
+    //     let to: &dyn PortDatum = unsafe { transmute( trait_obj_build(bogus, self)) };
+    //     f(to)
+    // }
+    // pub fn get_layout(self) -> Layout {
+    //     self.query(|x| x.my_layout())
+    // }
+    // pub fn get_bytes(self) -> usize {
+    //     self.query(|x| x.bytes())
+    // }
 }
 
 #[inline]
@@ -168,6 +194,13 @@ impl Space {
             Space::Memo { ps } => Some(ps),
         }
     }
+    fn get_msg_box(&self) -> Option<&MsgBox> {
+        match self {
+            Space::PoPu { mb, .. } => Some(mb),
+            Space::PoGe { mb } => Some(mb),
+            Space::Memo { .. } => None,
+        }
+    }
 }
 #[derive(Debug)]
 pub struct MsgBox {
@@ -183,8 +216,8 @@ impl Default for MsgBox {
 impl MsgBox {
     const MOVED_MSG: usize = 0;
     const UNMOVED_MSG: usize = 0;
-    pub fn try_send(&self, msg: usize) {
-        self.s.send(msg).unwrap();
+    pub fn send(&self, msg: usize) {
+        self.s.try_send(msg).unwrap();
     }
     pub fn recv(&self) -> usize {
         self.r.recv().unwrap()
@@ -247,26 +280,27 @@ impl<T: PortDatum> Putter<T> {
     }
 
     pub fn put(&mut self, mut datum: T) -> Option<T> {
-        let ptr: TraitData = unsafe { transmute(&mut datum) };
-        let space = self.0.p.0.r.spaces[self.0.id.0];
-        if let Space::PoPu { ps, mb } = space {
-            assert_eq!(NULL, ps.ptr.swap(ptr, SeqCst));
-            let mut x = self.0.p.0.cr.lock();
-            x.ready.insert(self.0.id);
-            x.coordinate(&self.0.p.0.r);
-            let msg = mb.recv();
-            ps.ptr.swap(NULL, SeqCst);
-            match msg {
-                MOVED_MSG => {
-                    std::mem::forget(datum);
-                    None
-                },
-                UNMOVED_MSG => Some(datum),
-                _ => panic!("BAD MSG"),
-            }
-        } else {
-            panic!("WRONG SPACE")
-        }
+        unimplemented!()
+        // let ptr: TraitData = unsafe { transmute(&mut datum) };
+        // let space = self.0.p.0.r.spaces[self.0.id.0];
+        // if let Space::PoPu { ps, mb } = space {
+        //     assert_eq!(NULL, ps.ptr.swap(ptr, SeqCst));
+        //     let mut x = self.0.p.0.cr.lock();
+        //     x.ready.insert(self.0.id);
+        //     x.coordinate(&self.0.p.0.r);
+        //     let msg = mb.recv();
+        //     ps.ptr.swap(NULL, SeqCst);
+        //     match msg {
+        //         MOVED_MSG => {
+        //             std::mem::forget(datum);
+        //             None
+        //         },
+        //         UNMOVED_MSG => Some(datum),
+        //         _ => panic!("BAD MSG"),
+        //     }
+        // } else {
+        //     panic!("WRONG SPACE")
+        // }
     }
 }
 struct Getter<T: PortDatum>(PortCommon, PhantomData<T>);
@@ -298,72 +332,78 @@ impl<T: PortDatum> Getter<T> {
         }
     }
 
-    fn get_data<F: FnMut(bool)>(&mut self, ps: &PutterSpace, maybe_dest: Option<&mut MaybeUninit<T>>, finalize: F) {
-        let ptr: TraitData = ps.ptr.load(SeqCst);
-        let is_copy = <T as PortDatum>::is_copy(unsafe { transmute(ptr) });
-        if is_copy {
-            if let Some(dest) = maybe_dest {
-                // ps.move_flags.type_is_copy_i_moved();
-                // TODO MOVE
-            }
-            let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-            if was == 1 {
-                let somebody_moved = ps.rendesvous.move_code.did_someone_move();
-                finalize(somebody_moved);
-            }
-        } else {
-            if let Some(dest) = maybe_dest {
-                let won = !ps.rendesvous.move_code.ask_for_move_permission();
-                if won {
-                    let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                    if was == 1 {
-                        // TODO MOVE
-                    } else {
-                        ps.rendesvous.mover_sema.acquire();
-                    }
-                    self.finalize(true);
-                } else {
-                    // lose
-                    // TODO CLONE
-                    let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                    if was == 1 {
-                        // all clones are done
-                        ps.rendesvous.mover_sema.release();
-                    } else {
-                        // do nothing
-                    }
-                }
-            } else {
-                let was = space.cloner_countdown.fetch_sub(1, SeqCst);
-                if was == 1 {
-                    // all clones done
-                    let nobody_else_won = !space.move_flags.ask_for_move_permission();
-                    if nobody_else_won {
-                        self.finalize(false, fin);
-                    } else {
-                        space.mover_sema.release();
-                    }
-                }
-            }
-        }
+    fn get_data<F: FnMut(bool)>(
+        &mut self,
+        ps: &PutterSpace,
+        maybe_dest: Option<&mut MaybeUninit<T>>,
+        finalize: F,
+    ) {
+        // let ptr: TraitData = ps.ptr.load(SeqCst);
+        // let is_copy = <T as PortDatum>::is_copy(unsafe { transmute(ptr) });
+        // if is_copy {
+        //     if let Some(dest) = maybe_dest {
+        //         // ps.move_flags.type_is_copy_i_moved();
+        //         // TODO MOVE
+        //     }
+        //     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+        //     if was == 1 {
+        //         let somebody_moved = ps.rendesvous.move_flags.did_someone_move();
+        //         finalize(somebody_moved);
+        //     }
+        // } else {
+        //     if let Some(dest) = maybe_dest {
+        //         let won = !ps.rendesvous.move_flags.ask_for_move_permission();
+        //         if won {
+        //             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+        //             if was == 1 {
+        //                 // TODO MOVE
+        //             } else {
+        //                 ps.rendesvous.mover_sema.acquire();
+        //             }
+        //             self.finalize(true);
+        //         } else {
+        //             // lose
+        //             // TODO CLONE
+        //             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+        //             if was == 1 {
+        //                 // all clones are done
+        //                 ps.rendesvous.mover_sema.release();
+        //             } else {
+        //                 // do nothing
+        //             }
+        //         }
+        //     } else {
+        //         let was = space.cloner_countdown.fetch_sub(1, SeqCst);
+        //         if was == 1 {
+        //             // all clones done
+        //             let nobody_else_won = !space.move_flags.ask_for_move_permission();
+        //             if nobody_else_won {
+        //                 self.finalize(false, fin);
+        //             } else {
+        //                 space.mover_sema.release();
+        //             }
+        //         }
+        //     }
+        // }
     }
 
     pub fn get(&mut self) -> T {
-        let space = self.0.p.0.r.spaces[self.0.id.0];
-        let mut ret = MaybeUninit::uninit();
-        if let Space::PoGe { mb } = space {
-            let mut x = self.0.p.0.cr.lock();
-            x.ready.insert(self.0.id);
-            x.coordinate(&self.0.p.0.r);
-            let putter_id = LocId(mb.recv());
-
-
-            let ps = match self.0.p.0.r.spaces[putter_id.0] {
-                Space::PoPu { pu, ms } => ps,
-                Space::Memo { pu } => ps,
-                Space::PoGe { .. } => panic!("not expecting getter!"),
-            };
-        }
+        unimplemented!()
+        // let space = self.0.p.0.r.spaces[self.0.id.0];
+        // let mut ret = MaybeUninit::uninit();
+        // if let Space::PoGe { mb } = space {
+        //     let mut x = self.0.p.0.cr.lock();
+        //     x.ready.insert(self.0.id);
+        //     x.coordinate(&self.0.p.0.r);
+        //     let putter_id = LocId(mb.recv());
+        //     let ps = match self.0.p.0.r.spaces[putter_id.0] {
+        //         Space::PoPu { ps, mb } => ps,
+        //         Space::Memo { ps } => ps,
+        //         Space::PoGe { .. } => panic!("not expecting getter!"),
+        //     };
+        //     unimplemented!()
+        // }
+        // ret.assume_init()
     }
 }
 
@@ -490,13 +530,93 @@ impl ProtoCr {
                     self.mem.insert(q);
                 }
                 for movement in rule.output.iter() {
-
+                    self.do_movement(r, movement)
                 }
                 // TODO
                 continue 'outer; // reconsider all rules
             }
             // finished all rules
             return;
+        }
+    }
+
+    fn do_movement(&mut self, r: &ProtoR, movement: &Movement) {
+        let mut me_ge_iter = movement.me_ge.iter().copied();
+        let mut putter_retains = movement.putter_retains;
+        let mut putter: LocId = movement.putter;
+
+        // PHASE 1: "take care of mem getters"
+        let ps: &PutterSpace = loop {
+            // loops exactly once 1 or 2 times
+            match &r.spaces[putter.0] {
+                Space::PoGe { .. } => panic!("CANNOT BE!"),
+                Space::PoPu { ps, mb } => { // FINAL or SEMIFINAL LOOP
+                    if let Some(mem_0) = me_ge_iter.next() {
+                        // SPECIAL CASE! storing external value into protocol memory
+                        // re-interpret who is the putter to avoid conflict between:
+                        // 1. memory getters are completed BEFORE port getters (by the coordinator)
+                        // 2. data movement MUST follow all data clones (or undefined behavior)
+                        // 3. we don't yet know if any port-getters want to MOVE (they may want signals)
+                        let dest_space = r.spaces[mem_0.0].get_putter_space().unwrap();
+                        assert_eq!(dest_space.type_info, ps.type_info);
+                        let dest_ptr = self.allocator.alloc_uninit(ps.type_info);
+                        assert_eq!(NULL, dest_space.ptr.swap(dest_ptr, SeqCst));
+                        let src_ptr = ps.ptr.swap(NULL, SeqCst);
+                        assert!(src_ptr != NULL);
+
+                        // do the movement, then release the putter with a message
+                        if !putter_retains {
+                            unsafe { ps.type_info.copy(src_ptr, dest_ptr) };
+                            mb.send(MsgBox::MOVED_MSG);
+                        } else {
+                            unsafe { ps.type_info.clone(src_ptr, dest_ptr) };
+                            mb.send(MsgBox::UNMOVED_MSG);
+                        }
+                        // mem_0 becomes the putter, and retains the value
+                        putter_retains = true;
+                        putter = mem_0;
+                    } else {
+                        // memory taken care of
+                        break ps;
+                    }
+                }
+                Space::Memo { ps } => { // FINAL LOOP
+                    // alias the memory in all memory getters. datum itself does not move.
+                    let src = if putter_retains {
+                        ps.ptr.load(SeqCst)
+                    } else {
+                        ps.ptr.swap(NULL, SeqCst)
+                    }; 
+                    assert!(src != NULL);
+                    let ref_count: &mut usize = self.ref_counts.get_mut(&src).unwrap();
+                    for m in me_ge_iter {
+                        *ref_count += 1;
+                        let getter_space = r.spaces[m.0].get_putter_space().unwrap();
+                        assert_eq!(NULL, getter_space.ptr.swap(src, SeqCst));
+                    }
+                    if !putter_retains && movement.po_ge.is_empty() {
+                        // last port getter would clean up, but there isn't one!
+                        self.ready.insert(putter); // memory cell is again stable
+                        *ref_count -= 1;
+                        if *ref_count == 0 {
+                            // I was the last reference! drop datum IN CIRCUIT
+                            self.ref_counts.remove(&src);
+                            self.allocator.drop_inside(src, ps.type_info);
+                        }
+                        return;
+                    }
+                    break ps;
+                }
+            }
+        };
+        // PHASE 2: "take care of port getters"
+        if !movement.po_ge.is_empty() {
+            ps.rendesvous.move_flags.reset(!putter_retains);
+            assert_eq!(0, ps.rendesvous.countdown.swap(movement.po_ge.len(), SeqCst));
+            for po_ge in movement.po_ge.iter().copied() {
+                // signal getter, telling them which putter to get from
+                r.spaces[po_ge.0].get_msg_box().unwrap().send(putter.0);
+            } 
         }
     }
 }
@@ -586,10 +706,50 @@ impl Drop for Allocator {
     }
 }
 
+
+#[derive(Debug, Default)]
+struct MoveFlags {
+    move_flags: AtomicU8,
+}
+impl MoveFlags {
+    const MOVE_FLAG_MOVED: u8 = 0b01;
+    const MOVE_FLAG_DISABLED: u8 = 0b10;
+
+    #[inline]
+    fn type_is_copy_i_moved(&self) {
+        self.move_flags
+            .store(Self::MOVE_FLAG_MOVED, SeqCst);
+    }
+
+    #[inline]
+    fn did_someone_move(&self) -> bool {
+        let x: u8 = self.move_flags.load(SeqCst);
+        x & Self::MOVE_FLAG_MOVED != 0 && x & Self::MOVE_FLAG_DISABLED == 0
+    }
+
+    #[inline]
+    fn ask_for_move_permission(&self) -> bool {
+        0 == self
+            .move_flags
+            .fetch_or(Self::MOVE_FLAG_MOVED, SeqCst)
+    }
+
+    #[inline]
+    fn reset(&self, move_enabled: bool) {
+        let val = if move_enabled {
+            Self::MOVE_FLAG_DISABLED
+        } else {
+            0
+        };
+        self.move_flags.store(val, SeqCst);
+    }
+}
+
+
 #[derive(DebugStub)]
 pub struct Rendesvous {
     countdown: AtomicUsize,
-    move_code: AtomicU8,
+    move_flags: MoveFlags,
     #[debug_stub = "<Semaphore>"]
     mover_sema: Semaphore,
 }
@@ -606,7 +766,7 @@ impl PutterSpace {
             type_info,
             rendesvous: Rendesvous {
                 countdown: 0.into(),
-                move_code: 0.into(),
+                move_flags: MoveFlags::default(),
                 mover_sema: Semaphore::new(0),
             },
         }
@@ -634,7 +794,8 @@ struct BitStatePredicate<P> {
 #[derive(Debug)]
 pub struct Movement {
     putter: LocId,
-    getters: Vec<LocId>,
+    me_ge: Vec<LocId>,
+    po_ge: Vec<LocId>,
     putter_retains: bool,
 }
 
@@ -769,8 +930,6 @@ fn main() -> Result<(), (usize, ProtoBuildError)> {
     Ok(())
 }
 
-
-
 /* TODO:
 1. rule firing properly
 2. proper bitsets
@@ -779,7 +938,7 @@ fn main() -> Result<(), (usize, ProtoBuildError)> {
     2. set ready
     3. participate
     4. coordinator output
-    5. 
+    5.
 4. sync unit test
 5. fifo1 unit test
 6. MemMove instruction
