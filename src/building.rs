@@ -72,6 +72,7 @@ pub enum ProtoBuildError {
     CreatingNonBoolFromFormula,
     InitialTypeMismatch { name: Name },
     PutterCannotPutWhenEmpty { name: Name },
+    MovementTypeMismatch { getter: Name, putter: Name },
 }
 
 fn resolve_putter(
@@ -318,6 +319,7 @@ pub fn build_proto(
                     return Err(PutterCannotPutWhenEmpty { name: putter });
                 }
                 let putter_id: LocId = resolve_putter(&temp_names, &name_mapping, putter)?;
+                let putter_type_info = spaces[putter_id.0].get_putter_space().unwrap().type_info;
                 let putter_kind: LocKind = *persistent_loc_kinds
                     .get(putter_id.0)
                     .unwrap_or(&LocKind::Memo);
@@ -334,12 +336,18 @@ pub fn build_proto(
                     match persistent_loc_kinds[gid.0] {
                         LocKind::PoPu => return Err(PutterPortCannotGet { name }),
                         LocKind::PoGe => {
+                            if port_info.get(gid).unwrap().1 != putter_type_info {
+                                return Err(MovementTypeMismatch { putter, getter: name });
+                            }
                             if !bit_guard.ready.contains(gid) {
                                 return Err(PortNotInSyncSet { name });
                             }
                             &mut po_ge
                         }
                         LocKind::Memo => {
+                            if spaces[gid.0].get_putter_space().unwrap().type_info != putter_type_info {
+                                return Err(MovementTypeMismatch { putter, getter: name });
+                            }
                             if !bit_guard.empty_mem.contains(gid) {
                                 return Err(MemCannotGetWhileFull { name });
                             }

@@ -423,6 +423,72 @@ fn prod_cons_single() {
 
 
 
+lazy_static::lazy_static! {
+    static ref FIFO1_INCREMENTOR: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "Producer" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Incrementor>() },
+            "Consumer" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
+            "Memory" => NameDef::Mem(TypeInfo::of::<Incrementor>()),
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"Producer"},
+                full_mem: hashset! {},
+                empty_mem: hashset! {"Memory"},
+            },
+            ins: vec![],
+            output: hashmap! {
+                "Producer" => (false, hashset!{"Memory"})
+            },
+        },
+        RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"Consumer"},
+                full_mem: hashset! {"Memory"},
+                empty_mem: hashset! {},
+            },
+            ins: vec![],
+            output: hashmap! {
+                "Memory" => (false, hashset!{"Consumer"})
+            },
+        }],
+    };
+}
+
+#[test]
+fn prod_cons_no_leak() {
+        let p = build_proto(&FIFO1_INCREMENTOR, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<Incrementor>, Getter<Incrementor>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+    let x = Incrementor(Arc::new(Mutex::new(0)));
+    let x1 = x.clone();
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..3 {
+                p.put(x1.clone());
+                println!("P DONE");
+            }
+            // one dropped here (x1)
+        }),
+        spawn(move || {
+            for i in 0..2 {
+                let gotten = g.get();
+                println!("G DONE");
+                // one dropped here (gotten)
+            }
+            // one dropped here (x)
+        }),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!("FINISHING UP");
+    assert_eq!(*x.0.lock(), 3);
+}
+
 #[test]
 fn prod_cons_mult() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();

@@ -219,10 +219,13 @@ impl MsgBox {
     const MOVED_MSG: usize = 0xadded;
     const UNMOVED_MSG: usize = 0xdeaf;
     pub fn send(&self, msg: usize) {
+        println!(">>> sending {:X}", msg);
         self.s.try_send(msg).unwrap();
     }
     pub fn recv(&self) -> usize {
-        self.r.recv().unwrap()
+        let msg = self.r.recv().unwrap();
+        println!("<<< recved {:X}", msg);
+        msg
     }
 }
 
@@ -307,7 +310,9 @@ impl<T: PortDatum> Putter<T> {
                 assert!(x.ready.insert(self.0.id));
                 x.coordinate(&self.0.p.0.r);
             }
+            println!("waitinig,...");
             let msg = mb.recv();
+            println!("...got!");
             println!("MSG 0x{:X}", msg);
             ps.ptr.swap(NULL, SeqCst);
             match msg {
@@ -628,10 +633,11 @@ pub struct ProtoCr {
     ref_counts: HashMap<usize, usize>,
 }
 impl ProtoCr {
-    fn finalize_memo(&mut self, r: &ProtoR, id: LocId, was_moved: bool) {
-        let putter_space = r.spaces[id.0].get_putter_space().unwrap();
+    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, was_moved: bool) {
+        let putter_space = r.spaces[this_mem_id.0].get_putter_space().unwrap();
         let ptr = putter_space.ptr.swap(NULL, SeqCst);
         let ref_count = self.ref_counts.get_mut(&(ptr as usize)).unwrap();
+        println!("FINALIZING SO {:?} IS READY", this_mem_id);
         assert!(*ref_count > 0);
         *ref_count -= 1;
         if *ref_count == 0 {
@@ -640,12 +646,12 @@ impl ProtoCr {
                 assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
             } else {
                 assert!(self.allocator.forget_inside(ptr, putter_space.type_info));
-
             }
         } else {
             assert!(!was_moved);
         }
-        self.ready.insert(id);
+        self.ready.insert(this_mem_id);
+        self.coordinate(r);
     }
     fn coordinate(&mut self, r: &ProtoR) {
         println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
