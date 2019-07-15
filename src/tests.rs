@@ -420,3 +420,32 @@ fn prod_cons_single() {
     println!("DATUM READS {:?}", &x);
     println!("cool");
 }
+
+
+
+#[test]
+fn prod_cons_mult() {
+    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let (mut p, mut g): (Putter<String>, Getter<String>) = (
+        Putter::claim(&p, "Producer").unwrap(),
+        Getter::claim(&p, "Consumer").unwrap(),
+    );
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..10 {
+                p.put(format!("i={}", i));
+            }
+        }),
+        spawn(move || {
+            for i in 0..10 {
+                let x = g.get();
+                let expected = format!("i={}", i);
+                assert_eq!(expected, x);
+            }
+        }),
+    ];
+    for x in handles {
+        x.join().unwrap();
+    }
+}
