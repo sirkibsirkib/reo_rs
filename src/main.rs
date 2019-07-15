@@ -95,22 +95,23 @@ unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
     (to.data, TypeInfo(to.vtable))
 }
 
-#[derive(DebugStub)]
+#[allow(bare_trait_objects)] // DebugStub can't parse the new dyn syntax :(
+#[derive(DebugStub, Clone)]
 pub struct CallHandle {
     #[debug_stub = "FuncTraitObject"]
-    func: TraitObject,
+    func: Arc<Fn()>,
     ret: TypeInfo,
     args: Vec<TypeInfo>,
 }
 impl CallHandle {
-    pub fn new_nonary<R: PortDatum>(func: Box<dyn Fn(*mut R)>) -> Self {
+    pub fn new_nonary<R: PortDatum>(func: Arc<dyn Fn(*mut R)>) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
             ret: TypeInfo::of::<R>(),
             args: vec![],
         }
     }
-    pub fn new_unary<R: PortDatum, A0: PortDatum>(func: Box<dyn Fn(*mut R, *const A0)>) -> Self {
+    pub fn new_unary<R: PortDatum, A0: PortDatum>(func: Arc<dyn Fn(*mut R, *const A0)>) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
             ret: TypeInfo::of::<R>(),
@@ -118,7 +119,7 @@ impl CallHandle {
         }
     }
     pub fn new_binary<R: PortDatum, A0: PortDatum, A1: PortDatum>(
-        func: Box<dyn Fn(*mut R, *const A0, *const A1)>,
+        func: Arc<dyn Fn(*mut R, *const A0, *const A1)>,
     ) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
@@ -127,7 +128,7 @@ impl CallHandle {
         }
     }
     pub fn new_ternary<R: PortDatum, A0: PortDatum, A1: PortDatum, A2: PortDatum>(
-        func: Box<dyn Fn(*mut R, *const A0, *const A1, *const A2)>,
+        func: Arc<dyn Fn(*mut R, *const A0, *const A1, *const A2)>,
     ) -> Self {
         CallHandle {
             func: unsafe { transmute(func) },
@@ -327,17 +328,13 @@ impl<T: PubPortDatum> Getter<T> {
         // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
 
         let ptr: TraitData = ps.ptr.load(SeqCst);
-        let do_move = move |dest: &mut MaybeUninit<T>| {
-            unsafe { 
-                let s: *const T = transmute(ptr);
-                dest.as_mut_ptr().write(s.read());
-            }
+        let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
+            let s: *const T = transmute(ptr);
+            dest.as_mut_ptr().write(s.read());
         };
-        let do_clone = move |dest: &mut MaybeUninit<T>| {
-            unsafe { 
-                let s: &T = transmute(ptr);
-                dest.as_mut_ptr().write(s.my_clone2());
-            }
+        let do_clone = move |dest: &mut MaybeUninit<T>| unsafe {
+            let s: &T = transmute(ptr);
+            dest.as_mut_ptr().write(s.my_clone2());
         };
 
         if T::IS_COPY {
@@ -409,7 +406,12 @@ impl<T: PubPortDatum> Getter<T> {
                 }),
                 Space::Memo { ps } => Self::get_data(ps, Some(&mut ret), |was_moved| {
                     // finalization function
-                    self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, was_moved);
+                    self.0
+                        .p
+                        .0
+                        .cr
+                        .lock()
+                        .finalize_memo(&self.0.p.0.r, putter_id, was_moved);
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
             };
@@ -491,7 +493,9 @@ impl ProtoCr {
                             func,
                             args,
                         } => {
-                            let to: TraitObject = func.func;
+                            let to: &Arc<dyn Fn()> = &func.func;
+                            let to: &TraitObject = unsafe { transmute(to) };
+                            let to: TraitObject = *to;
                             let dest_ptr = match args.len() {
                                 0 => {
                                     let funcy: &dyn Fn(TraitData) = unsafe { transmute(to) };
@@ -519,8 +523,12 @@ impl ProtoCr {
                                 for (i_id, i) in rule.ins[0..i_id].iter().enumerate() {
                                     println!("... rolling back {:?}", i);
                                     match i {
-                                        CreateFromFormula { dest, .. } => self.finalize_memo(r, *dest, false),
-                                        CreateFromCall { dest, .. } => self.finalize_memo(r, *dest, false),
+                                        CreateFromFormula { dest, .. } => {
+                                            self.finalize_memo(r, *dest, false)
+                                        }
+                                        CreateFromCall { dest, .. } => {
+                                            self.finalize_memo(r, *dest, false)
+                                        }
                                         Check { .. } => {}
                                         MemMove { src, dest } => unimplemented!(),
                                     }
@@ -791,7 +799,7 @@ impl PutterSpace {
 #[derive(Debug)]
 pub struct Rule {
     bit_guard: BitStatePredicate<BitSet>,
-    ins: Vec<Instruction<LocId, Arc<CallHandle>>>, // dummy
+    ins: Vec<Instruction<LocId, CallHandle>>, // dummy
     /// COMMITMENTS BELOW HERE
     output: Vec<Movement>,
     // .ready is always identical to bit_guard.ready. use that instead
@@ -873,12 +881,11 @@ fn eval_bool(term: &Term<LocId>, r: &ProtoR) -> bool {
     }
 }
 
-pub trait PubPortDatum {
+pub trait PubPortDatum: 'static {
     const IS_COPY: bool;
     fn my_clone2(&self) -> Self;
     fn my_eq2(&self, other: &Self) -> bool;
 }
-
 
 impl<T: 'static + Clone + PartialEq> PubPortDatum for T {
     const IS_COPY: bool = false;
@@ -898,7 +905,10 @@ pub trait PortDatum {
     fn is_copy(&self) -> bool;
 }
 
-impl<T> PortDatum for T where T: PubPortDatum {
+impl<T> PortDatum for T
+where
+    T: PubPortDatum,
+{
     fn my_clone(&self, other: TraitData) {
         let x: *mut Self = unsafe { transmute(other) };
         unsafe { x.write(self.my_clone2()) }
@@ -918,8 +928,7 @@ impl<T> PortDatum for T where T: PubPortDatum {
     }
 }
 
-
-fn main() -> Result<(), (usize, ProtoBuildError)> {
+fn main() -> Result<(), (Option<usize>, ProtoBuildError)> {
     use Instruction::*;
     use Term::*;
 
@@ -927,15 +936,10 @@ fn main() -> Result<(), (usize, ProtoBuildError)> {
         name_defs: hashmap! {
             "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
             "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-            "C" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-            "foo" => NameDef::Func(CallHandle::new_nonary(Box::new(|x: *mut u32| unsafe {
-                println!("HELLO YOU ARE CALLING :3");
-                x.write(7u32)
-            }))),
         },
         rules: vec![RuleDef {
             state_guard: StatePredicate {
-                ready_ports: hashset! {"B"},
+                ready_ports: hashset! {"A", "B"},
                 full_mem: hashset! {},
                 empty_mem: hashset! {},
             },
@@ -953,7 +957,8 @@ fn main() -> Result<(), (usize, ProtoBuildError)> {
             },
         }],
     };
-    let built = build_proto(proto)?;
+    let built = build_proto(&proto, MemInitial::default())?;
+    // let b1
 
     let b = built.r.name_mapping.get_by_first(&"B").unwrap();
     // built.ready_set_coordinate(*b);
@@ -961,20 +966,3 @@ fn main() -> Result<(), (usize, ProtoBuildError)> {
     // println!("built: {:#?}", &built);
     Ok(())
 }
-
-/* TODO:
-1. rule firing properly
-2. proper bitsets
-3. get and put
-    1. overwrite my ptr
-    2. set ready
-    3. participate
-    4. coordinator output
-    5.
-4. sync unit test
-5. fifo1 unit test
-6. MemMove instruction
-7. timeouts
-
-
-*/

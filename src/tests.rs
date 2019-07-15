@@ -225,7 +225,7 @@ pub fn allocator_fresh_alloc() {
 fn call_handle() {
     let mut x = 5;
 
-    let b: Box<dyn Fn(*mut u32)> = Box::new(|dest| unsafe { dest.write(3) });
+    let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| unsafe { dest.write(3) });
     let ch = CallHandle {
         func: unsafe { transmute(b) },
         ret: TypeInfo::of::<u32>(),
@@ -233,7 +233,7 @@ fn call_handle() {
     };
 
     let dest: *mut u32 = &mut x;
-    let funcy: Box<dyn Fn(*mut u32)> = unsafe { transmute(ch.func) };
+    let funcy: Arc<dyn Fn(*mut u32)> = unsafe { transmute(ch.func) };
     funcy(dest);
 
     std::mem::forget(funcy);
@@ -245,7 +245,7 @@ fn call_handle_2() {
     unsafe {
         let mut x = 5;
 
-        let b: Box<dyn Fn(*mut u32)> = Box::new(|dest| dest.write(3));
+        let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| dest.write(3));
         let ch = CallHandle {
             func: transmute(b),
             ret: TypeInfo::of::<u32>(),
@@ -254,7 +254,7 @@ fn call_handle_2() {
 
         let dest: *mut u32 = &mut x;
         let dest: TraitData = transmute(dest);
-        let funcy: &Box<dyn Fn(TraitData)> = transmute(&ch.func);
+        let funcy: &Arc<dyn Fn(TraitData)> = transmute(&ch.func);
         funcy(dest);
 
         std::mem::forget(funcy);
