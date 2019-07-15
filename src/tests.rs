@@ -49,6 +49,30 @@ pub fn type_info_break() {
     }
 }
 
+#[test]
+pub fn trait_obj_changing() {
+    // task: invoke this dynamically-dispatched function using different forms
+    // note: all the chosen forms have the same IN-MEMORY representation, just
+    //   different ownership semantics. Arc<...> is different in some ways to Box<...>.
+    // use `val` to see if it worked.
+
+    let mut val: usize = 0;
+    let mut x: Box<dyn FnMut()> = Box::new(|| val += 1);
+    x(); // as owned heap allocation
+
+    let x: &mut dyn FnMut() = unsafe { transmute(x) };
+    x(); // as borrowed heap allocation
+
+    let x: *mut dyn FnMut() = unsafe { transmute(x) };
+    unsafe { (*x)() }; // as raw heap pointer
+
+    assert_eq!(val, 3);
+
+    // drop x again
+    let x: Box<dyn FnMut()> = unsafe { transmute(x) };
+    drop(x);
+}
+
 /// Note: not threadsafe at all! Need mutex for that
 #[derive(Clone, PartialEq)]
 struct Incrementor(*mut usize);
