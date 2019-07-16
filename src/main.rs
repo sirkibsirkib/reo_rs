@@ -99,8 +99,8 @@ unsafe impl Sync for CallHandle {}
 #[allow(bare_trait_objects)] // DebugStub can't parse the new dyn syntax :(
 #[derive(DebugStub, Clone)]
 pub struct CallHandle {
-    #[debug_stub = "FuncTraitObject"]
-    func: Arc<Fn()>,
+    #[debug_stub = "FuncPtr"]
+    func: unsafe fn(), // dummy type
     ret: TypeInfo,
     args: Vec<TypeInfo>,
 }
@@ -122,28 +122,26 @@ pub struct OutputToken {
 
 impl CallHandle {
     pub(crate) unsafe fn exec(&self, dest_ptr: TraitData, args: &[TraitData]) {
-        let to: &Arc<dyn Fn()> = &self.func;
-        let to: &TraitObject = transmute(to);
-        let to: TraitObject = *to;
+        let to: unsafe fn() = self.func;
         assert_eq!(self.args.len(), args.len());
         let dest_ptr = match args.len() {
             0 => {
-                let funcy: &dyn Fn(TraitData) = transmute(to);
+                let funcy: fn(TraitData) = transmute(to);
                 funcy(dest_ptr);
             },
             1 => {
-                let funcy: &dyn Fn(TraitData, TraitData) = transmute(to);
+                let funcy: fn(TraitData, TraitData) = transmute(to);
                 funcy(dest_ptr, args[0]);
             }
             // TODO
             _ => unreachable!(),
         };
     }
-    pub unsafe fn new_nonary_raw<R: PortDatum>(func: Arc<dyn Fn(*mut R) + Sync>) -> Self {
-        CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
-    }
+    // pub unsafe fn new_nonary_raw<R: PortDatum>(func: Arc<dyn Fn(*mut R) + Sync>) -> Self {
+    //     CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
+    // }
     pub unsafe fn new_unary_raw<R: PortDatum, A0: PortDatum>(
-        func: Arc<dyn Fn(*mut R, *const A0) + Sync>,
+        func: fn(*mut R, *const A0),
     ) -> Self {
         CallHandle {
             func: transmute(func),
@@ -153,7 +151,7 @@ impl CallHandle {
     }
 
     pub fn new_unary<R: PortDatum, A0: PortDatum>(
-        func: Arc<dyn Fn(Outputter<R>, &A0) -> OutputToken + Sync>,
+        func: fn(Outputter<R>, &A0) -> OutputToken,
     ) -> Self {
         unsafe { Self::new_unary_raw::<R, A0>(transmute(func)) }
     }
@@ -740,22 +738,6 @@ impl ProtoCr {
                             let arg_stack =
                                 args.iter().map(|arg| eval_ptr(arg, r)).collect::<Vec<_>>();
                             unsafe { func.exec(dest_ptr, &arg_stack[..]) };
-                            let to: &Arc<dyn Fn()> = &func.func;
-                            let to: &TraitObject = unsafe { transmute(to) };
-                            let to: TraitObject = *to;
-                            let dest_ptr = match args.len() {
-                                0 => {
-                                    let funcy: &dyn Fn(TraitData) = unsafe { transmute(to) };
-                                    unsafe {
-                                        let dest_ptr = self.allocator.alloc_uninit(*info);
-                                        funcy(dest_ptr);
-                                        dest_ptr
-                                    }
-                                }
-                                // TODO
-                                _ => unreachable!(),
-                            };
-                            // println!("dest is {:?}", dest_ptr);
                             let old = r.spaces[dest.0]
                                 .get_putter_space()
                                 .unwrap()

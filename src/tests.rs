@@ -233,36 +233,35 @@ pub fn allocator_fresh_alloc() {
 
 #[test]
 fn call_handle() {
-    let mut x = 5;
+    let f: fn(Outputter<u32>, &u32) -> OutputToken = |o, i| o.output(*i + 1);
+    let ch = CallHandle::new_unary(f);
 
-    let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| unsafe { dest.write(3) });
-    let ch = CallHandle { func: unsafe { transmute(b) }, ret: TypeInfo::of::<u32>(), args: vec![] };
+    let mut o: u32 = 9999;
+    let dest: TraitData = unsafe { transmute(&mut o) };
+    let args: [u32;1] = [3];
+    let arg_ref = unsafe { [transmute(&args[0])]};
 
-    let dest: *mut u32 = &mut x;
-    let funcy: Arc<dyn Fn(*mut u32)> = unsafe { transmute(ch.func) };
-    funcy(dest);
-
-    std::mem::forget(funcy);
-    println!("x={:?}", x);
+    unsafe { ch.exec(dest, &arg_ref[..]) };
+    assert_eq!(o, 4);
 }
 
-#[test]
-fn call_handle_2() {
-    unsafe {
-        let mut x = 5;
+// #[test]
+// fn call_handle_2() {
+//     unsafe {
+//         let mut x = 5;
 
-        let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| dest.write(3));
-        let ch = CallHandle { func: transmute(b), ret: TypeInfo::of::<u32>(), args: vec![] };
+//         let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| dest.write(3));
+//         let ch = CallHandle { func: transmute(b), ret: TypeInfo::of::<u32>(), args: vec![] };
 
-        let dest: *mut u32 = &mut x;
-        let dest: TraitData = transmute(dest);
-        let funcy: &Arc<dyn Fn(TraitData)> = transmute(&ch.func);
-        funcy(dest);
+//         let dest: *mut u32 = &mut x;
+//         let dest: TraitData = transmute(dest);
+//         let funcy: &Arc<dyn Fn(TraitData)> = transmute(&ch.func);
+//         funcy(dest);
 
-        std::mem::forget(funcy);
-        println!("x={:?}", x);
-    }
-}
+//         std::mem::forget(funcy);
+//         println!("x={:?}", x);
+//     }
+// }
 
 lazy_static::lazy_static! {
     static ref SYNC_U32: ProtoDef = ProtoDef {
@@ -544,9 +543,9 @@ lazy_static::lazy_static! {
             "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<i32>() },
             "Cpos" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
             "Cneg" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
-            "is_neg" => NameDef::Func(CallHandle::new_unary(Arc::new(|o: Outputter<bool>, i: &i32| {
+            "is_neg" => NameDef::Func(CallHandle::new_unary(|o: Outputter<bool>, i: &i32| {
                 o.output(*i < 0)
-            }))),
+            })),
         },
         rules: vec![
             RuleDef {
