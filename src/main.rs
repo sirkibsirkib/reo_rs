@@ -110,9 +110,7 @@ pub struct Outputter<T> {
 }
 impl<T> Outputter<T> {
     pub fn output(self, t: T) -> OutputToken<T> {
-        unsafe {
-            self.dest.write(t)
-        }
+        unsafe { self.dest.write(t) }
         OutputToken { _phantom: Default::default() }
     }
 }
@@ -122,8 +120,7 @@ pub struct OutputToken<T> {
     _phantom: PhantomData<T>,
 }
 
-
-/* Call handle can store a function with signature fn(*mut R, *const A0, *const A1) 
+/* Call handle can store a function with signature fn(*mut R, *const A0, *const A1)
 but expose an API that allows you to input a function with signature fn(Outputter<R>, &A0, &A1) -> OutputToken<R>.
 They have the same in-memory representation.
 *const T -> &T is safe because ReoRs promises the destination will be valid.
@@ -133,7 +130,7 @@ is identical to
 |p| p.write(5);
 on the metal,
 
-but the compiler will not compile the former unless the user calls output. 
+but the compiler will not compile the former unless the user calls output.
 It's essentially a signature of fn() -> R, but for R written using an out pointer
 
 
@@ -148,7 +145,7 @@ impl CallHandle {
             0 => {
                 let funcy: fn(TraitData) = transmute(to);
                 funcy(dest_ptr);
-            },
+            }
             1 => {
                 let funcy: fn(TraitData, TraitData) = transmute(to);
                 funcy(dest_ptr, args[0]);
@@ -160,9 +157,7 @@ impl CallHandle {
     pub unsafe fn new_nonary_raw<R: PortDatum>(func: fn(*mut R)) -> Self {
         CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
     }
-    pub unsafe fn new_unary_raw<R: PortDatum, A0: PortDatum>(
-        func: fn(*mut R, *const A0),
-    ) -> Self {
+    pub unsafe fn new_unary_raw<R: PortDatum, A0: PortDatum>(func: fn(*mut R, *const A0)) -> Self {
         CallHandle {
             func: transmute(func),
             ret: TypeInfo::of::<R>(),
@@ -171,9 +166,7 @@ impl CallHandle {
     }
 
     //////////////////
-    pub fn new_nonary<R: PortDatum>(
-        func: fn(Outputter<R>) -> OutputToken<R>,
-    ) -> Self {
+    pub fn new_nonary<R: PortDatum>(func: fn(Outputter<R>) -> OutputToken<R>) -> Self {
         unsafe { Self::new_nonary_raw::<R>(transmute(func)) }
     }
 
@@ -629,6 +622,7 @@ impl ProtoR {
                     ),
                     Instruction::CreateFromCall { info, dest, func, args } => {
                         let cap = &capabilities[dest.0];
+                        assert!(known_filled.insert(*dest, true).is_none());
                         assert_eq!(*info, cap.ty);
                         assert_eq!(func.ret, cap.ty);
                         assert_eq!(func.args.len(), args.len());
@@ -638,6 +632,7 @@ impl ProtoR {
                         }
                     }
                     Instruction::CreateFromFormula { dest, term } => {
+                        assert!(known_filled.insert(*dest, true).is_none());
                         let cap = &capabilities[dest.0];
                         assert_eq!(cap.ty, check_and_ret_type(&capabilities, &known_filled, term))
                     }

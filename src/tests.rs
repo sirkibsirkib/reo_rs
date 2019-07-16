@@ -251,8 +251,8 @@ fn call_handle_unary() {
 
     let mut o: u32 = 9999;
     let dest: TraitData = unsafe { transmute(&mut o) };
-    let args: [u32;1] = [3];
-    let arg_ref = unsafe { [transmute(&args[0])]};
+    let args: [u32; 1] = [3];
+    let arg_ref = unsafe { [transmute(&args[0])] };
 
     unsafe { ch.exec(dest, &arg_ref[..]) };
     assert_eq!(o, 4);
@@ -586,7 +586,6 @@ fn pos_neg_claim() {
     );
 }
 
-
 #[test]
 fn pos_neg_classification() {
     let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
@@ -598,19 +597,86 @@ fn pos_neg_classification() {
 
     let h = std::thread::spawn(move || {
         for i in 0i32..5 {
-            p.put(i-3);
+            p.put(i - 3);
         }
     });
 
     let d = Duration::from_millis(200);
-    let was_pos: Vec<bool> = (0..5).map(|_| {
-        if cpos.get_timeout(d).is_some() {
-            true
-        } else if cneg.get_timeout(d).is_some() {
-            false
-        } else {
-            panic!("hmm")
-        }
-    }).collect();
+    let was_pos: Vec<bool> = (0..5)
+        .map(|_| {
+            if cpos.get_timeout(d).is_some() {
+                true
+            } else if cneg.get_timeout(d).is_some() {
+                false
+            } else {
+                panic!("hmm")
+            }
+        })
+        .collect();
     println!("{:?}", was_pos);
+}
+
+
+lazy_static::lazy_static! {
+    static ref CREATE: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "A" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<bool>() },
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"A"},
+                full_mem: hashset! {},
+                empty_mem: hashset! {},
+            },
+            ins: vec![
+                Instruction::CreateFromFormula { dest: "B", term: Term::False },
+            ],
+            output: hashmap! {
+                "B" => (false, hashset!{"A"})
+            },
+        }],
+    };
+}
+
+#[test]
+fn create_create() {
+    let p = build_proto(&CREATE, MemInitial::default()).unwrap();
+}
+#[test]
+fn create_claim() {
+    let p = build_proto(&CREATE, MemInitial::default()).unwrap();
+    let g = Getter::<bool>::claim(&p, "A").unwrap();
+}
+#[test]
+fn create_claim_run() {
+    let p = build_proto(&CREATE, MemInitial::default()).unwrap();
+    let mut g = Getter::<bool>::claim(&p, "A").unwrap();
+    for _ in 0..10 {
+        let x = g.get();
+        println!("was {:?}", x);
+        assert!(!x);
+    }
+}
+
+lazy_static::lazy_static! {
+    static ref CREATE2: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
+            "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
+            "one" => NameDef::Func(CallHandle::new_nonary(|o| o.output(false))), 
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"A"},
+                full_mem: hashset! {},
+                empty_mem: hashset! {},
+            },
+            ins: vec![
+                Instruction::CreateFromCall { dest: "B" , func: "one", args: vec![], info: TypeInfo::of::<bool>() },
+            ],
+            output: hashmap! {
+                "B" => (false, hashset!{"A"})
+            },
+        }],
+    };
 }

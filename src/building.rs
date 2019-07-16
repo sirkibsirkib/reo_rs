@@ -70,6 +70,7 @@ pub enum ProtoBuildError {
     InitialTypeMismatch { name: Name },
     PutterCannotPutWhenEmpty { name: Name },
     MovementTypeMismatch { getter: Name, putter: Name },
+    InstructionCannotOverwrite { name: Name }, // todo get more sophisticated
 }
 
 fn resolve_putter(
@@ -299,8 +300,9 @@ pub fn build_proto(
             .ins
             .iter()
             .map(|i| {
+                use Instruction::*;
                 Ok(match i {
-                    Instruction::Check { term } => {
+                    Check { term } => {
                         if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
                             != TypeInfo::of::<bool>()
                         {
@@ -315,7 +317,28 @@ pub fn build_proto(
                                 term,
                             )?,
                         }
-                    }
+                    },
+                    CreateFromFormula { dest, term } => {
+                        let type_info = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
+                        if type_info != TypeInfo::of::<bool>() {
+                            return Err(CreatingNonBoolFromFormula);
+                        }
+                        if resolve_putter(&temp_names, &name_mapping, dest).is_ok() {
+                            return Err(InstructionCannotOverwrite { name: dest })
+                        }
+                        let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
+                        spaces.push(Space::Memo { ps });
+                        let dest_id = LocId(spaces.len()-1);
+                        if temp_names.insert(dest, (dest_id, type_info)).is_some() {
+                            return Err(InstructionShadowsName { name: dest });
+                        }
+                        to_put.insert(dest);
+                        let term = term_convert(&spaces, &temp_names, &name_mapping, &call_handles, &term)?;
+                        CreateFromFormula {
+                            dest: dest_id,
+                            term,
+                        }
+                    },
                     _ => unimplemented!(),
                 })
             })
