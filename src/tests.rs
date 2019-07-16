@@ -660,24 +660,32 @@ fn create_run() {
 }
 
 lazy_static::lazy_static! {
-    static ref CREATE2: ProtoDef = ProtoDef {
+    static ref MANUAL_CLONE: ProtoDef = ProtoDef {
         name_defs: hashmap! {
-            "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
-            "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-            "one" => NameDef::Func(CallHandle::new_nonary(|o| o.output(false))), 
+            "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Incrementor>() },
+            "f_clone" => NameDef::Func(CallHandle::new_unary(|o, i: &Incrementor| o.output(i.clone()))), 
+            "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
+            "C" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
         },
         rules: vec![RuleDef {
             state_guard: StatePredicate {
-                ready_ports: hashset! {"A"},
+                ready_ports: hashset! {"A", "B", "C"},
                 full_mem: hashset! {},
                 empty_mem: hashset! {},
             },
             ins: vec![
-                Instruction::CreateFromCall { dest: "B" , func: "one", args: vec![], info: TypeInfo::of::<bool>() },
+                Instruction::CreateFromCall { dest: "D" , func: "f_clone", args: vec![Term::Named("A")], info: TypeInfo::of::<Incrementor>() },
             ],
             output: hashmap! {
-                "B" => (false, hashset!{"A"})
+                "A" => (false, hashset!{"B"}),
+                "D" => (false, hashset!{"C"}),
             },
         }],
     };
+}
+
+
+#[test]
+fn create_manual_clone() {
+    let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
 }
