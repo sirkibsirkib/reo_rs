@@ -544,13 +544,9 @@ lazy_static::lazy_static! {
             "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<i32>() },
             "Cpos" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
             "Cneg" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
-            "is_neg" => NameDef::Func(unsafe { CallHandle::new_unary_raw(Arc::new(|o: *mut bool, i: *const i32| {
-                if *i < 0 {
-                    *o = true;
-                } else {
-                    *o = false;
-                }
-            }))}),
+            "is_neg" => NameDef::Func(CallHandle::new_unary(Arc::new(|o: Outputter<bool>, i: &i32| {
+                o.output(*i < 0)
+            }))),
         },
         rules: vec![
             RuleDef {

@@ -104,6 +104,22 @@ pub struct CallHandle {
     ret: TypeInfo,
     args: Vec<TypeInfo>,
 }
+
+pub struct Outputter<T> {
+    dest: *mut T,
+}
+impl<T> Outputter<T> {
+    pub fn output(self, t: T) -> OutputToken {
+        unsafe {
+            self.dest.write(t)
+        }
+        OutputToken { _hidden: () }
+    }
+}
+pub struct OutputToken {
+    _hidden: ()
+}
+
 impl CallHandle {
     pub(crate) unsafe fn exec(&self, dest_ptr: TraitData, args: &[TraitData]) {
         let to: &Arc<dyn Fn()> = &self.func;
@@ -134,6 +150,12 @@ impl CallHandle {
             ret: TypeInfo::of::<R>(),
             args: vec![TypeInfo::of::<A0>()],
         }
+    }
+
+    pub fn new_unary<R: PortDatum, A0: PortDatum>(
+        func: Arc<dyn Fn(Outputter<R>, &A0) -> OutputToken + Sync>,
+    ) -> Self {
+        unsafe { Self::new_unary_raw::<R, A0>(transmute(func)) }
     }
     // pub unsafe fn new_binary_raw<R: PortDatum, A0: PortDatum, A1: PortDatum>(
     //     func: Arc<dyn Fn(*mut R, *const A0, *const A1) + Sync>,
