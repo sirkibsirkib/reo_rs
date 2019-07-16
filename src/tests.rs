@@ -232,8 +232,21 @@ pub fn allocator_fresh_alloc() {
 }
 
 #[test]
-fn call_handle() {
-    let f: fn(Outputter<u32>, &u32) -> OutputToken = |o, i| o.output(*i + 1);
+fn call_handle_nonary() {
+    let f: fn(Outputter<String>) -> OutputToken<String> = |o| o.output(String::from("HI"));
+    let ch = CallHandle::new_nonary(f);
+
+    let mut dest_datum: MaybeUninit<String> = MaybeUninit::uninit();
+    let dest: TraitData = unsafe { transmute(&mut dest_datum) };
+    unsafe { ch.exec(dest, &[]) };
+
+    let d = unsafe { dest_datum.assume_init() };
+    assert_eq!(&d, "HI");
+}
+
+#[test]
+fn call_handle_unary() {
+    let f: fn(Outputter<u32>, &u32) -> OutputToken<u32> = |o, i| o.output(*i + 1);
     let ch = CallHandle::new_unary(f);
 
     let mut o: u32 = 9999;
@@ -244,24 +257,6 @@ fn call_handle() {
     unsafe { ch.exec(dest, &arg_ref[..]) };
     assert_eq!(o, 4);
 }
-
-// #[test]
-// fn call_handle_2() {
-//     unsafe {
-//         let mut x = 5;
-
-//         let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| dest.write(3));
-//         let ch = CallHandle { func: transmute(b), ret: TypeInfo::of::<u32>(), args: vec![] };
-
-//         let dest: *mut u32 = &mut x;
-//         let dest: TraitData = transmute(dest);
-//         let funcy: &Arc<dyn Fn(TraitData)> = transmute(&ch.func);
-//         funcy(dest);
-
-//         std::mem::forget(funcy);
-//         println!("x={:?}", x);
-//     }
-// }
 
 lazy_static::lazy_static! {
     static ref SYNC_U32: ProtoDef = ProtoDef {
