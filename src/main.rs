@@ -740,18 +740,21 @@ impl ProtoCr {
                         MemMove { src, dest } => unimplemented!(),
                         CreateFromFormula { dest, term } => {
                             // MUST BE BOOL. creation ensures it
+                            let tbool = TypeInfo::of::<bool>();
+                            let value = eval_bool(term, r);
                             let dest_ptr = unsafe {
-                                let dest_ptr = self.allocator.alloc_uninit(TypeInfo::of::<bool>());
-                                let dest: *mut bool = transmute(dest_ptr);
-                                *dest = eval_bool(term, r);
+                                let dest_ptr = self.allocator.alloc_uninit(tbool);
+                                let q: *mut bool = transmute(dest_ptr);
+                                q.write(value);
                                 dest_ptr
                             };
-                            r.spaces[dest.0]
+                            let old = r.spaces[dest.0]
                                 .get_putter_space()
                                 .unwrap()
                                 .ptr
-                                .store(dest_ptr, SeqCst);
-                            let was = self.ref_counts.insert(dest_ptr as usize, 0);
+                                .swap(dest_ptr, SeqCst);
+                            assert_eq!(old, NULL);
+                            let was = self.ref_counts.insert(dest_ptr as usize, 1);
                             assert!(was.is_none());
                         }
                         CreateFromCall { info, dest, func, args } => {

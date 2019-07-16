@@ -647,8 +647,9 @@ fn create_claim() {
     let p = build_proto(&CREATE, MemInitial::default()).unwrap();
     let g = Getter::<bool>::claim(&p, "A").unwrap();
 }
+
 #[test]
-fn create_claim_run() {
+fn create_run() {
     let p = build_proto(&CREATE, MemInitial::default()).unwrap();
     let mut g = Getter::<bool>::claim(&p, "A").unwrap();
     for _ in 0..10 {
