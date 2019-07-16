@@ -85,10 +85,7 @@ unsafe fn trait_obj_break(x: Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
 
 #[inline]
 unsafe fn trait_obj_build(data: TraitData, info: TypeInfo) -> Box<dyn PortDatum> {
-    let x = TraitObject {
-        data,
-        vtable: info.0,
-    };
+    let x = TraitObject { data, vtable: info.0 };
     transmute(x)
 }
 #[inline]
@@ -117,124 +114,87 @@ impl CallHandle {
             0 => {
                 let funcy: &dyn Fn(TraitData) = transmute(to);
                 funcy(dest_ptr);
+            },
+            1 => {
+                let funcy: &dyn Fn(TraitData, TraitData) = transmute(to);
+                funcy(dest_ptr, args[0]);
             }
             // TODO
             _ => unreachable!(),
         };
     }
-    pub fn new_nonary<R: PortDatum>(func: Arc<dyn Fn(*mut R) + Sync>) -> Self {
-        CallHandle {
-            func: unsafe { transmute(func) },
-            ret: TypeInfo::of::<R>(),
-            args: vec![],
-        }
+    pub unsafe fn new_nonary_raw<R: PortDatum>(func: Arc<dyn Fn(*mut R) + Sync>) -> Self {
+        CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
     }
-    pub fn new_unary<R: PortDatum, A0: PortDatum>(
+    pub unsafe fn new_unary_raw<R: PortDatum, A0: PortDatum>(
         func: Arc<dyn Fn(*mut R, *const A0) + Sync>,
     ) -> Self {
         CallHandle {
-            func: unsafe { transmute(func) },
+            func: transmute(func),
             ret: TypeInfo::of::<R>(),
             args: vec![TypeInfo::of::<A0>()],
         }
     }
-    pub fn new_binary<R: PortDatum, A0: PortDatum, A1: PortDatum>(
-        func: Arc<dyn Fn(*mut R, *const A0, *const A1) + Sync>,
-    ) -> Self {
-        CallHandle {
-            func: unsafe { transmute(func) },
-            ret: TypeInfo::of::<R>(),
-            args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>()],
-        }
-    }
-    pub fn new_ternary<R: PortDatum, A0: PortDatum, A1: PortDatum, A2: PortDatum>(
-        func: Arc<dyn Fn(*mut R, *const A0, *const A1, *const A2) + Sync>,
-    ) -> Self {
-        CallHandle {
-            func: unsafe { transmute(func) },
-            ret: TypeInfo::of::<R>(),
-            args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>(), TypeInfo::of::<A2>()],
-        }
-    }
+    // pub unsafe fn new_binary_raw<R: PortDatum, A0: PortDatum, A1: PortDatum>(
+    //     func: Arc<dyn Fn(*mut R, *const A0, *const A1) + Sync>,
+    // ) -> Self {
+    //     CallHandle {
+    //         func: transmute(func),
+    //         ret: TypeInfo::of::<R>(),
+    //         args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>()],
+    //     }
+    // }
+    // pub unsafe fn new_ternary_raw<R: PortDatum, A0: PortDatum, A1: PortDatum, A2: PortDatum>(
+    //     func: Arc<dyn Fn(*mut R, *const A0, *const A1, *const A2) + Sync>,
+    // ) -> Self {
+    //     CallHandle {
+    //         func: transmute(func),
+    //         ret: TypeInfo::of::<R>(),
+    //         args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>(), TypeInfo::of::<A2>()],
+    //     }
+    // }
 }
 
 pub type Name = &'static str;
 
 #[derive(Debug)]
 pub enum Term<I, F> {
-    True,           // returns bool
-    False,          // returns bool
-    Not(Box<Self>), // returns bool
-    And(Vec<Self>), // returns bool
-    Or(Vec<Self>),  // returns bool
-    BoolCall {
-        func: F,
-        args: Vec<Term<I, F>>,
-    }, // returns bool
-    IsEq(TypeInfo, Box<[Self; 2]>), // returns bool
-    Named(I),       // type of I
+    True,                                        // returns bool
+    False,                                       // returns bool
+    Not(Box<Self>),                              // returns bool
+    And(Vec<Self>),                              // returns bool
+    Or(Vec<Self>),                               // returns bool
+    BoolCall { func: F, args: Vec<Term<I, F>> }, // returns bool
+    IsEq(TypeInfo, Box<[Self; 2]>),              // returns bool
+    Named(I),                                    // type of I
 }
 
 #[derive(Debug)]
 pub enum Instruction<I, F> {
-    CreateFromFormula {
-        dest: I,
-        term: Term<I, F>,
-    },
-    CreateFromCall {
-        info: TypeInfo,
-        dest: I,
-        func: F,
-        args: Vec<Term<I, F>>,
-    },
-    Check {
-        term: Term<I, F>,
-    },
-    MemMove {
-        src: I,
-        dest: I,
-    }, // TODO move data between memcells
+    CreateFromFormula { dest: I, term: Term<I, F> },
+    CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
+    Check { term: Term<I, F> },
+    MemMove { src: I, dest: I }, // TODO move data between memcells
 }
 #[derive(Debug)]
 pub enum Space {
-    PoPu {
-        ps: PutterSpace,
-        mb: MsgBox,
-    },
-    PoGe {
-        mb: MsgBox,
-    },
-    Memo {
-        ps: PutterSpace,
-    },
+    PoPu { ps: PutterSpace, mb: MsgBox },
+    PoGe { mb: MsgBox },
+    Memo { ps: PutterSpace },
 }
 impl Space {
     fn get_putter_space(&self) -> Option<&PutterSpace> {
         match self {
-            Space::PoPu {
-                ps,
-                ..
-            } => Some(ps),
-            Space::PoGe {
-                ..
-            } => None,
-            Space::Memo {
-                ps,
-            } => Some(ps),
+            Space::PoPu { ps, .. } => Some(ps),
+            Space::PoGe { .. } => None,
+            Space::Memo { ps } => Some(ps),
         }
     }
     fn get_msg_box(&self) -> Option<&MsgBox> {
         match self {
-            Space::PoPu {
-                mb,
-                ..
-            } => Some(mb),
-            Space::PoGe {
-                mb,
-            } => Some(mb),
-            Space::Memo {
-                ..
-            } => None,
+            Space::PoPu { mb, .. } => Some(mb),
+            Space::PoGe { mb } => Some(mb),
+            Space::Memo { .. } => None,
         }
     }
 }
@@ -246,10 +206,7 @@ pub struct MsgBox {
 impl Default for MsgBox {
     fn default() -> Self {
         let (s, r) = crossbeam_channel::bounded(1);
-        Self {
-            s,
-            r,
-        }
+        Self { s, r }
     }
 }
 impl MsgBox {
@@ -277,7 +234,7 @@ pub struct Proto {
 
 impl Eq for ProtoHandle {}
 #[derive(Debug, Clone)]
-pub struct ProtoHandle(Arc<Proto>);
+pub struct ProtoHandle(pub Arc<Proto>);
 impl PartialEq for ProtoHandle {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
@@ -327,11 +284,7 @@ impl PortCommon {
             }
             let mut x = p.0.cr.lock();
             if x.unclaimed.remove(id) {
-                let q = Ok(Self {
-                    id: *id,
-                    type_info,
-                    p: p.clone(),
-                });
+                let q = Ok(Self { id: *id, type_info, p: p.clone() });
                 println!("{:?}", q);
                 q
             } else {
@@ -352,11 +305,7 @@ impl<T: PortDatum> Putter<T> {
     // returns whether the value was CONSUMED
     pub fn put_entirely(&mut self, ptr: TraitData) -> bool {
         let space = &self.0.p.0.r.spaces[self.0.id.0];
-        if let Space::PoPu {
-            ps,
-            mb,
-        } = space
-        {
+        if let Space::PoPu { ps, mb } = space {
             assert_eq!(NULL, ps.ptr.swap(ptr, SeqCst));
             {
                 let mut x = self.0.p.0.cr.lock();
@@ -471,10 +420,7 @@ impl<T: PubPortDatum> Getter<T> {
         maybe_dest: Option<&mut MaybeUninit<T>>,
     ) -> bool {
         let space = &self.0.p.0.r.spaces[self.0.id.0];
-        if let Space::PoGe {
-            mb,
-        } = space
-        {
+        if let Space::PoGe { mb } = space {
             {
                 let mut x = self.0.p.0.cr.lock();
                 assert!(x.ready.insert(self.0.id));
@@ -485,10 +431,7 @@ impl<T: PubPortDatum> Getter<T> {
                 Some(msg) => LocId(msg),
             };
             match &self.0.p.0.r.spaces[putter_id.0] {
-                Space::PoPu {
-                    ps,
-                    mb,
-                } => Self::get_data(ps, maybe_dest, move |was_moved| {
+                Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |was_moved| {
                     // finalization function
                     if was_moved {
                         assert!(NULL != ps.ptr.swap(NULL, SeqCst));
@@ -497,16 +440,12 @@ impl<T: PubPortDatum> Getter<T> {
                         mb.send(MsgBox::UNMOVED_MSG)
                     };
                 }),
-                Space::Memo {
-                    ps,
-                } => Self::get_data(ps, maybe_dest, |was_moved| {
+                Space::Memo { ps } => Self::get_data(ps, maybe_dest, |was_moved| {
                     // finalization function
                     println!("was moved? {:?}", was_moved);
                     self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, was_moved);
                 }),
-                Space::PoGe {
-                    ..
-                } => panic!("CANNOT"),
+                Space::PoGe { .. } => panic!("CANNOT"),
             };
         } else {
             panic!("am I not a getter?");
@@ -555,31 +494,16 @@ impl ProtoR {
             .iter()
             .enumerate()
             .map(|(id, x)| match x {
-                Space::PoPu {
-                    ps,
-                    ..
-                } => Cap {
-                    put: true,
-                    msg: true,
-                    mem: false,
-                    ty: ps.type_info,
-                },
-                Space::PoGe {
-                    ..
-                } => Cap {
+                Space::PoPu { ps, .. } => {
+                    Cap { put: true, msg: true, mem: false, ty: ps.type_info }
+                }
+                Space::PoGe { .. } => Cap {
                     put: false,
                     msg: true,
                     mem: false,
                     ty: self.port_info.get(&LocId(id)).unwrap().1,
                 },
-                Space::Memo {
-                    ps,
-                } => Cap {
-                    put: true,
-                    msg: false,
-                    mem: true,
-                    ty: ps.type_info,
-                },
+                Space::Memo { ps } => Cap { put: true, msg: false, mem: true, ty: ps.type_info },
             })
             .collect();
         for (k, (putter, tinfo)) in self.port_info.iter() {
@@ -628,10 +552,7 @@ impl ProtoR {
                         assert_eq!(check_and_ret_type(capabilities, known_filled, t), tbool);
                         tbool
                     }
-                    BoolCall {
-                        func,
-                        args,
-                    } => {
+                    BoolCall { func, args } => {
                         assert_eq!(func.ret, tbool);
                         assert_eq!(func.args.len(), args.len());
                         for (&t0, term) in func.args.iter().zip(args.iter()) {
@@ -655,18 +576,11 @@ impl ProtoR {
             }
             for i in rule.ins.iter() {
                 match i {
-                    Instruction::Check {
-                        term,
-                    } => assert_eq!(
+                    Instruction::Check { term } => assert_eq!(
                         TypeInfo::of::<bool>(),
                         check_and_ret_type(&capabilities, &known_filled, term)
                     ),
-                    Instruction::CreateFromCall {
-                        info,
-                        dest,
-                        func,
-                        args,
-                    } => {
+                    Instruction::CreateFromCall { info, dest, func, args } => {
                         let cap = &capabilities[dest.0];
                         assert_eq!(*info, cap.ty);
                         assert_eq!(func.ret, cap.ty);
@@ -676,17 +590,11 @@ impl ProtoR {
                             assert_eq!(t0, t1);
                         }
                     }
-                    Instruction::CreateFromFormula {
-                        dest,
-                        term,
-                    } => {
+                    Instruction::CreateFromFormula { dest, term } => {
                         let cap = &capabilities[dest.0];
                         assert_eq!(cap.ty, check_and_ret_type(&capabilities, &known_filled, term))
                     }
-                    Instruction::MemMove {
-                        src,
-                        dest,
-                    } => {
+                    Instruction::MemMove { src, dest } => {
                         assert_eq!(known_filled.get(src), Some(&true));
                         assert_eq!(known_filled.get(dest), Some(&false));
                         known_filled.insert(*src, false);
@@ -787,14 +695,8 @@ impl ProtoCr {
                 for (i_id, i) in rule.ins.iter().enumerate() {
                     use Instruction::*;
                     match i {
-                        MemMove {
-                            src,
-                            dest,
-                        } => unimplemented!(),
-                        CreateFromFormula {
-                            dest,
-                            term,
-                        } => {
+                        MemMove { src, dest } => unimplemented!(),
+                        CreateFromFormula { dest, term } => {
                             // MUST BE BOOL. creation ensures it
                             let dest_ptr = unsafe {
                                 let dest_ptr = self.allocator.alloc_uninit(TypeInfo::of::<bool>());
@@ -810,12 +712,7 @@ impl ProtoCr {
                             let was = self.ref_counts.insert(dest_ptr as usize, 0);
                             assert!(was.is_none());
                         }
-                        CreateFromCall {
-                            info,
-                            dest,
-                            func,
-                            args,
-                        } => {
+                        CreateFromCall { info, dest, func, args } => {
                             let dest_ptr = unsafe { self.allocator.alloc_uninit(*info) };
                             // TODO MAKE LESS CLUNKY
                             let arg_stack =
@@ -846,30 +743,21 @@ impl ProtoCr {
                             let was = self.ref_counts.insert(dest_ptr as usize, 1);
                             assert!(was.is_none());
                         }
-                        Check {
-                            term,
-                        } => {
+                        Check { term } => {
                             if !eval_bool(term, r) {
                                 // ROLLBACK!
                                 // println!("ROLLBACK!");
                                 for (i_id, i) in rule.ins[0..i_id].iter().enumerate() {
                                     // println!("... rolling back {:?}", i);
                                     match i {
-                                        CreateFromFormula {
-                                            dest,
-                                            ..
-                                        } => self.finalize_memo(r, *dest, false),
-                                        CreateFromCall {
-                                            dest,
-                                            ..
-                                        } => self.finalize_memo(r, *dest, false),
-                                        Check {
-                                            ..
-                                        } => {}
-                                        MemMove {
-                                            src,
-                                            dest,
-                                        } => unimplemented!(),
+                                        CreateFromFormula { dest, .. } => {
+                                            self.finalize_memo(r, *dest, false)
+                                        }
+                                        CreateFromCall { dest, .. } => {
+                                            self.finalize_memo(r, *dest, false)
+                                        }
+                                        Check { .. } => {}
+                                        MemMove { src, dest } => unimplemented!(),
                                     }
                                 }
                                 // println!("DID CreateFromCall");
@@ -910,13 +798,8 @@ impl ProtoCr {
         let ps: &PutterSpace = loop {
             // loops exactly once 1 or 2 times
             match &r.spaces[putter.0] {
-                Space::PoGe {
-                    ..
-                } => panic!("CANNOT BE!"),
-                Space::PoPu {
-                    ps,
-                    mb,
-                } => {
+                Space::PoGe { .. } => panic!("CANNOT BE!"),
+                Space::PoPu { ps, mb } => {
                     println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
                     if let Some(mem_0) = me_ge_iter.next() {
@@ -952,9 +835,7 @@ impl ProtoCr {
                         break ps;
                     }
                 }
-                Space::Memo {
-                    ps,
-                } => {
+                Space::Memo { ps } => {
                     println!("MEMO MOVEMENT");
                     println!("PTR IS {:p}", ps.ptr.load(SeqCst));
                     // FINAL LOOP
@@ -1107,11 +988,7 @@ impl MoveFlags {
 
     #[inline]
     fn reset(&self, move_enabled: bool) {
-        let val = if move_enabled {
-            Self::MOVE_FLAG_DISABLED
-        } else {
-            0
-        };
+        let val = if move_enabled { Self::MOVE_FLAG_DISABLED } else { 0 };
         self.move_flags.store(val, SeqCst);
     }
 }
@@ -1181,13 +1058,7 @@ type BitSet = HashSet<LocId>;
 
 #[inline]
 fn bool_to_ptr(x: bool) -> TraitData {
-    unsafe {
-        transmute(if x {
-            &true
-        } else {
-            &false
-        })
-    }
+    unsafe { transmute(if x { &true } else { &false }) }
 }
 
 fn eval_ptr(term: &Term<LocId, CallHandle>, r: &ProtoR) -> TraitData {
@@ -1221,15 +1092,10 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
         // PTR points to BOOL
         Named(i) => ptr_to_bool(eval_ptr(term, r)),
         // INHERENTLY BOOL
-        BoolCall {
-            func,
-            args,
-        } => {
+        BoolCall { func, args } => {
             let mut ret: AtomicBool = false.into();
             // TODO make this less clunky
-            let args = args.iter().map(|arg| {
-                eval_ptr(arg, r)
-            }).collect::<Vec<_>>();
+            let args = args.iter().map(|arg| eval_ptr(arg, r)).collect::<Vec<_>>();
             let p = &mut ret;
             unsafe {
                 let p = transmute(p);
@@ -1245,12 +1111,8 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
         IsEq(info, terms) => {
             let ptr0 = eval_ptr(&terms[0], r);
             let ptr1 = eval_ptr(&terms[1], r);
-            let to: &dyn PortDatum = unsafe {
-                transmute(TraitObject {
-                    data: ptr0,
-                    vtable: info.0,
-                })
-            };
+            let to: &dyn PortDatum =
+                unsafe { transmute(TraitObject { data: ptr0, vtable: info.0 }) };
             to.my_eq(ptr0)
         }
     }
@@ -1322,9 +1184,7 @@ fn main() -> Result<(), (Option<usize>, ProtoBuildError)> {
                 empty_mem: hashset! {},
             },
             ins: vec![
-                Instruction::Check {
-                    term: Term::True,
-                },
+                Instruction::Check { term: Term::True },
                 Instruction::CreateFromCall {
                     info: TypeInfo::of::<u32>(),
                     dest: "D",

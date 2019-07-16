@@ -40,10 +40,7 @@ pub fn type_info_break() {
     // assert_eq!(to_x.vtable, TypeInfo::of::<Box<dyn String>>().0);
 
     for data in [to_x.data, to_y.data].iter().copied() {
-        let to = TraitObject {
-            data,
-            vtable: to_x.vtable,
-        };
+        let to = TraitObject { data, vtable: to_x.vtable };
         let x: Box<dyn PortDatum> = unsafe { transmute(to) };
         drop(x);
     }
@@ -102,10 +99,7 @@ pub fn drop_ok() {
 
     for (i, data) in [to_x.data, to_y.data].iter().copied().enumerate() {
         let vtable = to_y.vtable;
-        let to = TraitObject {
-            data,
-            vtable,
-        };
+        let to = TraitObject { data, vtable };
         let x: Box<dyn PortDatum> = unsafe { transmute(to) };
         assert_eq!(*m.lock(), i);
         // destructors called as expected. memory has not been leaked
@@ -242,11 +236,7 @@ fn call_handle() {
     let mut x = 5;
 
     let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| unsafe { dest.write(3) });
-    let ch = CallHandle {
-        func: unsafe { transmute(b) },
-        ret: TypeInfo::of::<u32>(),
-        args: vec![],
-    };
+    let ch = CallHandle { func: unsafe { transmute(b) }, ret: TypeInfo::of::<u32>(), args: vec![] };
 
     let dest: *mut u32 = &mut x;
     let funcy: Arc<dyn Fn(*mut u32)> = unsafe { transmute(ch.func) };
@@ -262,11 +252,7 @@ fn call_handle_2() {
         let mut x = 5;
 
         let b: Arc<dyn Fn(*mut u32)> = Arc::new(|dest| dest.write(3));
-        let ch = CallHandle {
-            func: transmute(b),
-            ret: TypeInfo::of::<u32>(),
-            args: vec![],
-        };
+        let ch = CallHandle { func: transmute(b), ret: TypeInfo::of::<u32>(), args: vec![] };
 
         let dest: *mut u32 = &mut x;
         let dest: TraitData = transmute(dest);
@@ -552,56 +538,89 @@ fn deref_bool() {
     assert!(!y);
 }
 
-// lazy_static::lazy_static! {
-//     static ref THREE_COUNTER: ProtoDef = ProtoDef {
-//         name_defs: hashmap! {
-//             "Producer" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<()>() },
-//             "Consumer" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<()>() },
-//             "Memory" => NameDef::Mem(TypeInfo::of::<Incrementor>()),
-//         },
-//         rules: vec![RuleDef {
-//             state_guard: StatePredicate {
-//                 ready_ports: hashset! {"Producer"},
-//                 full_mem: hashset! {},
-//                 empty_mem: hashset! {"Memory"},
-//             },
-//             ins: vec![],
-//             output: hashmap! {
-//                 "Producer" => (false, hashset!{"Memory"})
-//             },
-//         },
-//         RuleDef {
-//             state_guard: StatePredicate {
-//                 ready_ports: hashset! {"Consumer"},
-//                 full_mem: hashset! {"Memory"},
-//                 empty_mem: hashset! {},
-//             },
-//             ins: vec![],
-//             output: hashmap! {
-//                 "Memory" => (false, hashset!{"Consumer"})
-//             },
-//         }],
-//     };
-// }
-
 lazy_static::lazy_static! {
     static ref POS_NEG: ProtoDef = ProtoDef {
         name_defs: hashmap! {
-            "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<f32>() },
-            "Cpos" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<f32>() },
-            "Cneg" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<f32>() },
-            // "is_pos" => NameDef::Mem(TypeInfo::of::<String>()),
+            "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<i32>() },
+            "Cpos" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
+            "Cneg" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
+            "is_neg" => NameDef::Func(unsafe { CallHandle::new_unary_raw(Arc::new(|o: *mut bool, i: *const i32| {
+                if *i < 0 {
+                    *o = true;
+                } else {
+                    *o = false;
+                }
+            }))}),
         },
-        rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {"Producer"},
-                full_mem: hashset! {},
-                empty_mem: hashset! {"Cpos"},
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"P", "Cneg"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![Instruction::Check { term: Term::BoolCall{ func: "is_neg", args: vec![Term::Named("P")] } }],
+                output: hashmap! {
+                    "P" => (false, hashset!{"Cneg"})
+                },
             },
-            ins: vec![Instruction::Check { term: Term::True }],
-            output: hashmap! {
-                "Producer" => (false, hashset!{"Memory"})
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"P", "Cpos"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![Instruction::Check { term: Term::Not(
+                    Box::new(Term::BoolCall{ func: "is_neg", args: vec![Term::Named("P")] })
+                )}],
+                output: hashmap! {
+                    "P" => (false, hashset!{"Cpos"})
+                },
             },
-        },],
+        ],
     };
+}
+
+#[test]
+fn pos_neg_build() {
+    let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
+}
+
+#[test]
+fn pos_neg_claim() {
+    let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
+    let (p, cpos, cneg): (Putter<i32>, Getter<i32>, Getter<i32>) = (
+        Putter::claim(&p, "P").unwrap(),
+        Getter::claim(&p, "Cpos").unwrap(),
+        Getter::claim(&p, "Cneg").unwrap(),
+    );
+}
+
+
+#[test]
+fn pos_neg_classification() {
+    let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
+    let (mut p, mut cpos, mut cneg): (Putter<i32>, Getter<i32>, Getter<i32>) = (
+        Putter::claim(&p, "P").unwrap(),
+        Getter::claim(&p, "Cpos").unwrap(),
+        Getter::claim(&p, "Cneg").unwrap(),
+    );
+
+    let h = std::thread::spawn(move || {
+        for i in 0i32..5 {
+            p.put(i-3);
+        }
+    });
+
+    let d = Duration::from_millis(200);
+    let was_pos: Vec<bool> = (0..5).map(|_| {
+        if cpos.get_timeout(d).is_some() {
+            true
+        } else if cneg.get_timeout(d).is_some() {
+            false
+        } else {
+            panic!("hmm")
+        }
+    }).collect();
+    println!("{:?}", was_pos);
 }
