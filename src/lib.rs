@@ -37,10 +37,10 @@ unsafe impl Sync for TypeInfo {}
 pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
 
-    #[inline(never)]
+    #[inline(never)] // when this function gets inlined, it somehow makes a duplicate vtable?? idk
     pub fn of<T: PortDatum>() -> Self {
         // fabricate the data itself
-        let bx: Box<T> = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+        let bx: Box<T> = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
         // have the compiler insert the correct vtable, using bogus data
         let dy_bx: Box<dyn PortDatum> = bx;
 
