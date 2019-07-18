@@ -5,6 +5,7 @@
 // #![allow(unused_imports)]
 // #![allow(dead_code)]
 
+use smallvec::SmallVec;
 use std::ops::Range;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
@@ -30,6 +31,8 @@ use building::*;
 
 #[cfg(test)]
 mod tests;
+
+
 
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
@@ -606,7 +609,7 @@ impl ProtoR {
                 }
             }
             for i in rule.ins.iter() {
-                match i {
+                match &i {
                     Instruction::Check { term } => assert_eq!(
                         TypeInfo::of::<bool>(),
                         check_and_ret_type(&capabilities, &known_filled, term)
@@ -746,7 +749,7 @@ impl ProtoCr {
                 // println!("going to eval ins for rule {:?}", rule);
                 for (i_id, i) in rule.ins.iter().enumerate() {
                     use Instruction::*;
-                    match i {
+                    match &i {
                         CreateFromFormula { dest, term } => {
                             // MUST BE BOOL. creation ensures it
                             let tbool = TypeInfo::of::<bool>();
@@ -1063,9 +1066,9 @@ impl PutterSpace {
 #[derive(Debug)]
 pub struct Rule {
     bit_guard: BitStatePredicate<BitSet>,
-    ins: Vec<Instruction<LocId, CallHandle>>, // dummy
+    ins: SmallVec<[Instruction<LocId, CallHandle>;4]>, // dummy
     /// COMMITMENTS BELOW HERE
-    output: Vec<Movement>,
+    output: SmallVec<[Movement;4]>,
     // .ready is always identical to bit_guard.ready. use that instead
     bit_assign: BitStatePredicate<()>,
 }

@@ -1,5 +1,6 @@
 use super::*;
 
+#[repr(C)]
 #[derive(Default)]
 pub struct MemInitial {
     strg: HashMap<Name, Box<dyn PortDatum>>,
@@ -25,6 +26,7 @@ pub enum NameDef {
     Func(CallHandle),
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct ProtoDef {
     pub name_defs: HashMap<Name, NameDef>,
@@ -303,7 +305,7 @@ pub fn build_proto(
         // identity for all permanent memcells
         whose_mem_is_this.extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|&id| (id,id)));
 
-        let mut ins = vec![];
+        let mut ins = SmallVec::new();
         'instructions: for i in rule.ins.iter() {
             use Instruction::*;
             let instruction = match i {
@@ -433,7 +435,7 @@ pub fn build_proto(
             empty_mem: hashset! {},
             full_mem: hashset! {},
         };
-        let mut output: Vec<Movement> = rule
+        let mut output: SmallVec<[Movement;4]> = rule
             .output
             .iter()
             .map(|(&putter, (putter_retains, getters))| {
