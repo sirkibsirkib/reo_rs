@@ -339,6 +339,30 @@ pub fn build_proto(
                             term,
                         }
                     },
+                    CreateFromCall { info, dest, func, args  } => {
+
+                        let ch = call_handles
+                            .get(func)
+                            .ok_or(UndefinedFuncName { name: func })?
+                            .clone();
+                        let args = args
+                            .into_iter()
+                            .map(|arg| term_convert(&spaces, &temp_names, &name_mapping, &call_handles, arg))
+                            .collect::<Result<Vec<_>, ProtoBuildError>>()?;
+                        let temp_id = LocId(spaces.len());
+                        let ps = PutterSpace::new(std::ptr::null_mut(), *info);
+                        spaces.push(Space::Memo { ps });
+                        to_put.insert(dest);
+                        if temp_names.insert(dest, (temp_id, *info)).is_some() {
+                            return Err(InstructionShadowsName { name: dest });
+                        }
+                        CreateFromCall {
+                            info: *info,
+                            dest: temp_id,
+                            func: ch.clone(),
+                            args,
+                        }
+                    },
                     _ => unimplemented!(),
                 })
             })

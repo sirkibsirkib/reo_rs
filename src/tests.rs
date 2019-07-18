@@ -382,15 +382,9 @@ fn prod_cons_single() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
-    println!("OK");
     p.put(String::from("HI!"));
-    println!("PUT SUCCEEDED");
-    println!("getting...");
     let x = g.get();
-    println!("got!");
     assert_eq!(&x, "HI!");
-    println!("DATUM READS {:?}", &x);
-    println!("cool");
 }
 
 #[test]
@@ -646,6 +640,7 @@ fn create_create() {
 fn create_claim() {
     let p = build_proto(&CREATE, MemInitial::default()).unwrap();
     let g = Getter::<bool>::claim(&p, "A").unwrap();
+
 }
 
 #[test]
@@ -674,7 +669,12 @@ lazy_static::lazy_static! {
                 empty_mem: hashset! {},
             },
             ins: vec![
-                Instruction::CreateFromCall { dest: "D" , func: "f_clone", args: vec![Term::Named("A")], info: TypeInfo::of::<Incrementor>() },
+                Instruction::CreateFromCall {
+                    dest: "D" ,
+                    func: "f_clone",
+                    args: vec![Term::Named("A")],
+                    info: TypeInfo::of::<Incrementor>()
+                },
             ],
             output: hashmap! {
                 "A" => (false, hashset!{"B"}),
@@ -686,6 +686,87 @@ lazy_static::lazy_static! {
 
 
 #[test]
-fn create_manual_clone() {
+fn manual_clone_create() {
     let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
 }
+
+
+#[test]
+fn manual_clone_claim() {
+    let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
+    let (a, b, c): (Putter<Incrementor>, Getter<Incrementor>, Getter<Incrementor>) = (
+        Putter::claim(&p, "A").unwrap(),
+        Getter::claim(&p, "B").unwrap(),
+        Getter::claim(&p, "C").unwrap(),
+    );
+}
+
+#[test]
+fn manual_clone_once() {
+    let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
+    let (mut a, mut b, mut c): (Putter<Incrementor>, Getter<Incrementor>, Getter<Incrementor>) = (
+        Putter::claim(&p, "A").unwrap(),
+        Getter::claim(&p, "B").unwrap(),
+        Getter::claim(&p, "C").unwrap(),
+    );
+    let i = Incrementor(Arc::new(Mutex::new(0)));
+    let ia = i.clone();
+
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..3 {
+                a.put(ia.clone());
+            }
+            // ia dropped +1
+        }),
+        spawn(move || {
+            for i in 0..3 {
+                b.get();
+                // gotten dropped +3
+            }
+        }),
+        spawn(move || {
+            for i in 0..3 {
+                c.get();
+                // gotten dropped +3
+            }
+        }),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(*i.0.lock(), 3+3+1);
+    // i dropped
+}
+
+
+// lazy_static::lazy_static! {
+//     static ref CATEGORIZE: ProtoDef = ProtoDef {
+//         name_defs: hashmap! {
+//             "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Incrementor>() },
+//             "Om3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
+//             "Cnotm3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
+//             "fmod" => NameDef::Func(CallHandle::new_unary(|o, i: &u32| o.output(i.clone()))), 
+//         },
+//         rules: vec![RuleDef {
+//             state_guard: StatePredicate {
+//                 ready_ports: hashset! {"A", "B", "C"},
+//                 full_mem: hashset! {},
+//                 empty_mem: hashset! {},
+//             },
+//             ins: vec![
+//                 Instruction::CreateFromCall {
+//                     dest: "D" ,
+//                     func: "f_clone",
+//                     args: vec![Term::Named("A")],
+//                     info: TypeInfo::of::<Incrementor>()
+//                 },
+//             ],
+//             output: hashmap! {
+//                 "A" => (false, hashset!{"B"}),
+//                 "D" => (false, hashset!{"C"}),
+//             },
+//         }],
+//     };
+// }

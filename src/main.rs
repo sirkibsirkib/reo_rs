@@ -31,6 +31,10 @@ use building::*;
 
 mod tests;
 
+pub enum PortDir {
+    Putter, Getter,
+}
+
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -274,7 +278,7 @@ pub struct Proto {
 
 impl Eq for ProtoHandle {}
 #[derive(Debug, Clone)]
-pub struct ProtoHandle(pub Arc<Proto>);
+pub struct ProtoHandle(pub(crate) Arc<Proto>);
 impl PartialEq for ProtoHandle {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
@@ -776,7 +780,7 @@ impl ProtoCr {
                             if !eval_bool(term, r) {
                                 // ROLLBACK!
                                 // println!("ROLLBACK!");
-                                for (i_id, i) in rule.ins[0..i_id].iter().enumerate() {
+                                for (i_id, i) in rule.ins[0..i_id].iter().enumerate().rev() {
                                     // println!("... rolling back {:?}", i);
                                     match i {
                                         CreateFromFormula { dest, .. } => {
