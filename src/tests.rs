@@ -276,7 +276,7 @@ lazy_static::lazy_static! {
 
 #[test]
 fn sync_create() {
-    build_proto(&SYNC_U32, MemInitial::default()).unwrap();
+    SYNC_U32.build(MemInitial::default()).unwrap();
 }
 
 #[test]
@@ -291,7 +291,7 @@ pub fn send_sync_proto() {
 
 #[test]
 fn sync_claim() {
-    let p = build_proto(&SYNC_U32, MemInitial::default()).unwrap();
+    let p = SYNC_U32.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<u32>, Getter<u32>) =
         (Putter::claim(&p, "A").unwrap(), Getter::claim(&p, "B").unwrap());
 
@@ -307,7 +307,7 @@ fn sync_claim() {
 
 #[test]
 fn sync_put_get() {
-    let p = build_proto(&SYNC_U32, MemInitial::default()).unwrap();
+    let p = SYNC_U32.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<u32>, Getter<u32>) =
         (Putter::claim(&p, "A").unwrap(), Getter::claim(&p, "B").unwrap());
     use std::thread::spawn;
@@ -363,19 +363,19 @@ lazy_static::lazy_static! {
 
 #[test]
 fn prod_cons_init() {
-    build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    FIFO1_STRING.build(MemInitial::default()).unwrap();
 }
 
 #[test]
 fn prod_cons_claim() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let p = FIFO1_STRING.build(MemInitial::default()).unwrap();
     let _: (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
 }
 
 #[test]
 fn prod_cons_single() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let p = FIFO1_STRING.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     p.put(String::from("HI!"));
@@ -385,7 +385,7 @@ fn prod_cons_single() {
 
 #[test]
 fn prod_cons_mult() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let p = FIFO1_STRING.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     use std::thread::spawn;
@@ -410,7 +410,7 @@ fn prod_cons_mult() {
 
 #[test]
 fn fifo_get_signal() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let p = FIFO1_STRING.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     use std::thread::spawn;
@@ -433,7 +433,7 @@ fn fifo_get_signal() {
 
 #[test]
 fn fifo_get_timeout() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    let p = FIFO1_STRING.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     let d = Duration::from_millis(50);
@@ -482,7 +482,7 @@ lazy_static::lazy_static! {
 
 #[test]
 fn prod_cons_no_leak() {
-    let p = build_proto(&FIFO1_INCREMENTOR, MemInitial::default()).unwrap();
+    let p = FIFO1_INCREMENTOR.build(MemInitial::default()).unwrap();
     let (mut p, mut g): (Putter<Incrementor>, Getter<Incrementor>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     let x = Incrementor(Arc::new(Mutex::new(0)));
@@ -563,12 +563,12 @@ lazy_static::lazy_static! {
 
 #[test]
 fn pos_neg_build() {
-    build_proto(&POS_NEG, MemInitial::default()).unwrap();
+    POS_NEG.build(MemInitial::default()).unwrap();
 }
 
 #[test]
 fn pos_neg_claim() {
-    let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
+    let p = POS_NEG.build(MemInitial::default()).unwrap();
     let _: (Putter<i32>, Getter<i32>, Getter<i32>) = (
         Putter::claim(&p, "P").unwrap(),
         Getter::claim(&p, "Cpos").unwrap(),
@@ -578,7 +578,7 @@ fn pos_neg_claim() {
 
 #[test]
 fn pos_neg_classification() {
-    let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
+    let p = POS_NEG.build(MemInitial::default()).unwrap();
     let (mut p, mut cpos, mut cneg): (Putter<i32>, Getter<i32>, Getter<i32>) = (
         Putter::claim(&p, "P").unwrap(),
         Getter::claim(&p, "Cpos").unwrap(),
@@ -630,17 +630,17 @@ lazy_static::lazy_static! {
 
 #[test]
 fn create_create() {
-    build_proto(&CREATE, MemInitial::default()).unwrap();
+    CREATE.build(MemInitial::default()).unwrap();
 }
 #[test]
 fn create_claim() {
-    let p = build_proto(&CREATE, MemInitial::default()).unwrap();
+    let p = CREATE.build(MemInitial::default()).unwrap();
     let _ = Getter::<bool>::claim(&p, "A").unwrap();
 }
 
 #[test]
 fn create_run() {
-    let p = build_proto(&CREATE, MemInitial::default()).unwrap();
+    let p = CREATE.build(MemInitial::default()).unwrap();
     let mut g = Getter::<bool>::claim(&p, "A").unwrap();
     for _ in 0..10 {
         let x = g.get();
@@ -681,12 +681,12 @@ lazy_static::lazy_static! {
 
 #[test]
 fn manual_clone_create() {
-    build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
+    MANUAL_CLONE.build(MemInitial::default()).unwrap();
 }
 
 #[test]
 fn manual_clone_claim() {
-    let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
+    let p = MANUAL_CLONE.build(MemInitial::default()).unwrap();
     let _: (Putter<Incrementor>, Getter<Incrementor>, Getter<Incrementor>) = (
         Putter::claim(&p, "A").unwrap(),
         Getter::claim(&p, "B").unwrap(),
@@ -696,7 +696,7 @@ fn manual_clone_claim() {
 
 #[test]
 fn manual_clone_once() {
-    let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
+    let p = MANUAL_CLONE.build(MemInitial::default()).unwrap();
     let (mut a, mut b, mut c): (Putter<Incrementor>, Getter<Incrementor>, Getter<Incrementor>) = (
         Putter::claim(&p, "A").unwrap(),
         Getter::claim(&p, "B").unwrap(),
@@ -772,12 +772,12 @@ lazy_static::lazy_static! {
 
 #[test]
 fn even_odd_build() {
-    build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
+    EVEN_ODD.build(MemInitial::default()).unwrap();
 }
 
 #[test]
 fn even_odd_claim() {
-    let p = build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
+    let p = EVEN_ODD.build(MemInitial::default()).unwrap();
     let _: (Putter<u32>, Getter<u32>, Getter<u32>) = (
         Putter::claim(&p, "I").unwrap(),
         Getter::claim(&p, "Oeven").unwrap(),
@@ -787,7 +787,7 @@ fn even_odd_claim() {
 
 #[test]
 fn even_odd_run() {
-    let p = build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
+    let p = EVEN_ODD.build(MemInitial::default()).unwrap();
     let (mut a, o_even, o_odd): (Putter<u32>, Getter<u32>, Getter<u32>) = (
         Putter::claim(&p, "I").unwrap(),
         Getter::claim(&p, "Oeven").unwrap(),
@@ -841,14 +841,14 @@ lazy_static::lazy_static! {
 #[test]
 fn init_mem_create() {
     let i = Incrementor(Arc::new(Mutex::new(0)));
-    build_proto(&INIT_MEM, MemInitial::default().with("M", i.clone())).unwrap();
+    INIT_MEM.build(MemInitial::default().with("M", i.clone())).unwrap();
     assert_eq!(*i.0.lock(), 1);
 }
 
 #[test]
 fn init_mem_run() {
     let i = Incrementor(Arc::new(Mutex::new(0)));
-    let p = build_proto(&INIT_MEM, MemInitial::default().with("M", i.clone())).unwrap();
+    let p = INIT_MEM.build(MemInitial::default().with("M", i.clone())).unwrap();
     let mut port = Getter::<Incrementor>::claim(&p, "C").expect("EY");
     assert_eq!(*i.0.lock(), 0);
     port.get();

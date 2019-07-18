@@ -167,6 +167,11 @@ enum LocKind {
     Memo,
 }
 
+impl ProtoDef {
+    pub fn build(&self, init: MemInitial) -> Result<ProtoHandle, (Option<usize>, ProtoBuildError)> {
+        build_proto(self, init)
+    }
+}
 pub fn build_proto(
     p: &ProtoDef,
     mut init: MemInitial,
