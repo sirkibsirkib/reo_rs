@@ -737,53 +737,86 @@ fn manual_clone_once() {
 }
 
 lazy_static::lazy_static! {
-    static ref CATEGORIZE: ProtoDef = ProtoDef {
+    static ref EVEN_ODD: ProtoDef = ProtoDef {
         name_defs: hashmap! {
             "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
-            "Otrue" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-            "Ofalse" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-            "f" => NameDef::Func(CallHandle::new_unary(|o, i: &u32| o.output(*i %2 == 0))),
+            "Oeven" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
+            "Oodd" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
+            "is_even" => NameDef::Func(CallHandle::new_unary(|o, i: &u32| o.output(*i %2 == 0))),
         },
         rules: vec![
             RuleDef {
                 state_guard: StatePredicate {
-                    ready_ports: hashset! {"I", "Otrue"},
+                    ready_ports: hashset! {"I", "Oeven"},
                     full_mem: hashset! {},
                     empty_mem: hashset! {},
                 },
                 ins: vec![
-                    Instruction::Check { term: Term::BoolCall { func: "f", args: vec![Term::Named("I")] }},
+                    Instruction::Check { term: Term::BoolCall { func: "is_even", args: vec![Term::Named("I")] }},
                 ],
-                output: hashmap! { "I" => (false, hashset!{"Otrue"}) },
+                output: hashmap! { "I" => (false, hashset!{"Oeven"}) },
             },
             RuleDef {
                 state_guard: StatePredicate {
-                    ready_ports: hashset! {"I", "Ofalse"},
+                    ready_ports: hashset! {"I", "Oodd"},
                     full_mem: hashset! {},
                     empty_mem: hashset! {},
                 },
                 ins: vec![
                     Instruction::Check { term: Term::Not(Box::new(
-                        Term::BoolCall { func: "f", args: vec![Term::Named("I")]}
+                        Term::BoolCall { func: "is_even", args: vec![Term::Named("I")]}
                     ))},
                 ],
-                output: hashmap! { "I" => (false, hashset!{"Ofalse"}) },
+                output: hashmap! { "I" => (false, hashset!{"Oodd"}) },
             },
         ],
     };
 }
 
 #[test]
-fn categorize_build() {
-    build_proto(&CATEGORIZE, MemInitial::default()).unwrap();
+fn even_odd_build() {
+    build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
 }
 
 #[test]
-fn categorize_run() {
-    let p = build_proto(&CATEGORIZE, MemInitial::default()).unwrap();
+fn even_odd_claim() {
+    let p = build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
     let _: (Putter<u32>, Getter<u32>, Getter<u32>) = (
         Putter::claim(&p, "I").unwrap(),
-        Getter::claim(&p, "Otrue").unwrap(),
-        Getter::claim(&p, "Ofalse").unwrap(),
+        Getter::claim(&p, "Oeven").unwrap(),
+        Getter::claim(&p, "Oodd").unwrap(),
     );
+}
+
+
+#[test]
+fn even_odd_run() {
+    let p = build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
+    let (mut a, o_even, o_odd): (Putter<u32>, Getter<u32>, Getter<u32>) = (
+        Putter::claim(&p, "I").unwrap(),
+        Getter::claim(&p, "Oeven").unwrap(),
+        Getter::claim(&p, "Oodd").unwrap(),
+    );
+    let getter_job = move |mut port: Getter<u32>, get_evens: bool| {
+        for i in 0..10 {
+            let is_even = i%2==0;
+            if is_even != get_evens {
+                continue;
+            }
+            assert_eq!(i, port.get());
+        }
+    };
+    use std::thread::spawn;
+    let handles = vec![
+        spawn(move || {
+            for i in 0..10 {
+                a.put(i);
+            }
+        }),
+        spawn(move || getter_job(o_even, true)),
+        spawn(move || getter_job(o_odd, false)),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
 }
