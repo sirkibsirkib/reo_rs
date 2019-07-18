@@ -16,16 +16,14 @@ pub fn type_info_eq() {
     let x: Box<dyn PortDatum> = Box::new(5u8);
     let y: Box<dyn PortDatum> = Box::new(String::from("Hello"));
     let z: Box<dyn PortDatum> = Box::new(String::from("Howdy"));
-    unsafe {
-        let (_, info_x) = trait_obj_read(&x);
-        let (_, info_y) = trait_obj_read(&y);
-        let (_, info_z) = trait_obj_read(&z);
+    let (_, info_x) = trait_obj_read(&x);
+    let (_, info_y) = trait_obj_read(&y);
+    let (_, info_z) = trait_obj_read(&z);
 
-        // string and u8 have different vtables
-        assert!(info_x.0 != info_y.0);
-        // y and z both use the same String vtable
-        assert_eq!(info_y.0, info_z.0);
-    }
+    // string and u8 have different vtables
+    assert!(info_x.0 != info_y.0);
+    // y and z both use the same String vtable
+    assert_eq!(info_y.0, info_z.0);
     // x,y,z dropped
 }
 
@@ -128,7 +126,7 @@ pub fn allocator_drop_inside() {
 
     let mut alloc = Allocator::default();
     let x: Box<dyn PortDatum> = Box::new(Incrementor(m.clone()));
-    let (data, info) = unsafe { trait_obj_read(&x) };
+    let (data, info) = trait_obj_read(&x);
     alloc.store(x);
 
     assert_eq!(*m.lock(), 0);
@@ -150,7 +148,7 @@ pub fn allocator_reuse() {
 
     let mut alloc = Allocator::default();
     let x: Box<dyn PortDatum> = Box::new(Incrementor(m.clone()));
-    let (data, info) = unsafe { trait_obj_read(&x) };
+    let (data, info) = trait_obj_read(&x);
     alloc.store(x);
 
     assert_eq!(*m.lock(), 0);
@@ -194,11 +192,11 @@ pub fn get_layout_raw_eq() {
     let m = Arc::new(Mutex::new(0));
 
     let x: Box<dyn PortDatum> = Box::new(Incrementor(m.clone()));
-    let (_, i) = unsafe { trait_obj_read(&x) };
+    let (_, i) = trait_obj_read(&x);
     assert_eq!(x.my_layout(), i.get_layout());
 
     let x: Box<dyn PortDatum> = Box::new(true);
-    let (_, i) = unsafe { trait_obj_read(&x) };
+    let (_, i) = trait_obj_read(&x);
     assert_eq!(x.my_layout(), i.get_layout());
 }
 
@@ -819,23 +817,80 @@ fn even_odd_run() {
     }
 }
 
+
+lazy_static::lazy_static! {
+    static ref INIT_MEM: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "C" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
+            "M" => NameDef::Mem(TypeInfo::of::<Incrementor>()),
+        },
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"C"},
+                    full_mem: hashset! {"M"},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![],
+                output: hashmap! { "M" => (false, hashset!{"C"}) },
+            },
+        ],
+    };
+}
+
+// #[test]
+// fn trait_obj_ready() {
+//     type T = String;
+
+
+
+//     let a = {
+//         TypeInfo::of::<String>()
+//     };
+
+//     let b = {
+//         let s: Box<dyn PortDatum> = Box::new(String::from("HI"));
+//         unsafe { trait_obj_break(s) }.1
+//     };
+
+//     println!("a={:?}", a);
+//     println!("b={:?}", b);
+
+//     println!("A");
+//     let read: &[usize;4] = unsafe {std::mem::transmute(a)};
+//     for x in read.iter() {
+//         println!("{:?} | {:p}", x, x);
+//     }
+
+
+//     println!("B");
+//     let read: &[usize;4] = unsafe {std::mem::transmute(b)};
+//     for x in read.iter() {
+//         println!("{:?} | {:p}", x, x);
+//     }
+// }
+
+#[test]
+fn init_mem_create() {
+    let i = Incrementor(Arc::new(Mutex::new(0)));
+    build_proto(&INIT_MEM, MemInitial::default().with("M", i.clone())).unwrap();
+    assert_eq!(*i.0.lock(), 1);
+}
+
+// #[test]
+// fn init_mem_claim() {
+//     let p = build_proto(&INIT_MEM, MemInitial::default().with("M", String::from("HELLO"))).unwrap();
+//     let _ = Getter::<String>::claim(&p, "C").unwrap();
+// }
+
+
 // lazy_static::lazy_static! {
 //     static ref MEM_SWAP: ProtoDef = ProtoDef {
 //         name_defs: hashmap! {
-//             "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
 //             "O" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
 //             "Memory" => NameDef::Mem(TypeInfo::of::<u32>()),
 //         },
 //         rules: vec![
-//             RuleDef {
-//                 state_guard: StatePredicate {
-//                     ready_ports: hashset! {"I"},
-//                     full_mem: hashset! {},
-//                     empty_mem: hashset! {"Memory"},
-//                 },
-//                 ins: vec![],
-//                 output: hashmap! { "I" => (false, hashset!{"Memory"}) },
-//             },
 //             RuleDef {
 //                 state_guard: StatePredicate {
 //                     ready_ports: hashset! {"O"},

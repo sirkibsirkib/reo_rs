@@ -8,6 +8,12 @@ impl MemInitial {
     #[inline]
     pub fn with<T: PubPortDatum>(mut self, name: Name, init: T) -> Self {
         let dy: Box<dyn PortDatum> = Box::new(init);
+        let i1 = TypeInfo::of::<T>();
+        let (d, i2) = unsafe { trait_obj_break(dy) };
+
+        // assert_eq!(i1, i2);
+
+        let dy = unsafe { trait_obj_build(d, i1) };
         self.strg.insert(name, dy);
         self
     }
@@ -198,7 +204,8 @@ pub fn build_proto(
             NameDef::Mem(type_info) => {
                 ready.insert(id);
                 let ptr = if let Some(bx) = init.strg.remove(name) {
-                    let (data, info) = unsafe { trait_obj_read(&bx) };
+                    let bx: Box<dyn PortDatum> = bx; // for readability
+                    let (data, info) = trait_obj_read(&bx);
                     if info != *type_info {
                         return Err((None, InitialTypeMismatch { name }));
                     }
@@ -362,56 +369,52 @@ pub fn build_proto(
                     CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
                 }
                 MemSwap { a, b } => {
-                    // memmove is surprisingly complciated
-                    // TODO requires decoupling:
-                    // 1. where getters cleanup, which memcell needs to re-acquire readiness
-                    unimplemented!()
-                    // let aid = resolve_full(&temp_names, &name_mapping, a);
-                    // let bid = resolve_full(&temp_names, &name_mapping, b);
+                    let aid = resolve_full(&temp_names, &name_mapping, a);
+                    let bid = resolve_full(&temp_names, &name_mapping, b);
 
-                    // let [aid, bid] = if aid.is_err() && bid.is_err() {
-                    //     // swap of nothing to nothing
-                    //     continue 'instructions;
-                    // } else if aid.is_err() || bid.is_err() {
-                    //     // swap from existing to new temp
-                    //     let (new_name, ex_name, ex_id) =
-                    //         if aid.is_err() { (a, b, bid.unwrap()) } else { (b, a, aid.unwrap()) };
-                    //     if let Space::Memo { ps } = &spaces[ex_id.0] {
-                    //         let info = ps.type_info;
-                    //         let temp_id = LocId(spaces.len());
-                    //         temp_names.insert(new_name, (temp_id, info)); // cannot fail
-                    //         spaces.push(Space::Memo {
-                    //             ps: PutterSpace::new(std::ptr::null_mut(), info),
-                    //         });
-                    //         if let Some(x) = known_state.remove(ex_name) {
-                    //             known_state.insert(new_name, x);
-                    //         }
-                    //         known_state.insert(ex_name, false);
-                    //         [ex_id, temp_id]
-                    //     } else {
-                    //         return Err(CanOnlySwapMemory { name: ex_name });
-                    //     }
-                    // } else {
-                    //     // swap between existing
-                    //     let ka = known_state.remove(a);
-                    //     let kb = known_state.remove(b);
-                    //     if let Some(x) = ka {
-                    //         known_state.insert(b, x);
-                    //     }
-                    //     if let Some(x) = kb {
-                    //         known_state.insert(a, x);
-                    //     }
-                    //     [aid.unwrap(), bid.unwrap()]
-                    // };
-                    // let wmit_a = whose_mem_is_this.remove(&aid);
-                    // let wmit_b = whose_mem_is_this.remove(&aid);
-                    // if let Some(x) = wmit_a {
-                    //     whose_mem_is_this.insert(bid, x);
-                    // }
-                    // if let Some(x) = wmit_b {
-                    //     whose_mem_is_this.insert(aid, x);
-                    // }
-                    // MemSwap { a: aid, b: bid }
+                    let [aid, bid] = if aid.is_err() && bid.is_err() {
+                        // swap of nothing to nothing
+                        continue 'instructions;
+                    } else if aid.is_err() || bid.is_err() {
+                        // swap from existing to new temp
+                        let (new_name, ex_name, ex_id) =
+                            if aid.is_err() { (a, b, bid.unwrap()) } else { (b, a, aid.unwrap()) };
+                        if let Space::Memo { ps } = &spaces[ex_id.0] {
+                            let info = ps.type_info;
+                            let temp_id = LocId(spaces.len());
+                            temp_names.insert(new_name, (temp_id, info)); // cannot fail
+                            spaces.push(Space::Memo {
+                                ps: PutterSpace::new(std::ptr::null_mut(), info),
+                            });
+                            if let Some(x) = known_state.remove(ex_name) {
+                                known_state.insert(new_name, x);
+                            }
+                            known_state.insert(ex_name, false);
+                            [ex_id, temp_id]
+                        } else {
+                            return Err(CanOnlySwapMemory { name: ex_name });
+                        }
+                    } else {
+                        // swap between existing
+                        let ka = known_state.remove(a);
+                        let kb = known_state.remove(b);
+                        if let Some(x) = ka {
+                            known_state.insert(b, x);
+                        }
+                        if let Some(x) = kb {
+                            known_state.insert(a, x);
+                        }
+                        [aid.unwrap(), bid.unwrap()]
+                    };
+                    let wmit_a = whose_mem_is_this.remove(&aid);
+                    let wmit_b = whose_mem_is_this.remove(&aid);
+                    if let Some(x) = wmit_a {
+                        whose_mem_is_this.insert(bid, x);
+                    }
+                    if let Some(x) = wmit_b {
+                        whose_mem_is_this.insert(aid, x);
+                    }
+                    MemSwap { a: aid, b: bid }
                 }
             };
             ins.push(instruction);
@@ -483,7 +486,7 @@ pub fn build_proto(
             let putter_retains = match spaces[id.0] {
                 Space::Memo{..} => perm_space_rng.contains(&id.0),
                 Space::PoPu{..} => true,
-                Space::PoGe{..} => continue,
+                Space::PoGe{..} => return Err(GetterHasNoPutters { name }),
             };
             if is_full {
                 output.push(Movement {

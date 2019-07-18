@@ -36,15 +36,24 @@ unsafe impl Sync for TypeInfo {}
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
+
+    #[inline(never)]
     pub fn of<T: PortDatum>() -> Self {
         // fabricate the data itself
         let bx: Box<T> = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
         // have the compiler insert the correct vtable, using bogus data
         let dy_bx: Box<dyn PortDatum> = bx;
-        // change compiler's view of the object
-        let to: TraitObject = unsafe { transmute(dy_bx) };
-        // return the legitimate vtable
-        Self(to.vtable)
+
+
+        {
+            unsafe  { trait_obj_break(dy_bx).1 }
+        }
+
+
+        // // change compiler's view of the object
+        // let to: TraitObject = unsafe { transmute(dy_bx) };
+        // // return the legitimate vtable
+        // Self(to.vtable)
     }
     pub fn get_layout(self) -> Layout {
         let bogus = self.0;
@@ -88,9 +97,10 @@ unsafe fn trait_obj_build(data: TraitData, info: TypeInfo) -> Box<dyn PortDatum>
     let x = TraitObject { data, vtable: info.0 };
     transmute(x)
 }
+
 #[inline]
-unsafe fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
-    let to: &TraitObject = transmute(x);
+fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
+    let to: &TraitObject = unsafe { transmute(x) };
     (to.data, TypeInfo(to.vtable))
 }
 
@@ -1161,7 +1171,7 @@ impl<T: 'static + Clone + PartialEq + Send + Sync> PubPortDatum for T {
     }
 }
 
-pub trait PortDatum: Send + Sync {
+pub trait PortDatum: Send + Sync + 'static {
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
     unsafe fn drop_in_place(&mut self);
