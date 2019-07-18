@@ -5,6 +5,7 @@
 // #![allow(unused_imports)]
 // #![allow(dead_code)]
 
+use std::ops::Range;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use debug_stub_derive::DebugStub;
@@ -513,6 +514,7 @@ impl<T: PubPortDatum> Getter<T> {
 pub struct ProtoR {
     rules: Vec<Rule>,
     spaces: Vec<Space>,
+    perm_space_rng: Range<usize>,
     name_mapping: BidirMap<Name, LocId>,
     port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
 }
@@ -528,14 +530,10 @@ impl ProtoR {
             .iter()
             .enumerate()
             .map(|(id, x)| match x {
-                Space::PoPu { ps, .. } => {
-                    Cap { put: true, mem: false, ty: ps.type_info }
+                Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_info },
+                Space::PoGe { .. } => {
+                    Cap { put: false, mem: false, ty: self.port_info.get(&LocId(id)).unwrap().1 }
                 }
-                Space::PoGe { .. } => Cap {
-                    put: false,
-                    mem: false,
-                    ty: self.port_info.get(&LocId(id)).unwrap().1,
-                },
                 Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_info },
             })
             .collect();
@@ -644,16 +642,13 @@ impl ProtoR {
             let mut busy_doing = hashmap! {}; // => true for put, => false for get
             for movement in rule.output.iter() {
                 let p = movement.putter;
+                println!("MV {:?}", movement);
                 assert_eq!(known_filled.get(&p), Some(&true));
                 let cap = &capabilities[p.0];
                 assert!(busy_doing.insert(p, true).is_none());
 
                 assert_eq!(
-                    cap.mem && !movement.putter_retains,
-                    rule.bit_assign.empty_mem.contains(&p)
-                );
-                assert_eq!(
-                    cap.mem && !movement.putter_retains,
+                    self.perm_space_rng.contains(&p.0) && cap.mem && !movement.putter_retains,
                     rule.bit_assign.empty_mem.contains(&p)
                 );
                 for g in movement.me_ge.iter().copied() {
@@ -673,7 +668,8 @@ impl ProtoR {
                     assert!(busy_doing.insert(g, false).is_none());
                 }
             }
-            // make sure every READY-requested location is doing something
+            // make sure everyone in READY set is covered
+            // YES even mem cells that are not consumed. this just sets them to READY
             for p in rule.bit_guard.ready.iter().copied() {
                 assert!(busy_doing.contains_key(&p));
             }
@@ -714,15 +710,25 @@ impl ProtoCr {
         } else {
             assert!(!was_moved);
         }
-        self.ready.insert(this_mem_id);
-        self.coordinate(r);
+        if r.perm_space_rng.contains(&this_mem_id.0) {
+            self.ready.insert(this_mem_id);
+            self.coordinate(r);
+        } else {
+            // this was a temp memcell
+        }
     }
-    fn swap_putter_ptrs(r: &ProtoR, a: LocId, b: LocId) {
+    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: LocId, b: LocId) {
         let pa = r.spaces[a.0].get_putter_space().unwrap();
         let pb = r.spaces[b.0].get_putter_space().unwrap();
         let olda = pa.ptr.load(SeqCst);
         let oldb = pb.ptr.swap(olda, SeqCst);
         pa.ptr.store(oldb, SeqCst);
+        // if r.perm_space_rng.contains(&a.0) {
+        //     self.ready.insert(a);
+        // }
+        // if r.perm_space_rng.contains(&a.0) {
+        //     self.ready.insert(b);
+        // }
     }
     fn coordinate(&mut self, r: &ProtoR) {
         println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
@@ -789,7 +795,7 @@ impl ProtoCr {
                                             self.finalize_memo(r, *dest, false)
                                         }
                                         Check { .. } => {}
-                                        MemSwap { a, b } => Self::swap_putter_ptrs(r, *a, *b),
+                                        MemSwap { a, b } => self.swap_putter_ptrs(r, *a, *b),
                                     }
                                 }
                                 // println!("DID CreateFromCall");
@@ -797,7 +803,7 @@ impl ProtoCr {
                             }
                             // println!("Passed check!");
                         }
-                        MemSwap { a, b } => Self::swap_putter_ptrs(r, *a, *b),
+                        MemSwap { a, b } => self.swap_putter_ptrs(r, *a, *b),
                     }
                 }
                 // made it past the instructions! time to commit!

@@ -61,6 +61,7 @@ pub enum ProtoBuildError {
     InitialTypeMismatch { name: Name },
     MovementTypeMismatch { getter: Name, putter: Name },
     InstructionCannotOverwrite { name: Name }, // todo get more sophisticated
+    CanOnlySwapMemory { name: Name },
 }
 
 fn resolve_full(
@@ -115,7 +116,14 @@ fn term_convert(
     Ok(match term {
         True => True,
         False => False,
-        Not(f) => Not(Box::new(term_convert(spaces, temp_names, name_mapping, call_handles, known_state, f)?)),
+        Not(f) => Not(Box::new(term_convert(
+            spaces,
+            temp_names,
+            name_mapping,
+            call_handles,
+            known_state,
+            f,
+        )?)),
         BoolCall { func, args } => BoolCall {
             func: call_handles.get(func).ok_or(UndefinedFuncName { name: func })?.clone(),
             args: clos(args)?,
@@ -140,7 +148,7 @@ fn term_convert(
         }
         Named(name) => Named({
             if known_state.get(name).copied() != Some(true) {
-                return Err(ReadWithoutFullCertainty { name })
+                return Err(ReadWithoutFullCertainty { name });
             }
             resolve_full(temp_names, name_mapping, name)?
         }),
@@ -211,6 +219,7 @@ pub fn build_proto(
         spaces.push(space);
         persistent_loc_kinds.push(kind);
     }
+    let perm_space_rng = 0..spaces.len();
 
     // NO MORE PERSISTENT THINGS
     let persistent_kind =
@@ -220,13 +229,19 @@ pub fn build_proto(
     let mut temp_names: HashMap<Name, (LocId, TypeInfo)> = hashmap! {};
     let mut puts: HashSet<Name> = hashset! {};
     let mut gets: HashSet<Name> = hashset! {};
-    let mut known_state: HashMap<Name, bool> = hashmap!{};
+    let mut known_state: HashMap<Name, bool> = hashmap! {};
+
+    // keeps track of PERM memory position for the purpose of matching the MOVEMENT to it (for changing assign bits)
+    // key is location of mem (corresponding to the MOVEMENT PUTTER ultimately)
+    // value is the permanent memcell where it started
+    let mut whose_mem_is_this: HashMap<LocId, LocId> = hashmap!{}; 
 
     let mut rule_f = |rule: &RuleDef| {
         puts.clear();
         gets.clear();
         temp_names.clear();
         known_state.clear();
+        whose_mem_is_this.clear();
 
         let StatePredicate { ready_ports, full_mem, empty_mem } = &rule.state_guard;
         // 1 ensure no conflicting mem requirements
@@ -239,9 +254,11 @@ pub fn build_proto(
             if persistent_kind(name).ok_or(UndefinedLocName { name })? != LocKind::Memo {
                 return Err(PortInMemPremise { name });
             }
+
         }
 
-        let resolve = |name: &Name| name_mapping.get_by_first(name).copied().ok_or(UndefinedLocName { name });
+        let resolve =
+            |name: &Name| name_mapping.get_by_first(name).copied().ok_or(UndefinedLocName { name });
         for name in ready_ports.iter() {
             let kind = persistent_kind(name).ok_or(UndefinedLocName { name })?;
             match kind {
@@ -250,8 +267,6 @@ pub fn build_proto(
                 LocKind::Memo => return Err(MemInPortPremise { name }),
             };
         }
-
-
 
         // 6 store known state of memcells
         for name in full_mem.iter().copied() {
@@ -272,84 +287,137 @@ pub fn build_proto(
             full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
             empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
         };
+        // identity for all permanent memcells
+        whose_mem_is_this.extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|&id| (id,id)));
 
-        let ins = rule
-            .ins
-            .iter()
-            .map(|i| {
-                use Instruction::*;
-                Ok(match i {
-                    Check { term } => {
-                        if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
-                            != TypeInfo::of::<bool>()
-                        {
-                            return Err(CheckingNonBoolType);
-                        }
-                        Instruction::Check {
-                            term: term_convert(
-                                &spaces,
-                                &temp_names,
-                                &name_mapping,
-                                &call_handles,
-                                &known_state,
-                                term,
-                            )?,
-                        }
+        let mut ins = vec![];
+        'instructions: for i in rule.ins.iter() {
+            use Instruction::*;
+            let instruction = match i {
+                Check { term } => {
+                    if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
+                        != TypeInfo::of::<bool>()
+                    {
+                        return Err(CheckingNonBoolType);
                     }
-                    CreateFromFormula { dest, term } => {
-                        let type_info = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
-                        if type_info != TypeInfo::of::<bool>() {
-                            return Err(CreatingNonBoolFromFormula);
-                        }
-                        if resolve_full(&temp_names, &name_mapping, dest).is_ok() {
-                            return Err(InstructionCannotOverwrite { name: dest });
-                        }
-                        let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
-                        spaces.push(Space::Memo { ps });
-                        let temp_id = LocId(spaces.len() - 1);
-                        if temp_names.insert(dest, (temp_id, type_info)).is_some() {
-                            return Err(InstructionShadowsName { name: dest });
-                        }
-                        let term = term_convert(
+                    Instruction::Check {
+                        term: term_convert(
                             &spaces,
                             &temp_names,
                             &name_mapping,
                             &call_handles,
                             &known_state,
-                            &term,
-                        )?;
-                        known_state.insert(dest, true); // must be a fresh name
-                        CreateFromFormula { dest: temp_id, term }
+                            term,
+                        )?,
                     }
-                    CreateFromCall { info, dest, func, args } => {
-                        let ch =
-                            call_handles.get(func).ok_or(UndefinedFuncName { name: func })?.clone();
-                        let args = args
-                            .into_iter()
-                            .map(|arg| {
-                                term_convert(
-                                    &spaces,
-                                    &temp_names,
-                                    &name_mapping,
-                                    &call_handles,
-                                    &known_state,
-                                    arg,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, ProtoBuildError>>()?;
-                        let temp_id = LocId(spaces.len());
-                        let ps = PutterSpace::new(std::ptr::null_mut(), *info);
-                        spaces.push(Space::Memo { ps });
-                        if temp_names.insert(dest, (temp_id, *info)).is_some() {
-                            return Err(InstructionShadowsName { name: dest });
-                        }
-                        known_state.insert(dest, true); // must be a fresh name
-                        CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
+                }
+                CreateFromFormula { dest, term } => {
+                    let type_info = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
+                    if type_info != TypeInfo::of::<bool>() {
+                        return Err(CreatingNonBoolFromFormula);
                     }
-                    _ => unimplemented!(),
-                })
-            })
-            .collect::<Result<Vec<_>, ProtoBuildError>>()?;
+                    if resolve_full(&temp_names, &name_mapping, dest).is_ok() {
+                        return Err(InstructionCannotOverwrite { name: dest });
+                    }
+                    let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
+                    spaces.push(Space::Memo { ps });
+                    let temp_id = LocId(spaces.len() - 1);
+                    if temp_names.insert(dest, (temp_id, type_info)).is_some() {
+                        return Err(InstructionShadowsName { name: dest });
+                    }
+                    let term = term_convert(
+                        &spaces,
+                        &temp_names,
+                        &name_mapping,
+                        &call_handles,
+                        &known_state,
+                        &term,
+                    )?;
+                    known_state.insert(dest, true); // must be a fresh name
+                    CreateFromFormula { dest: temp_id, term }
+                }
+                CreateFromCall { info, dest, func, args } => {
+                    let ch =
+                        call_handles.get(func).ok_or(UndefinedFuncName { name: func })?.clone();
+                    let args = args
+                        .into_iter()
+                        .map(|arg| {
+                            term_convert(
+                                &spaces,
+                                &temp_names,
+                                &name_mapping,
+                                &call_handles,
+                                &known_state,
+                                arg,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, ProtoBuildError>>()?;
+                    let temp_id = LocId(spaces.len());
+                    let ps = PutterSpace::new(std::ptr::null_mut(), *info);
+                    spaces.push(Space::Memo { ps });
+                    if temp_names.insert(dest, (temp_id, *info)).is_some() {
+                        return Err(InstructionShadowsName { name: dest });
+                    }
+                    known_state.insert(dest, true); // must be a fresh name
+                    CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
+                }
+                MemSwap { a, b } => {
+                    // memmove is surprisingly complciated
+                    // TODO requires decoupling:
+                    // 1. where getters cleanup, which memcell needs to re-acquire readiness
+                    unimplemented!()
+                    // let aid = resolve_full(&temp_names, &name_mapping, a);
+                    // let bid = resolve_full(&temp_names, &name_mapping, b);
+
+                    // let [aid, bid] = if aid.is_err() && bid.is_err() {
+                    //     // swap of nothing to nothing
+                    //     continue 'instructions;
+                    // } else if aid.is_err() || bid.is_err() {
+                    //     // swap from existing to new temp
+                    //     let (new_name, ex_name, ex_id) =
+                    //         if aid.is_err() { (a, b, bid.unwrap()) } else { (b, a, aid.unwrap()) };
+                    //     if let Space::Memo { ps } = &spaces[ex_id.0] {
+                    //         let info = ps.type_info;
+                    //         let temp_id = LocId(spaces.len());
+                    //         temp_names.insert(new_name, (temp_id, info)); // cannot fail
+                    //         spaces.push(Space::Memo {
+                    //             ps: PutterSpace::new(std::ptr::null_mut(), info),
+                    //         });
+                    //         if let Some(x) = known_state.remove(ex_name) {
+                    //             known_state.insert(new_name, x);
+                    //         }
+                    //         known_state.insert(ex_name, false);
+                    //         [ex_id, temp_id]
+                    //     } else {
+                    //         return Err(CanOnlySwapMemory { name: ex_name });
+                    //     }
+                    // } else {
+                    //     // swap between existing
+                    //     let ka = known_state.remove(a);
+                    //     let kb = known_state.remove(b);
+                    //     if let Some(x) = ka {
+                    //         known_state.insert(b, x);
+                    //     }
+                    //     if let Some(x) = kb {
+                    //         known_state.insert(a, x);
+                    //     }
+                    //     [aid.unwrap(), bid.unwrap()]
+                    // };
+                    // let wmit_a = whose_mem_is_this.remove(&aid);
+                    // let wmit_b = whose_mem_is_this.remove(&aid);
+                    // if let Some(x) = wmit_a {
+                    //     whose_mem_is_this.insert(bid, x);
+                    // }
+                    // if let Some(x) = wmit_b {
+                    //     whose_mem_is_this.insert(aid, x);
+                    // }
+                    // MemSwap { a: aid, b: bid }
+                }
+            };
+            ins.push(instruction);
+        }
+
+        println!("WHOSE {:?}", &whose_mem_is_this);
 
         let mut bit_assign = BitStatePredicate {
             ready: (), // always identical to bit_guard.ready. use that instead
@@ -367,10 +435,10 @@ pub fn build_proto(
                 puts.insert(putter); // no overwrite possible
                 let putter_type_info =
                     spaces[putter_id.0].get_putter_space().expect("CCC").type_info;
-                let putter_kind: LocKind =
-                    *persistent_loc_kinds.get(putter_id.0).unwrap_or(&LocKind::Memo);
-                if !putter_retains && putter_kind == LocKind::Memo {
-                    bit_assign.empty_mem.insert(putter_id);
+                if !putter_retains {
+                    if let Some(x) = whose_mem_is_this.remove(&putter_id) {
+                        bit_assign.empty_mem.insert(x);
+                    }
                 }
                 let mut po_ge = vec![];
                 let mut me_ge = vec![];
@@ -396,7 +464,9 @@ pub fn build_proto(
                             {
                                 return Err(MovementTypeMismatch { putter, getter: name });
                             }
-                            bit_assign.full_mem.insert(*gid);
+                            if let Some(x) = whose_mem_is_this.remove(&gid) {
+                                bit_assign.full_mem.insert(x);
+                            }
                             &mut me_ge
                         }
                     }
@@ -405,23 +475,23 @@ pub fn build_proto(
                 Ok(Movement { putter: putter_id, po_ge, me_ge, putter_retains: *putter_retains })
             })
             .collect::<Result<_, ProtoBuildError>>()?;
-        for (name, _) in known_state.drain() {
+        for (name, is_full) in known_state.drain() {
             if puts.contains(name) || gets.contains(name) {
                 continue; // ok it was covered
             }
             let id = resolve_full(&temp_names, &name_mapping, name)?;
-            let pk = persistent_loc_kinds.get(id.0).copied();
-            if temp_names.contains_key(name) || pk == Some(LocKind::PoPu) {
+            let putter_retains = match spaces[id.0] {
+                Space::Memo{..} => perm_space_rng.contains(&id.0),
+                Space::PoPu{..} => true,
+                Space::PoGe{..} => continue,
+            };
+            if is_full {
                 output.push(Movement {
                     putter: id,
                     po_ge: vec![],
                     me_ge: vec![],
-                    putter_retains: true,
+                    putter_retains,
                 });
-                continue; // ok we cover it trivially
-            }
-            if pk.unwrap() == LocKind::PoGe {
-                return Err(GetterHasNoPutters { name });
             }
         }
         Ok(Rule { bit_guard, ins, output, bit_assign })
@@ -433,7 +503,7 @@ pub fn build_proto(
         .enumerate()
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
-    let r = ProtoR { rules, spaces, name_mapping, port_info };
+    let r = ProtoR { rules, spaces, name_mapping, port_info, perm_space_rng,  };
     println!("PROTO R {:#?}", &r);
     r.sanity_check(); // DEBUG
     Ok(ProtoHandle(Arc::new(Proto {

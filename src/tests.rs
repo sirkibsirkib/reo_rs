@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[test]
 pub fn type_info_neq() {
     assert!(TypeInfo::of::<u8>() != TypeInfo::of::<u16>());
@@ -788,7 +787,6 @@ fn even_odd_claim() {
     );
 }
 
-
 #[test]
 fn even_odd_run() {
     let p = build_proto(&EVEN_ODD, MemInitial::default()).unwrap();
@@ -799,7 +797,7 @@ fn even_odd_run() {
     );
     let getter_job = move |mut port: Getter<u32>, get_evens: bool| {
         for i in 0..10 {
-            let is_even = i%2==0;
+            let is_even = i % 2 == 0;
             if is_even != get_evens {
                 continue;
             }
@@ -820,3 +818,70 @@ fn even_odd_run() {
         h.join().unwrap();
     }
 }
+
+// lazy_static::lazy_static! {
+//     static ref MEM_SWAP: ProtoDef = ProtoDef {
+//         name_defs: hashmap! {
+//             "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
+//             "O" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
+//             "Memory" => NameDef::Mem(TypeInfo::of::<u32>()),
+//         },
+//         rules: vec![
+//             RuleDef {
+//                 state_guard: StatePredicate {
+//                     ready_ports: hashset! {"I"},
+//                     full_mem: hashset! {},
+//                     empty_mem: hashset! {"Memory"},
+//                 },
+//                 ins: vec![],
+//                 output: hashmap! { "I" => (false, hashset!{"Memory"}) },
+//             },
+//             RuleDef {
+//                 state_guard: StatePredicate {
+//                     ready_ports: hashset! {"O"},
+//                     full_mem: hashset! {"Memory"},
+//                     empty_mem: hashset! {},
+//                 },
+//                 ins: vec![
+//                     Instruction::MemSwap { a:"Memory", b:"temp_0" },
+//                 ],
+//                 output: hashmap! { "temp_0" => (false, hashset!{"O"}) },
+//             },
+//         ],
+//     };
+// }
+
+// #[test]
+// fn mem_swap_build() {
+//     build_proto(&MEM_SWAP, MemInitial::default()).unwrap();
+// }
+
+// #[test]
+// fn mem_swap_claim() {
+//     let p = build_proto(&MEM_SWAP, MemInitial::default()).unwrap();
+//     let _: (Putter<u32>, Getter<u32>) =
+//         (Putter::claim(&p, "I").unwrap(), Getter::claim(&p, "O").unwrap());
+// }
+
+// #[test]
+// fn mem_swap_run() {
+//     let p = build_proto(&MEM_SWAP, MemInitial::default()).unwrap();
+//     let (mut i, mut o): (Putter<u32>, Getter<u32>) =
+//         (Putter::claim(&p, "I").unwrap(), Getter::claim(&p, "O").unwrap());
+//     use std::thread::spawn;
+//     let handles = vec![
+//         spawn(move || {
+//             for num in 0..2 {
+//                 i.put(num);
+//             }
+//         }),
+//         spawn(move || {
+//             for num in 0..2 {
+//                 assert_eq!(num, o.get());
+//             }
+//         }),
+//     ];
+//     for h in handles {
+//         h.join().unwrap();
+//     }
+// }
