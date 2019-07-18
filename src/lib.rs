@@ -1,9 +1,9 @@
 #![feature(raw)]
 #![feature(box_patterns)]
 #![feature(specialization)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(dead_code)]
+// #![allow(unused_variables)]
+// #![allow(unused_imports)]
+// #![allow(dead_code)]
 
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
@@ -12,11 +12,9 @@ use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
 use std::{
     alloc::Layout,
-    any::Any,
     collections::{HashMap, HashSet},
-    convert::TryInto,
     marker::PhantomData,
-    mem::{transmute, ManuallyDrop, MaybeUninit},
+    mem::{transmute, MaybeUninit},
     raw::TraitObject,
     sync::{
         atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst},
@@ -29,11 +27,8 @@ use std_semaphore::Semaphore;
 mod building;
 use building::*;
 
+#[cfg(test)]
 mod tests;
-
-pub enum PortDir {
-    Putter, Getter,
-}
 
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
@@ -136,16 +131,12 @@ on the metal,
 
 but the compiler will not compile the former unless the user calls output.
 It's essentially a signature of fn() -> R, but for R written using an out pointer
-
-
-
-
 */
 impl CallHandle {
     pub(crate) unsafe fn exec(&self, dest_ptr: TraitData, args: &[TraitData]) {
         let to: unsafe fn() = self.func;
         assert_eq!(self.args.len(), args.len());
-        let dest_ptr = match args.len() {
+        match args.len() {
             0 => {
                 let funcy: fn(TraitData) = transmute(to);
                 funcy(dest_ptr);
@@ -218,7 +209,7 @@ pub enum Instruction<I, F> {
     CreateFromFormula { dest: I, term: Term<I, F> },
     CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
     Check { term: Term<I, F> },
-    MemMove { src: I, dest: I }, // TODO move data between memcells
+    MemSwap { a: I, b: I },
 }
 #[derive(Debug)]
 pub enum Space {
@@ -529,7 +520,6 @@ impl ProtoR {
     pub fn sanity_check(&self) {
         struct Cap {
             put: bool,
-            msg: bool,
             mem: bool,
             ty: TypeInfo,
         };
@@ -539,15 +529,14 @@ impl ProtoR {
             .enumerate()
             .map(|(id, x)| match x {
                 Space::PoPu { ps, .. } => {
-                    Cap { put: true, msg: true, mem: false, ty: ps.type_info }
+                    Cap { put: true, mem: false, ty: ps.type_info }
                 }
                 Space::PoGe { .. } => Cap {
                     put: false,
-                    msg: true,
                     mem: false,
                     ty: self.port_info.get(&LocId(id)).unwrap().1,
                 },
-                Space::Memo { ps } => Cap { put: true, msg: false, mem: true, ty: ps.type_info },
+                Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_info },
             })
             .collect();
         for (k, (putter, tinfo)) in self.port_info.iter() {
@@ -640,11 +629,15 @@ impl ProtoR {
                         let cap = &capabilities[dest.0];
                         assert_eq!(cap.ty, check_and_ret_type(&capabilities, &known_filled, term))
                     }
-                    Instruction::MemMove { src, dest } => {
-                        assert_eq!(known_filled.get(src), Some(&true));
-                        assert_eq!(known_filled.get(dest), Some(&false));
-                        known_filled.insert(*src, false);
-                        known_filled.insert(*dest, true);
+                    Instruction::MemSwap { a, b } => {
+                        let a_knowledge = known_filled.remove(a);
+                        let b_knowledge = known_filled.remove(b);
+                        if let Some(x) = a_knowledge {
+                            known_filled.insert(*b, x);
+                        }
+                        if let Some(x) = b_knowledge {
+                            known_filled.insert(*a, x);
+                        }
                     }
                 }
             }
@@ -724,6 +717,13 @@ impl ProtoCr {
         self.ready.insert(this_mem_id);
         self.coordinate(r);
     }
+    fn swap_putter_ptrs(r: &ProtoR, a: LocId, b: LocId) {
+        let pa = r.spaces[a.0].get_putter_space().unwrap();
+        let pb = r.spaces[b.0].get_putter_space().unwrap();
+        let olda = pa.ptr.load(SeqCst);
+        let oldb = pb.ptr.swap(olda, SeqCst);
+        pa.ptr.store(oldb, SeqCst);
+    }
     fn coordinate(&mut self, r: &ProtoR) {
         println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
@@ -741,7 +741,6 @@ impl ProtoCr {
                 for (i_id, i) in rule.ins.iter().enumerate() {
                     use Instruction::*;
                     match i {
-                        MemMove { src, dest } => unimplemented!(),
                         CreateFromFormula { dest, term } => {
                             // MUST BE BOOL. creation ensures it
                             let tbool = TypeInfo::of::<bool>();
@@ -780,7 +779,7 @@ impl ProtoCr {
                             if !eval_bool(term, r) {
                                 // ROLLBACK!
                                 // println!("ROLLBACK!");
-                                for (i_id, i) in rule.ins[0..i_id].iter().enumerate().rev() {
+                                for (_, i) in rule.ins[0..i_id].iter().enumerate().rev() {
                                     // println!("... rolling back {:?}", i);
                                     match i {
                                         CreateFromFormula { dest, .. } => {
@@ -790,7 +789,7 @@ impl ProtoCr {
                                             self.finalize_memo(r, *dest, false)
                                         }
                                         Check { .. } => {}
-                                        MemMove { src, dest } => unimplemented!(),
+                                        MemSwap { a, b } => Self::swap_putter_ptrs(r, *a, *b),
                                     }
                                 }
                                 // println!("DID CreateFromCall");
@@ -798,6 +797,7 @@ impl ProtoCr {
                             }
                             // println!("Passed check!");
                         }
+                        MemSwap { a, b } => Self::swap_putter_ptrs(r, *a, *b),
                     }
                 }
                 // made it past the instructions! time to commit!
@@ -986,7 +986,7 @@ impl Drop for Allocator {
         }
         // drop all empty boxes
         let empty_box_vtable = TypeInfo::of::<Box<()>>();
-        for (&vtable, data_vec) in self.free.iter() {
+        for (_, data_vec) in self.free.iter() {
             for &data in data_vec.iter() {
                 drop(unsafe { trait_obj_build(data as TraitData, empty_box_vtable) });
             }
@@ -1097,20 +1097,8 @@ fn bool_to_ptr(x: bool) -> TraitData {
 fn eval_ptr(term: &Term<LocId, CallHandle>, r: &ProtoR) -> TraitData {
     use Term::*;
     match term {
-        // NOT NECESSARILY BOOL
         Named(i) => r.spaces[i.0].get_putter_space().unwrap().ptr.load(SeqCst),
-        other => bool_to_ptr(eval_bool(term, r)),
-        // // MUST BE BOOL
-        // BoolCall { func, args } => {
-        //     // TODOun
-        //     unimplemented!()
-        // }
-        // True => bool_to_ptr(true),
-        // False => bool_to_ptr(false),
-        // Not(t) => bool_to_ptr(!eval_bool(t, r)),
-        // And(ts) => bool_to_ptr(ts.iter().all(|t| eval_bool(t, r))),
-        // Or(ts) => bool_to_ptr(ts.iter().any(|t| eval_bool(t, r))),
-        // IsEq(tid, terms) => bool_to_ptr(eval_bool(term, r)),
+        _ => bool_to_ptr(eval_bool(term, r)),
     }
 }
 #[inline]
@@ -1123,7 +1111,7 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
     use Term::*;
     match term {
         // PTR points to BOOL
-        Named(i) => ptr_to_bool(eval_ptr(term, r)),
+        Named(_) => ptr_to_bool(eval_ptr(term, r)),
         // INHERENTLY BOOL
         BoolCall { func, args } => {
             let mut ret: AtomicBool = false.into();
@@ -1146,7 +1134,7 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
             let ptr1 = eval_ptr(&terms[1], r);
             let to: &dyn PortDatum =
                 unsafe { transmute(TraitObject { data: ptr0, vtable: info.0 }) };
-            to.my_eq(ptr0)
+            to.my_eq(ptr1)
         }
     }
 }
@@ -1199,37 +1187,4 @@ impl<T: PubPortDatum> PortDatum for T {
     default fn is_copy(&self) -> bool {
         <Self as PubPortDatum>::IS_COPY
     }
-}
-
-fn main() -> Result<(), (Option<usize>, ProtoBuildError)> {
-    use Instruction::*;
-    use Term::*;
-
-    let proto = ProtoDef {
-        name_defs: hashmap! {
-            "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
-            "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-        },
-        rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {"A", "B"},
-                full_mem: hashset! {},
-                empty_mem: hashset! {},
-            },
-            ins: vec![
-                Instruction::Check { term: Term::True },
-                Instruction::CreateFromCall {
-                    info: TypeInfo::of::<u32>(),
-                    dest: "D",
-                    func: "foo",
-                    args: vec![],
-                },
-            ],
-            output: hashmap! {
-                "D" => (false, hashset!{"B"})
-            },
-        }],
-    };
-    let built = build_proto(&proto, MemInitial::default())?;
-    Ok(())
 }

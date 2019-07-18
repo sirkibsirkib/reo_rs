@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+
 
 #[test]
 pub fn type_info_neq() {
@@ -18,9 +18,9 @@ pub fn type_info_eq() {
     let y: Box<dyn PortDatum> = Box::new(String::from("Hello"));
     let z: Box<dyn PortDatum> = Box::new(String::from("Howdy"));
     unsafe {
-        let (data_x, info_x) = trait_obj_read(&x);
-        let (data_y, info_y) = trait_obj_read(&y);
-        let (data_z, info_z) = trait_obj_read(&z);
+        let (_, info_x) = trait_obj_read(&x);
+        let (_, info_y) = trait_obj_read(&y);
+        let (_, info_z) = trait_obj_read(&z);
 
         // string and u8 have different vtables
         assert!(info_x.0 != info_y.0);
@@ -72,7 +72,7 @@ pub fn trait_obj_changing() {
 
 /// Note: not threadsafe at all! Need mutex for that
 impl PartialEq for Incrementor {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _: &Self) -> bool {
         true
     }
 }
@@ -216,16 +216,15 @@ pub fn allocator_fresh_alloc() {
         data.write(Incrementor(m.clone()));
         new_data
     };
+    alloc.drop_inside(new_data, type_info);
+    assert_eq!(*m.lock(), 1);
 
-    let new_data2 = unsafe {
+    unsafe {
         let new_data2 = alloc.alloc_uninit(type_info);
         let data2: *mut Incrementor = transmute(new_data2);
         data2.write(Incrementor(m.clone()));
         new_data2
     };
-
-    alloc.drop_inside(new_data, type_info);
-    assert_eq!(*m.lock(), 1);
 
     drop(alloc);
     assert_eq!(*m.lock(), 2);
@@ -303,7 +302,7 @@ fn sync_claim() {
         p.put(32);
     });
     let b = std::thread::spawn(move || {
-        let x = g.get();
+        g.get();
     });
     a.join().unwrap();
     b.join().unwrap();
@@ -367,13 +366,13 @@ lazy_static::lazy_static! {
 
 #[test]
 fn prod_cons_init() {
-    let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
+    build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
 }
 
 #[test]
 fn prod_cons_claim() {
     let p = build_proto(&FIFO1_STRING, MemInitial::default()).unwrap();
-    let (p, g): (Putter<String>, Getter<String>) =
+    let _: (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
 }
 
@@ -425,8 +424,8 @@ fn fifo_get_signal() {
             }
         }),
         spawn(move || {
-            for i in 0..10 {
-                let x = g.get_signal();
+            for _ in 0..10 {
+                g.get_signal();
             }
         }),
     ];
@@ -494,15 +493,15 @@ fn prod_cons_no_leak() {
     use std::thread::spawn;
     let handles = vec![
         spawn(move || {
-            for i in 0..3 {
+            for _ in 0..3 {
                 p.put(x1.clone());
                 println!("P DONE");
             }
             // one dropped here (x1)
         }),
         spawn(move || {
-            for i in 0..2 {
-                let gotten = g.get();
+            for _ in 0..2 {
+                g.get();
                 println!("G DONE");
                 // one dropped here (gotten)
             }
@@ -567,13 +566,13 @@ lazy_static::lazy_static! {
 
 #[test]
 fn pos_neg_build() {
-    let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
+    build_proto(&POS_NEG, MemInitial::default()).unwrap();
 }
 
 #[test]
 fn pos_neg_claim() {
     let p = build_proto(&POS_NEG, MemInitial::default()).unwrap();
-    let (p, cpos, cneg): (Putter<i32>, Getter<i32>, Getter<i32>) = (
+    let _: (Putter<i32>, Getter<i32>, Getter<i32>) = (
         Putter::claim(&p, "P").unwrap(),
         Getter::claim(&p, "Cpos").unwrap(),
         Getter::claim(&p, "Cneg").unwrap(),
@@ -607,9 +606,9 @@ fn pos_neg_classification() {
             }
         })
         .collect();
+    h.join().unwrap();
     println!("{:?}", was_pos);
 }
-
 
 lazy_static::lazy_static! {
     static ref CREATE: ProtoDef = ProtoDef {
@@ -634,13 +633,12 @@ lazy_static::lazy_static! {
 
 #[test]
 fn create_create() {
-    let p = build_proto(&CREATE, MemInitial::default()).unwrap();
+    build_proto(&CREATE, MemInitial::default()).unwrap();
 }
 #[test]
 fn create_claim() {
     let p = build_proto(&CREATE, MemInitial::default()).unwrap();
-    let g = Getter::<bool>::claim(&p, "A").unwrap();
-
+    let _ = Getter::<bool>::claim(&p, "A").unwrap();
 }
 
 #[test]
@@ -658,7 +656,7 @@ lazy_static::lazy_static! {
     static ref MANUAL_CLONE: ProtoDef = ProtoDef {
         name_defs: hashmap! {
             "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Incrementor>() },
-            "f_clone" => NameDef::Func(CallHandle::new_unary(|o, i: &Incrementor| o.output(i.clone()))), 
+            "f_clone" => NameDef::Func(CallHandle::new_unary(|o, i: &Incrementor| o.output(i.clone()))),
             "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
             "C" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
         },
@@ -684,17 +682,15 @@ lazy_static::lazy_static! {
     };
 }
 
-
 #[test]
 fn manual_clone_create() {
-    let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
+    build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
 }
-
 
 #[test]
 fn manual_clone_claim() {
     let p = build_proto(&MANUAL_CLONE, MemInitial::default()).unwrap();
-    let (a, b, c): (Putter<Incrementor>, Getter<Incrementor>, Getter<Incrementor>) = (
+    let _: (Putter<Incrementor>, Getter<Incrementor>, Getter<Incrementor>) = (
         Putter::claim(&p, "A").unwrap(),
         Getter::claim(&p, "B").unwrap(),
         Getter::claim(&p, "C").unwrap(),
@@ -715,19 +711,19 @@ fn manual_clone_once() {
     use std::thread::spawn;
     let handles = vec![
         spawn(move || {
-            for i in 0..3 {
+            for _ in 0..3 {
                 a.put(ia.clone());
             }
             // ia dropped +1
         }),
         spawn(move || {
-            for i in 0..3 {
+            for _ in 0..3 {
                 b.get();
                 // gotten dropped +3
             }
         }),
         spawn(move || {
-            for i in 0..3 {
+            for _ in 0..3 {
                 c.get();
                 // gotten dropped +3
             }
@@ -736,37 +732,58 @@ fn manual_clone_once() {
     for h in handles {
         h.join().unwrap();
     }
-    assert_eq!(*i.0.lock(), 3+3+1);
+    assert_eq!(*i.0.lock(), 3 + 3 + 1);
     // i dropped
 }
 
+lazy_static::lazy_static! {
+    static ref CATEGORIZE: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
+            "Otrue" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
+            "Ofalse" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
+            "f" => NameDef::Func(CallHandle::new_unary(|o, i: &u32| o.output(*i %2 == 0))),
+        },
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"I", "Otrue"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![
+                    Instruction::Check { term: Term::BoolCall { func: "f", args: vec![Term::Named("I")] }},
+                ],
+                output: hashmap! { "I" => (false, hashset!{"Otrue"}) },
+            },
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"I", "Ofalse"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![
+                    Instruction::Check { term: Term::Not(Box::new(
+                        Term::BoolCall { func: "f", args: vec![Term::Named("I")]}
+                    ))},
+                ],
+                output: hashmap! { "I" => (false, hashset!{"Ofalse"}) },
+            },
+        ],
+    };
+}
 
-// lazy_static::lazy_static! {
-//     static ref CATEGORIZE: ProtoDef = ProtoDef {
-//         name_defs: hashmap! {
-//             "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Incrementor>() },
-//             "Om3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
-//             "Cnotm3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
-//             "fmod" => NameDef::Func(CallHandle::new_unary(|o, i: &u32| o.output(i.clone()))), 
-//         },
-//         rules: vec![RuleDef {
-//             state_guard: StatePredicate {
-//                 ready_ports: hashset! {"A", "B", "C"},
-//                 full_mem: hashset! {},
-//                 empty_mem: hashset! {},
-//             },
-//             ins: vec![
-//                 Instruction::CreateFromCall {
-//                     dest: "D" ,
-//                     func: "f_clone",
-//                     args: vec![Term::Named("A")],
-//                     info: TypeInfo::of::<Incrementor>()
-//                 },
-//             ],
-//             output: hashmap! {
-//                 "A" => (false, hashset!{"B"}),
-//                 "D" => (false, hashset!{"C"}),
-//             },
-//         }],
-//     };
-// }
+#[test]
+fn categorize_build() {
+    build_proto(&CATEGORIZE, MemInitial::default()).unwrap();
+}
+
+#[test]
+fn categorize_run() {
+    let p = build_proto(&CATEGORIZE, MemInitial::default()).unwrap();
+    let _: (Putter<u32>, Getter<u32>, Getter<u32>) = (
+        Putter::claim(&p, "I").unwrap(),
+        Getter::claim(&p, "Otrue").unwrap(),
+        Getter::claim(&p, "Ofalse").unwrap(),
+    );
+}
