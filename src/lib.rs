@@ -43,17 +43,7 @@ impl TypeInfo {
         let bx: Box<T> = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
         // have the compiler insert the correct vtable, using bogus data
         let dy_bx: Box<dyn PortDatum> = bx;
-
-
-        {
-            unsafe  { trait_obj_break(dy_bx).1 }
-        }
-
-
-        // // change compiler's view of the object
-        // let to: TraitObject = unsafe { transmute(dy_bx) };
-        // // return the legitimate vtable
-        // Self(to.vtable)
+        unsafe  { trait_obj_break(dy_bx).1 }
     }
     pub fn get_layout(self) -> Layout {
         let bogus = self.0;
@@ -260,10 +250,10 @@ impl MsgBox {
     const UNMOVED_MSG: usize = 0xdeaf;
     pub fn send(&self, msg: usize) {
         println!(">>> sending {:X}", msg);
-        self.s.try_send(msg).unwrap();
+        self.s.try_send(msg).expect("SEND BAD");
     }
     pub fn recv(&self) -> usize {
-        let msg = self.r.recv().unwrap();
+        let msg = self.r.recv().expect("RECV BAD");
         println!("<<< recved {:X}", msg);
         msg
     }
@@ -322,7 +312,7 @@ impl PortCommon {
     ) -> Result<Self, ClaimError> {
         use ClaimError::*;
         if let Some(id) = p.0.r.name_mapping.get_by_first(&name) {
-            let (is_putter, type_info) = *p.0.r.port_info.get(id).unwrap();
+            let (is_putter, type_info) = *p.0.r.port_info.get(id).expect("IDK");
             if want_putter != is_putter {
                 return Err(WrongPortDirection);
             } else if want_type_info != type_info {
@@ -542,7 +532,7 @@ impl ProtoR {
             .map(|(id, x)| match x {
                 Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_info },
                 Space::PoGe { .. } => {
-                    Cap { put: false, mem: false, ty: self.port_info.get(&LocId(id)).unwrap().1 }
+                    Cap { put: false, mem: false, ty: self.port_info.get(&LocId(id)).expect("BADCAP").1 }
                 }
                 Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_info },
             })
@@ -704,9 +694,9 @@ pub struct ProtoCr {
 }
 impl ProtoCr {
     fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, was_moved: bool) {
-        let putter_space = r.spaces[this_mem_id.0].get_putter_space().unwrap();
+        let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
         let ptr = putter_space.ptr.swap(NULL, SeqCst);
-        let ref_count = self.ref_counts.get_mut(&(ptr as usize)).unwrap();
+        let ref_count = self.ref_counts.get_mut(&(ptr as usize)).expect("RC");
         println!("FINALIZING SO {:?} IS READY", this_mem_id);
         assert!(*ref_count > 0);
         *ref_count -= 1;
@@ -728,8 +718,8 @@ impl ProtoCr {
         }
     }
     fn swap_putter_ptrs(&mut self, r: &ProtoR, a: LocId, b: LocId) {
-        let pa = r.spaces[a.0].get_putter_space().unwrap();
-        let pb = r.spaces[b.0].get_putter_space().unwrap();
+        let pa = r.spaces[a.0].get_putter_space().expect("Pa");
+        let pb = r.spaces[b.0].get_putter_space().expect("Pb");
         let olda = pa.ptr.load(SeqCst);
         let oldb = pb.ptr.swap(olda, SeqCst);
         pa.ptr.store(oldb, SeqCst);
@@ -769,7 +759,7 @@ impl ProtoCr {
                             };
                             let old = r.spaces[dest.0]
                                 .get_putter_space()
-                                .unwrap()
+                                .expect("SPf")
                                 .ptr
                                 .swap(dest_ptr, SeqCst);
                             assert_eq!(old, NULL);
@@ -784,7 +774,7 @@ impl ProtoCr {
                             unsafe { func.exec(dest_ptr, &arg_stack[..]) };
                             let old = r.spaces[dest.0]
                                 .get_putter_space()
-                                .unwrap()
+                                .expect("sp2")
                                 .ptr
                                 .swap(dest_ptr, SeqCst);
                             assert_eq!(old, NULL);
@@ -857,7 +847,7 @@ impl ProtoCr {
                         // 1. memory getters are completed BEFORE port getters (by the coordinator)
                         // 2. data movement MUST follow all data clones (or undefined behavior)
                         // 3. we don't yet know if any port-getters want to MOVE (they may want signals)
-                        let dest_space = r.spaces[mem_0.0].get_putter_space().unwrap();
+                        let dest_space = r.spaces[mem_0.0].get_putter_space().expect("dest");
                         assert_eq!(dest_space.type_info, ps.type_info);
                         let dest_ptr = unsafe { self.allocator.alloc_uninit(ps.type_info) };
                         println!("ALLOCATED {:p}", dest_ptr);
@@ -891,10 +881,10 @@ impl ProtoCr {
                     // alias the memory in all memory getters. datum itself does not move.
                     let src = ps.ptr.load(SeqCst);
                     assert!(src != NULL);
-                    let ref_count: &mut usize = self.ref_counts.get_mut(&(src as usize)).unwrap();
+                    let ref_count: &mut usize = self.ref_counts.get_mut(&(src as usize)).expect("eub");
                     for m in me_ge_iter {
                         *ref_count += 1;
-                        let getter_space = r.spaces[m.0].get_putter_space().unwrap();
+                        let getter_space = r.spaces[m.0].get_putter_space().expect("e8h8");
                         assert_eq!(NULL, getter_space.ptr.swap(src, SeqCst));
                     }
                     if movement.po_ge.is_empty() {
@@ -922,7 +912,7 @@ impl ProtoCr {
             assert_eq!(0, ps.rendesvous.countdown.swap(movement.po_ge.len(), SeqCst));
             for po_ge in movement.po_ge.iter().copied() {
                 // signal getter, telling them which putter to get from
-                r.spaces[po_ge.0].get_msg_box().unwrap().send(putter.0);
+                r.spaces[po_ge.0].get_msg_box().expect("ueb").send(putter.0);
             }
         }
     }
@@ -1113,7 +1103,7 @@ fn bool_to_ptr(x: bool) -> TraitData {
 fn eval_ptr(term: &Term<LocId, CallHandle>, r: &ProtoR) -> TraitData {
     use Term::*;
     match term {
-        Named(i) => r.spaces[i.0].get_putter_space().unwrap().ptr.load(SeqCst),
+        Named(i) => r.spaces[i.0].get_putter_space().expect("k").ptr.load(SeqCst),
         _ => bool_to_ptr(eval_bool(term, r)),
     }
 }

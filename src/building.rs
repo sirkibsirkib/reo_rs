@@ -9,10 +9,9 @@ impl MemInitial {
     pub fn with<T: PubPortDatum>(mut self, name: Name, init: T) -> Self {
         let dy: Box<dyn PortDatum> = Box::new(init);
         let i1 = TypeInfo::of::<T>();
-        let (d, i2) = unsafe { trait_obj_break(dy) };
-
-        // assert_eq!(i1, i2);
-
+        // TODO for some reason Rustc makes two trait objects?
+        // Anyway we exclusively use those returned by TypeInfo
+        let (d, _i2) = unsafe { trait_obj_break(dy) };
         let dy = unsafe { trait_obj_build(d, i1) };
         self.strg.insert(name, dy);
         self
@@ -186,6 +185,7 @@ pub fn build_proto(
     let mut mem: HashSet<LocId> = hashset! {};
     let mut ready = mem.clone();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
+    let mut ref_counts = hashmap!{};
     for (name, def) in p.name_defs.iter() {
         let id = LocId(spaces.len());
         name_mapping.insert(name, id);
@@ -209,7 +209,8 @@ pub fn build_proto(
                     if info != *type_info {
                         return Err((None, InitialTypeMismatch { name }));
                     }
-                    allocator.store(bx);
+                    assert!(allocator.store(bx));
+                    ref_counts.insert(data as usize, 1usize);
                     mem.insert(id);
                     data
                 } else {
@@ -511,6 +512,6 @@ pub fn build_proto(
     r.sanity_check(); // DEBUG
     Ok(ProtoHandle(Arc::new(Proto {
         r,
-        cr: Mutex::new(ProtoCr { unclaimed, allocator, mem, ready, ref_counts: hashmap! {} }),
+        cr: Mutex::new(ProtoCr { unclaimed, allocator, mem, ready, ref_counts }),
     })))
 }

@@ -838,38 +838,6 @@ lazy_static::lazy_static! {
     };
 }
 
-// #[test]
-// fn trait_obj_ready() {
-//     type T = String;
-
-
-
-//     let a = {
-//         TypeInfo::of::<String>()
-//     };
-
-//     let b = {
-//         let s: Box<dyn PortDatum> = Box::new(String::from("HI"));
-//         unsafe { trait_obj_break(s) }.1
-//     };
-
-//     println!("a={:?}", a);
-//     println!("b={:?}", b);
-
-//     println!("A");
-//     let read: &[usize;4] = unsafe {std::mem::transmute(a)};
-//     for x in read.iter() {
-//         println!("{:?} | {:p}", x, x);
-//     }
-
-
-//     println!("B");
-//     let read: &[usize;4] = unsafe {std::mem::transmute(b)};
-//     for x in read.iter() {
-//         println!("{:?} | {:p}", x, x);
-//     }
-// }
-
 #[test]
 fn init_mem_create() {
     let i = Incrementor(Arc::new(Mutex::new(0)));
@@ -877,66 +845,12 @@ fn init_mem_create() {
     assert_eq!(*i.0.lock(), 1);
 }
 
-// #[test]
-// fn init_mem_claim() {
-//     let p = build_proto(&INIT_MEM, MemInitial::default().with("M", String::from("HELLO"))).unwrap();
-//     let _ = Getter::<String>::claim(&p, "C").unwrap();
-// }
-
-
-// lazy_static::lazy_static! {
-//     static ref MEM_SWAP: ProtoDef = ProtoDef {
-//         name_defs: hashmap! {
-//             "O" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-//             "Memory" => NameDef::Mem(TypeInfo::of::<u32>()),
-//         },
-//         rules: vec![
-//             RuleDef {
-//                 state_guard: StatePredicate {
-//                     ready_ports: hashset! {"O"},
-//                     full_mem: hashset! {"Memory"},
-//                     empty_mem: hashset! {},
-//                 },
-//                 ins: vec![
-//                     Instruction::MemSwap { a:"Memory", b:"temp_0" },
-//                 ],
-//                 output: hashmap! { "temp_0" => (false, hashset!{"O"}) },
-//             },
-//         ],
-//     };
-// }
-
-// #[test]
-// fn mem_swap_build() {
-//     build_proto(&MEM_SWAP, MemInitial::default()).unwrap();
-// }
-
-// #[test]
-// fn mem_swap_claim() {
-//     let p = build_proto(&MEM_SWAP, MemInitial::default()).unwrap();
-//     let _: (Putter<u32>, Getter<u32>) =
-//         (Putter::claim(&p, "I").unwrap(), Getter::claim(&p, "O").unwrap());
-// }
-
-// #[test]
-// fn mem_swap_run() {
-//     let p = build_proto(&MEM_SWAP, MemInitial::default()).unwrap();
-//     let (mut i, mut o): (Putter<u32>, Getter<u32>) =
-//         (Putter::claim(&p, "I").unwrap(), Getter::claim(&p, "O").unwrap());
-//     use std::thread::spawn;
-//     let handles = vec![
-//         spawn(move || {
-//             for num in 0..2 {
-//                 i.put(num);
-//             }
-//         }),
-//         spawn(move || {
-//             for num in 0..2 {
-//                 assert_eq!(num, o.get());
-//             }
-//         }),
-//     ];
-//     for h in handles {
-//         h.join().unwrap();
-//     }
-// }
+#[test]
+fn init_mem_run() {
+    let i = Incrementor(Arc::new(Mutex::new(0)));
+    let p = build_proto(&INIT_MEM, MemInitial::default().with("M", i.clone())).unwrap();
+    let mut port = Getter::<Incrementor>::claim(&p, "C").expect("EY");
+    assert_eq!(*i.0.lock(), 0);
+    port.get();
+    assert_eq!(*i.0.lock(), 1);
+}
