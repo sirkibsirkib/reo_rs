@@ -40,7 +40,14 @@ unsafe impl Sync for TypeInfo {}
 pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
 
-    #[inline(never)] // when this function gets inlined, it somehow makes a duplicate vtable?? idk
+
+    /* Somehow the inlining behaviour of this function sometimes creates DUPLICATE
+    trait object vtables in memory. this has ONLY the effect of sometimes causing
+    false positives when checking for type-equality (the contents of the vtables are identical)
+    ie: TypeInfo::of::<T>() != trait_obj_break(my_box_string)
+    Until I figure this out more robustly, I've solved it just by prohibiting inlining
+    */
+    #[inline(never)]
     pub fn of<T: PortDatum>() -> Self {
         // fabricate the data itself
         let bx: Box<T> = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
@@ -213,7 +220,7 @@ pub enum Instruction<I, F> {
     CreateFromFormula { dest: I, term: Term<I, F> },
     CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
     Check { term: Term<I, F> },
-    MemSwap { a: I, b: I },
+    MemSwap(I, I),
 }
 #[derive(Debug)]
 pub enum Space {
@@ -630,7 +637,7 @@ impl ProtoR {
                         let cap = &capabilities[dest.0];
                         assert_eq!(cap.ty, check_and_ret_type(&capabilities, &known_filled, term))
                     }
-                    Instruction::MemSwap { a, b } => {
+                    Instruction::MemSwap(a, b) => {
                         let a_knowledge = known_filled.remove(a);
                         let b_knowledge = known_filled.remove(b);
                         if let Some(x) = a_knowledge {
@@ -798,7 +805,7 @@ impl ProtoCr {
                                             self.finalize_memo(r, *dest, false)
                                         }
                                         Check { .. } => {}
-                                        MemSwap { a, b } => self.swap_putter_ptrs(r, *a, *b),
+                                        MemSwap(a,b) => self.swap_putter_ptrs(r, *a, *b),
                                     }
                                 }
                                 // println!("DID CreateFromCall");
@@ -806,7 +813,7 @@ impl ProtoCr {
                             }
                             // println!("Passed check!");
                         }
-                        MemSwap { a, b } => self.swap_putter_ptrs(r, *a, *b),
+                        MemSwap(a,b) => self.swap_putter_ptrs(r, *a, *b),
                     }
                 }
                 // made it past the instructions! time to commit!

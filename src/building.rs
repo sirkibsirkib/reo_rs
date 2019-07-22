@@ -376,7 +376,7 @@ pub fn build_proto(
                     known_state.insert(dest, true); // must be a fresh name
                     CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
                 }
-                MemSwap { a, b } => {
+                MemSwap(a, b)=> {
                     let aid = resolve_full(&temp_names, &name_mapping, a);
                     let bid = resolve_full(&temp_names, &name_mapping, b);
 
@@ -422,7 +422,7 @@ pub fn build_proto(
                     if let Some(x) = wmit_b {
                         whose_mem_is_this.insert(aid, x);
                     }
-                    MemSwap { a: aid, b: bid }
+                    MemSwap(aid, bid)
                 }
             };
             ins.push(instruction);
@@ -435,6 +435,7 @@ pub fn build_proto(
             empty_mem: hashset! {},
             full_mem: hashset! {},
         };
+        println!("KS BEFORE {:?}", &known_state);
         let mut output: SmallVec<[Movement;4]> = rule
             .output
             .iter()
@@ -486,6 +487,7 @@ pub fn build_proto(
                 Ok(Movement { putter: putter_id, po_ge, me_ge, putter_retains: *putter_retains })
             })
             .collect::<Result<_, ProtoBuildError>>()?;
+        println!("KS AFTER {:?}. P|G: {:?}", &known_state, (&puts, &gets));
         for (name, is_full) in known_state.drain() {
             if puts.contains(name) || gets.contains(name) {
                 continue; // ok it was covered

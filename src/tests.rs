@@ -854,3 +854,42 @@ fn init_mem_run() {
     port.get();
     assert_eq!(*i.0.lock(), 1);
 }
+
+lazy_static::lazy_static! {
+    static ref MEM_SWAP: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "C" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<bool>() },
+        },
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"C"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![
+                    Instruction::CreateFromFormula {dest:"m0", term: Term::False},
+                    Instruction::MemSwap("m0", "m1"),
+                    Instruction::MemSwap("m1", "m2"),
+                    Instruction::MemSwap("m2", "m3"),
+                ],
+                output: hashmap! { "m3" => (false, hashset!{"C"}) },
+            },
+        ],
+    };
+}
+
+#[test]
+fn mem_swap_create() {
+    MEM_SWAP.build(MemInitial::default()).unwrap();
+}
+
+
+#[test]
+fn mem_swap_run() {
+    let p = MEM_SWAP.build(MemInitial::default()).unwrap();
+    let mut g = Getter::<bool>::claim(&p, "C").unwrap();
+    assert_eq!(g.get(), false);
+    assert_eq!(g.get(), false);
+    assert_eq!(g.get(), false);
+}
