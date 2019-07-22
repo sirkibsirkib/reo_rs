@@ -578,6 +578,7 @@ fn pos_neg_claim() {
 
 #[test]
 fn pos_neg_classification() {
+    use {Instruction::*, Term::*, NameDef::*}; 
     let p = POS_NEG.build(MemInitial::default()).unwrap();
     let (mut p, mut cpos, mut cneg): (Putter<i32>, Getter<i32>, Getter<i32>) = (
         Putter::claim(&p, "P").unwrap(),
