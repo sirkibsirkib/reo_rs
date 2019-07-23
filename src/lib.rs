@@ -366,9 +366,9 @@ impl<T: PortDatum> Putter<T> {
                 assert!(x.ready.insert(self.0.id));
                 x.coordinate(&self.0.p.0.r);
             }
-            //DeBUGGY:println!("waitinig,...");
+            // println!("waitinig,...");
             let msg = mb.recv();
-            //DeBUGGY:println!("...got!");
+            // println!("...got!");
             //DeBUGGY:println!("MSG 0x{:X}", msg);
             ps.ptr.swap(NULL, SeqCst);
             match msg {
@@ -433,24 +433,32 @@ impl<T: PubPortDatum> Getter<T> {
             if let Some(dest) = maybe_dest {
                 let [visited_first, retains] = ps.rendesvous.move_flags.visit();
                 if visited_first && !retains {
+                    // println!("A");
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+                    // println!("was (A) {}, retains {}", was, retains);
                     if was != LAST {
                         ps.rendesvous.mover_sema.acquire();
                     }
                     do_move(dest);
                     finalize(true);
+                    // println!("/A");
                 } else {
+                    // println!("B");
                     do_clone(dest);
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+                    // println!("was (B) {}, retains {}", was, retains);
                     if was == LAST {
                         if retains {
                             finalize(false);
                         } else {
+                            // println!("releasing");
                             ps.rendesvous.mover_sema.release();
                         }   
                     }
+                    // println!("/B");
                 }
             } else {
+                // println!("C");
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                 if was == LAST {
                     let [visited_first, retains] = ps.rendesvous.move_flags.visit();
@@ -462,6 +470,7 @@ impl<T: PubPortDatum> Getter<T> {
                 }
             }   
         }
+        // println!("GET COMPLETE");
     }
 
     // returns false if it doesn't participate in a rule
@@ -485,17 +494,21 @@ impl<T: PubPortDatum> Getter<T> {
             match &self.0.p.0.r.spaces[putter_id.0] {
                 Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |was_moved| {
                     // finalization function
+                    // println!("FINALIZING PUTTER WITH {}", was_moved);
                     if was_moved {
                         assert!(NULL != ps.ptr.swap(NULL, SeqCst));
                         mb.send(MsgBox::MOVED_MSG)
                     } else {
                         mb.send(MsgBox::UNMOVED_MSG)
                     };
+                    // println!("FINALZIING DONE");
                 }),
                 Space::Memo { ps } => Self::get_data(ps, maybe_dest, |was_moved| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
+                    // println!("FINALIZING MEMO WITH {}", was_moved);
                     self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, was_moved);
+                    // println!("FINALZIING DONE");
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
             };
@@ -506,6 +519,7 @@ impl<T: PubPortDatum> Getter<T> {
     }
 
     pub fn get(&mut self) -> T {
+        // println!("get...");
         let mut ret = MaybeUninit::uninit();
         assert!(self.get_entirely(None, Some(&mut ret)));
         unsafe { ret.assume_init() }
@@ -1028,35 +1042,13 @@ struct MoveFlags {
 impl MoveFlags {
     const FLAG_VISITED: u8 = 0b01;
     const FLAG_RETAINS: u8 = 0b10;
-
-    // returns (visited_first, retains)
+    
     fn visit(&self) -> [bool;2] {
         let val = self.move_flags.fetch_or(Self::FLAG_VISITED, SeqCst);
-        let visited_first = val & !Self::FLAG_VISITED == 0;
-        let retains = val & !Self::FLAG_RETAINS != 0;
+        let visited_first = val & Self::FLAG_VISITED == 0;
+        let retains = val & Self::FLAG_RETAINS != 0;
         [visited_first, retains]
     }
-
-    // #[inline]
-    // fn type_is_copy_i_moved(&self) {
-    //     self.move_flags.store(Self::MOVE_FLAG_MOVED, SeqCst);
-    // }
-
-    // #[inline]
-    // fn did_someone_move(&self) -> bool {
-    //     let x: u8 = self.move_flags.load(SeqCst);
-    //     x & Self::MOVE_FLAG_MOVED != 0 && x & Self::MOVE_FLAG_DISABLED == 0
-    // }
-
-    // #[inline]
-    // fn ask_for_move_permission(&self) -> MoveRequestResult {
-    //     use MoveRequestResult::*;
-    //     match self.move_flags.fetch_or(Self::MOVE_FLAG_MOVED, SeqCst) {
-    //         0 => WinnerMoveEnabled,
-    //         Self::MOVE_FLAG_DISABLED => WinnerMoveDisabled,
-    //         _ => Loser,
-    //     }
-    // }
 
     #[inline]
     fn reset(&self, retains: bool) {
