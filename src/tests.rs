@@ -894,3 +894,4 @@ fn mem_swap_run() {
     assert_eq!(g.get(), false);
     assert_eq!(g.get(), false);
 }
+

@@ -817,15 +817,10 @@ impl ProtoCr {
                     }
                 }
                 // made it past the instructions! time to commit!
-                for q in rule.bit_guard.ready.iter() {
-                    self.ready.remove(q);
-                }
-                for q in rule.bit_assign.empty_mem.iter() {
-                    self.mem.remove(q);
-                }
-                for &q in rule.bit_assign.full_mem.iter() {
-                    self.mem.insert(q);
-                }
+                self.ready.set_sub(&rule.bit_guard.ready);
+                self.mem.set_sub(&rule.bit_assign.empty_mem);
+                self.mem.set_add(&rule.bit_assign.full_mem);
+                
                 println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
                     self.do_movement(r, movement)
@@ -924,6 +919,23 @@ impl ProtoCr {
                 // signal getter, telling them which putter to get from
                 r.spaces[po_ge.0].get_msg_box().expect("ueb").send(putter.0);
             }
+        }
+    }
+}
+
+trait SetExt {
+    fn set_sub(&mut self, other: &Self);
+    fn set_add(&mut self, other: &Self);
+}
+impl SetExt for HashSet<LocId> {
+    fn set_sub(&mut self, other: &Self) {
+        for q in other.iter() {
+            self.remove(q);
+        }
+    }
+    fn set_add(&mut self, other: &Self) {
+        for &q in other.iter() {
+            self.insert(q);
         }
     }
 }
