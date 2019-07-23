@@ -30,12 +30,15 @@ use std_semaphore::Semaphore;
 mod building;
 use building::*;
 
-
 mod bit_set;
 use bit_set::{BitSet, SetExt};
 
 #[cfg(test)]
 mod tests;
+
+
+#[cfg(test)]
+mod experiments;
 
 
 
@@ -400,10 +403,10 @@ impl<T: PubPortDatum> Getter<T> {
         finalize: F,
     ) {
         // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
-        //DeBUGGY:println!("GET DATA");
+        // println!("GET DATA");
         let ptr: TraitData = ps.ptr.load(SeqCst);
         assert!(ptr != NULL);
-        //DeBUGGY:println!("GETTER GOT PTR {:p}", ptr);
+        // println!("GETTER GOT PTR {:p}", ptr);
         let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
             let s: *const T = transmute(ptr);
             dest.as_mut_ptr().write(s.read());
@@ -413,54 +416,51 @@ impl<T: PubPortDatum> Getter<T> {
             dest.as_mut_ptr().write(s.my_clone2());
         };
 
+        const LAST: usize = 1;
+
         if T::IS_COPY {
+            // irrelevant how many copy
             if let Some(dest) = maybe_dest {
                 do_move(dest);
-                ps.rendesvous.move_flags.type_is_copy_i_moved();
+                ps.rendesvous.move_flags.visit();
             }
             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-            if was == 1 {
-                //DeBUGGY:println!("I LAST (B)");
-                let somebody_moved = ps.rendesvous.move_flags.did_someone_move();
-                finalize(somebody_moved);
+            if was == LAST {
+                let [_, retains] = ps.rendesvous.move_flags.visit();
+                finalize(!retains);
             }
         } else {
             if let Some(dest) = maybe_dest {
-                let won = !ps.rendesvous.move_flags.ask_for_move_permission();
-                if won {
-                    //DeBUGGY:println!("I WIN (B)");
+                let [visited_first, retains] = ps.rendesvous.move_flags.visit();
+                if visited_first && !retains {
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                    if was == 1 {
-                        do_move(dest);
-                    } else {
+                    if was != LAST {
                         ps.rendesvous.mover_sema.acquire();
                     }
+                    do_move(dest);
                     finalize(true);
                 } else {
-                    // lose
-                    //DeBUGGY:println!("I LOSE (B)");
                     do_clone(dest);
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                    if was == 1 {
-                        // all clones are done
-                        ps.rendesvous.mover_sema.release();
-                    } else {
-                        // do nothing
+                    if was == LAST {
+                        if retains {
+                            finalize(false);
+                        } else {
+                            ps.rendesvous.mover_sema.release();
+                        }   
                     }
                 }
             } else {
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                if was == 1 {
-                    //DeBUGGY:println!("I WIN (C)");
-                    // all clones done
-                    let nobody_else_won = !ps.rendesvous.move_flags.ask_for_move_permission();
-                    if nobody_else_won {
-                        finalize(false);
+                if was == LAST {
+                    let [visited_first, retains] = ps.rendesvous.move_flags.visit();
+                    if visited_first {
+                        finalize(retains);
                     } else {
                         ps.rendesvous.mover_sema.release();
                     }
                 }
-            }
+            }   
         }
     }
 
@@ -481,6 +481,7 @@ impl<T: PubPortDatum> Getter<T> {
                 None => return false,
                 Some(msg) => LocId(msg),
             };
+            // println!("My putter has id {:?}", putter_id);
             match &self.0.p.0.r.spaces[putter_id.0] {
                 Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |was_moved| {
                     // finalization function
@@ -925,7 +926,7 @@ impl ProtoCr {
         //DeBUGGY:println!("releasing getters!");
         //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
         if !movement.po_ge.is_empty() {
-            ps.rendesvous.move_flags.reset(!putter_retains);
+            ps.rendesvous.move_flags.reset(putter_retains);
             assert_eq!(0, ps.rendesvous.countdown.swap(movement.po_ge.len(), SeqCst));
             for po_ge in movement.po_ge.iter().copied() {
                 // signal getter, telling them which putter to get from
@@ -1025,28 +1026,41 @@ struct MoveFlags {
     move_flags: AtomicU8,
 }
 impl MoveFlags {
-    const MOVE_FLAG_MOVED: u8 = 0b01;
-    const MOVE_FLAG_DISABLED: u8 = 0b10;
+    const FLAG_VISITED: u8 = 0b01;
+    const FLAG_RETAINS: u8 = 0b10;
 
-    #[inline]
-    fn type_is_copy_i_moved(&self) {
-        self.move_flags.store(Self::MOVE_FLAG_MOVED, SeqCst);
+    // returns (visited_first, retains)
+    fn visit(&self) -> [bool;2] {
+        let val = self.move_flags.fetch_or(Self::FLAG_VISITED, SeqCst);
+        let visited_first = val & !Self::FLAG_VISITED == 0;
+        let retains = val & !Self::FLAG_RETAINS != 0;
+        [visited_first, retains]
     }
 
-    #[inline]
-    fn did_someone_move(&self) -> bool {
-        let x: u8 = self.move_flags.load(SeqCst);
-        x & Self::MOVE_FLAG_MOVED != 0 && x & Self::MOVE_FLAG_DISABLED == 0
-    }
+    // #[inline]
+    // fn type_is_copy_i_moved(&self) {
+    //     self.move_flags.store(Self::MOVE_FLAG_MOVED, SeqCst);
+    // }
+
+    // #[inline]
+    // fn did_someone_move(&self) -> bool {
+    //     let x: u8 = self.move_flags.load(SeqCst);
+    //     x & Self::MOVE_FLAG_MOVED != 0 && x & Self::MOVE_FLAG_DISABLED == 0
+    // }
+
+    // #[inline]
+    // fn ask_for_move_permission(&self) -> MoveRequestResult {
+    //     use MoveRequestResult::*;
+    //     match self.move_flags.fetch_or(Self::MOVE_FLAG_MOVED, SeqCst) {
+    //         0 => WinnerMoveEnabled,
+    //         Self::MOVE_FLAG_DISABLED => WinnerMoveDisabled,
+    //         _ => Loser,
+    //     }
+    // }
 
     #[inline]
-    fn ask_for_move_permission(&self) -> bool {
-        0 == self.move_flags.fetch_or(Self::MOVE_FLAG_MOVED, SeqCst)
-    }
-
-    #[inline]
-    fn reset(&self, move_enabled: bool) {
-        let val = if move_enabled { Self::MOVE_FLAG_DISABLED } else { 0 };
+    fn reset(&self, retains: bool) {
+        let val = if retains { Self::FLAG_RETAINS } else { 0 };
         self.move_flags.store(val, SeqCst);
     }
 }
