@@ -534,7 +534,9 @@ pub struct ProtoR {
     port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
 }
 impl ProtoR {
-    pub fn sanity_check(&self) {
+    pub fn sanity_check(&self, cr: &ProtoCr) {
+        let chunks = cr.ready.data.len();
+        assert_eq!(chunks, cr.mem.data.len());
         struct Cap {
             put: bool,
             mem: bool,
@@ -559,6 +561,11 @@ impl ProtoR {
             assert_eq!(cap.ty, *tinfo);
         }
         for rule in self.rules.iter() {
+            assert_eq!(chunks, rule.bit_guard.ready.data.len());
+            assert_eq!(chunks, rule.bit_guard.empty_mem.data.len());
+            assert_eq!(chunks, rule.bit_guard.full_mem.data.len());
+            assert_eq!(chunks, rule.bit_assign.full_mem.data.len());
+            assert_eq!(chunks, rule.bit_assign.empty_mem.data.len());
             let mut known_filled = hashmap! {};
             for x in rule.bit_guard.ready.iter() {
                 let cap = &capabilities[x.0];

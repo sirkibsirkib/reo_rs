@@ -529,9 +529,10 @@ pub fn build_proto(
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
     let r = ProtoR { rules, spaces, name_mapping, port_info, perm_space_rng,  };
     println!("PROTO R {:#?}", &r);
-    r.sanity_check(); // DEBUG
+    let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts };
+    r.sanity_check(&cr); // DEBUG
     Ok(ProtoHandle(Arc::new(Proto {
         r,
-        cr: Mutex::new(ProtoCr { unclaimed, allocator, mem, ready, ref_counts }),
+        cr: Mutex::new(cr),
     })))
 }

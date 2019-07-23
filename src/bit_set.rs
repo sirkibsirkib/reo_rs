@@ -19,19 +19,19 @@ impl SetExt for HashSet<LocId> {
 
 #[derive(Default, Clone)]
 pub struct BitSet {
-    data: SmallVec<[usize;4]>,
+    pub(crate) data: SmallVec<[usize;4]>,
 }
 impl SetExt for BitSet {
     fn set_sub(&mut self, other: &Self) {
         // assumes lengths are sufficient
-        assert_eq!(self.data.len(), other.data.len());
+        // assert_eq!(self.data.len(), other.data.len());
         for (a, b) in self.data.iter_mut().zip(other.data.iter()) {
             *a &= ! *b;
         }
     }
     fn set_add(&mut self, other: &Self) {
         // assumes lengths are sufficient
-        assert_eq!(self.data.len(), other.data.len());
+        // assert_eq!(self.data.len(), other.data.len());
         for (a, b) in self.data.iter_mut().zip(other.data.iter()) {
             *a |= *b;
         }
