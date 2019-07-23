@@ -189,7 +189,7 @@ pub fn build_proto(
     let mut persistent_loc_kinds = vec![];
 
     // consume all name defs, creating spaces. retain call_handles to be treated later
-    let mut mem: HashSet<LocId> = hashset! {};
+    let mut mem: BitSet = Default::default();
     let mut ready = mem.clone();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
     let mut ref_counts = hashmap!{};
@@ -235,6 +235,8 @@ pub fn build_proto(
         persistent_loc_kinds.push(kind);
     }
     let perm_space_rng = 0..spaces.len();
+    mem.pad_to_cap(perm_space_rng.end);
+    ready.pad_to_cap(perm_space_rng.end);
 
     // NO MORE PERSISTENT THINGS
     let persistent_kind =
@@ -292,18 +294,25 @@ pub fn build_proto(
         }
 
         // 5 build the bit guard
-        let bit_guard: BitStatePredicate<BitSet> = BitStatePredicate {
-            ready: ready_ports
-                .iter()
-                .chain(full_mem.iter())
-                .chain(empty_mem.iter())
-                .map(resolve)
-                .collect::<Result<_, _>>()?,
-            full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
-            empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
+        let bit_guard = {
+            let mut bit_guard: BitStatePredicate<BitSet> = BitStatePredicate {
+                ready: ready_ports
+                    .iter()
+                    .chain(full_mem.iter())
+                    .chain(empty_mem.iter())
+                    .map(resolve)
+                    .collect::<Result<_, _>>()?,
+                full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
+                empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
+            };
+            bit_guard.ready.pad_to_cap(perm_space_rng.end);
+            bit_guard.full_mem.pad_to_cap(perm_space_rng.end);
+            bit_guard.empty_mem.pad_to_cap(perm_space_rng.end);
+            bit_guard
         };
+
         // identity for all permanent memcells
-        whose_mem_is_this.extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|&id| (id,id)));
+        whose_mem_is_this.extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|id| (id,id)));
 
         let mut ins = SmallVec::new();
         'instructions: for i in rule.ins.iter() {
@@ -432,8 +441,8 @@ pub fn build_proto(
 
         let mut bit_assign = BitStatePredicate {
             ready: (), // always identical to bit_guard.ready. use that instead
-            empty_mem: hashset! {},
-            full_mem: hashset! {},
+            empty_mem: Default::default(),
+            full_mem: Default::default(),
         };
         println!("KS BEFORE {:?}", &known_state);
         let mut output: SmallVec<[Movement;4]> = rule
@@ -507,6 +516,8 @@ pub fn build_proto(
                 });
             }
         }
+        bit_assign.full_mem.pad_to_cap(perm_space_rng.end);
+        bit_assign.empty_mem.pad_to_cap(perm_space_rng.end);
         Ok(Rule { bit_guard, ins, output, bit_assign })
     };
 

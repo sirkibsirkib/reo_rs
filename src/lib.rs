@@ -13,6 +13,7 @@ use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
 use std::{
+    fmt,
     alloc::Layout,
     collections::{HashMap, HashSet},
     marker::PhantomData,
@@ -28,6 +29,10 @@ use std_semaphore::Semaphore;
 
 mod building;
 use building::*;
+
+
+mod bit_set;
+use bit_set::{BitSet, SetExt};
 
 #[cfg(test)]
 mod tests;
@@ -555,7 +560,7 @@ impl ProtoR {
         }
         for rule in self.rules.iter() {
             let mut known_filled = hashmap! {};
-            for x in rule.bit_guard.ready.iter().copied() {
+            for x in rule.bit_guard.ready.iter() {
                 let cap = &capabilities[x.0];
                 if cap.mem {
                     // implies put
@@ -680,12 +685,12 @@ impl ProtoR {
             }
             // make sure everyone in READY set is covered
             // YES even mem cells that are not consumed. this just sets them to READY
-            for p in rule.bit_guard.ready.iter().copied() {
+            for p in rule.bit_guard.ready.iter() {
                 assert!(busy_doing.contains_key(&p));
             }
             // todo check NON putters in assignment set
             for p in
-                rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter()).copied()
+                rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter())
             {
                 assert!(busy_doing.contains_key(&p));
             }
@@ -820,7 +825,7 @@ impl ProtoCr {
                 self.ready.set_sub(&rule.bit_guard.ready);
                 self.mem.set_sub(&rule.bit_assign.empty_mem);
                 self.mem.set_add(&rule.bit_assign.full_mem);
-                
+
                 println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
                     self.do_movement(r, movement)
@@ -923,22 +928,7 @@ impl ProtoCr {
     }
 }
 
-trait SetExt {
-    fn set_sub(&mut self, other: &Self);
-    fn set_add(&mut self, other: &Self);
-}
-impl SetExt for HashSet<LocId> {
-    fn set_sub(&mut self, other: &Self) {
-        for q in other.iter() {
-            self.remove(q);
-        }
-    }
-    fn set_add(&mut self, other: &Self) {
-        for &q in other.iter() {
-            self.insert(q);
-        }
-    }
-}
+
 
 pub type TraitData = *mut ();
 const NULL: TraitData = std::ptr::null_mut();
@@ -1109,13 +1099,13 @@ pub struct Movement {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct LocId(usize);
-impl std::fmt::Debug for LocId {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Debug for LocId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LocId({})", self.0)
     }
 }
 
-type BitSet = HashSet<LocId>;
+// type BitSet = HashSet<LocId>;
 
 #[inline]
 fn bool_to_ptr(x: bool) -> TraitData {
