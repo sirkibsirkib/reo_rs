@@ -78,7 +78,7 @@ impl TypeInfo {
         let to = trait_obj_build(src, self);
         let layout = to.my_layout();
         let [src_u8, dest_u8]: [*mut u8; 2] = transmute([src, dest]);
-        println!("COPYING with layout {:?}", layout);
+        //DeBUGGY:println!("COPYING with layout {:?}", layout);
         std::ptr::copy(src_u8, dest_u8, layout.size());
         std::mem::forget(to);
     }
@@ -264,12 +264,12 @@ impl MsgBox {
     const MOVED_MSG: usize = 0xadded;
     const UNMOVED_MSG: usize = 0xdeaf;
     pub fn send(&self, msg: usize) {
-        println!(">>> sending {:X}", msg);
+        //DeBUGGY:println!(">>> sending {:X}", msg);
         self.s.try_send(msg).expect("SEND BAD");
     }
     pub fn recv(&self) -> usize {
         let msg = self.r.recv().expect("RECV BAD");
-        println!("<<< recved {:X}", msg);
+        //DeBUGGY:println!("<<< recved {:X}", msg);
         msg
     }
     pub fn recv_timeout(&self, timeout: Duration) -> Option<usize> {
@@ -336,7 +336,7 @@ impl PortCommon {
             let mut x = p.0.cr.lock();
             if x.unclaimed.remove(id) {
                 let q = Ok(Self { id: *id, type_info, p: p.clone() });
-                println!("{:?}", q);
+                //DeBUGGY:println!("{:?}", q);
                 q
             } else {
                 Err(AlreadyClaimed)
@@ -363,10 +363,10 @@ impl<T: PortDatum> Putter<T> {
                 assert!(x.ready.insert(self.0.id));
                 x.coordinate(&self.0.p.0.r);
             }
-            println!("waitinig,...");
+            //DeBUGGY:println!("waitinig,...");
             let msg = mb.recv();
-            println!("...got!");
-            println!("MSG 0x{:X}", msg);
+            //DeBUGGY:println!("...got!");
+            //DeBUGGY:println!("MSG 0x{:X}", msg);
             ps.ptr.swap(NULL, SeqCst);
             match msg {
                 MsgBox::MOVED_MSG => true,
@@ -400,10 +400,10 @@ impl<T: PubPortDatum> Getter<T> {
         finalize: F,
     ) {
         // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
-        println!("GET DATA");
+        //DeBUGGY:println!("GET DATA");
         let ptr: TraitData = ps.ptr.load(SeqCst);
         assert!(ptr != NULL);
-        println!("GETTER GOT PTR {:p}", ptr);
+        //DeBUGGY:println!("GETTER GOT PTR {:p}", ptr);
         let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
             let s: *const T = transmute(ptr);
             dest.as_mut_ptr().write(s.read());
@@ -420,7 +420,7 @@ impl<T: PubPortDatum> Getter<T> {
             }
             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
             if was == 1 {
-                println!("I LAST (B)");
+                //DeBUGGY:println!("I LAST (B)");
                 let somebody_moved = ps.rendesvous.move_flags.did_someone_move();
                 finalize(somebody_moved);
             }
@@ -428,7 +428,7 @@ impl<T: PubPortDatum> Getter<T> {
             if let Some(dest) = maybe_dest {
                 let won = !ps.rendesvous.move_flags.ask_for_move_permission();
                 if won {
-                    println!("I WIN (B)");
+                    //DeBUGGY:println!("I WIN (B)");
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                     if was == 1 {
                         do_move(dest);
@@ -438,7 +438,7 @@ impl<T: PubPortDatum> Getter<T> {
                     finalize(true);
                 } else {
                     // lose
-                    println!("I LOSE (B)");
+                    //DeBUGGY:println!("I LOSE (B)");
                     do_clone(dest);
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                     if was == 1 {
@@ -451,7 +451,7 @@ impl<T: PubPortDatum> Getter<T> {
             } else {
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                 if was == 1 {
-                    println!("I WIN (C)");
+                    //DeBUGGY:println!("I WIN (C)");
                     // all clones done
                     let nobody_else_won = !ps.rendesvous.move_flags.ask_for_move_permission();
                     if nobody_else_won {
@@ -493,7 +493,7 @@ impl<T: PubPortDatum> Getter<T> {
                 }),
                 Space::Memo { ps } => Self::get_data(ps, maybe_dest, |was_moved| {
                     // finalization function
-                    println!("was moved? {:?}", was_moved);
+                    //DeBUGGY:println!("was moved? {:?}", was_moved);
                     self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, was_moved);
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
@@ -664,7 +664,7 @@ impl ProtoR {
             let mut busy_doing = hashmap! {}; // => true for put, => false for get
             for movement in rule.output.iter() {
                 let p = movement.putter;
-                println!("MV {:?}", movement);
+                //DeBUGGY:println!("MV {:?}", movement);
                 assert_eq!(known_filled.get(&p), Some(&true));
                 let cap = &capabilities[p.0];
                 assert!(busy_doing.insert(p, true).is_none());
@@ -719,7 +719,7 @@ impl ProtoCr {
         let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
         let ptr = putter_space.ptr.swap(NULL, SeqCst);
         let ref_count = self.ref_counts.get_mut(&(ptr as usize)).expect("RC");
-        println!("FINALIZING SO {:?} IS READY", this_mem_id);
+        //DeBUGGY:println!("FINALIZING SO {:?} IS READY", this_mem_id);
         assert!(*ref_count > 0);
         *ref_count -= 1;
         if *ref_count == 0 {
@@ -753,7 +753,7 @@ impl ProtoCr {
         // }
     }
     fn coordinate(&mut self, r: &ProtoR) {
-        println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
+        //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
                 let g1 = rule.bit_guard.ready.is_subset(&self.ready);
@@ -761,11 +761,11 @@ impl ProtoCr {
                 let g3 = rule.bit_guard.empty_mem.is_disjoint(&self.mem);
                 if !(g1 && g2 && g3) {
                     // failed guard
-                    println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
+                    //DeBUGGY:println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
                 }
-                println!("SUCCESS");
-                // println!("going to eval ins for rule {:?}", rule);
+                //DeBUGGY:println!("SUCCESS");
+                // //DeBUGGY:println!("going to eval ins for rule {:?}", rule);
                 for (i_id, i) in rule.ins.iter().enumerate() {
                     use Instruction::*;
                     match &i {
@@ -806,9 +806,9 @@ impl ProtoCr {
                         Check { term } => {
                             if !eval_bool(term, r) {
                                 // ROLLBACK!
-                                // println!("ROLLBACK!");
+                                // //DeBUGGY:println!("ROLLBACK!");
                                 for (_, i) in rule.ins[0..i_id].iter().enumerate().rev() {
-                                    // println!("... rolling back {:?}", i);
+                                    // //DeBUGGY:println!("... rolling back {:?}", i);
                                     match i {
                                         CreateFromFormula { dest, .. } => {
                                             self.finalize_memo(r, *dest, false)
@@ -820,10 +820,10 @@ impl ProtoCr {
                                         MemSwap(a,b) => self.swap_putter_ptrs(r, *a, *b),
                                     }
                                 }
-                                // println!("DID CreateFromCall");
+                                // //DeBUGGY:println!("DID CreateFromCall");
                                 continue 'rules;
                             }
-                            // println!("Passed check!");
+                            // //DeBUGGY:println!("Passed check!");
                         }
                         MemSwap(a,b) => self.swap_putter_ptrs(r, *a, *b),
                     }
@@ -833,14 +833,14 @@ impl ProtoCr {
                 self.mem.set_sub(&rule.bit_assign.empty_mem);
                 self.mem.set_add(&rule.bit_assign.full_mem);
 
-                println!("DO MOVEMENTs!");
+                //DeBUGGY:println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
                     self.do_movement(r, movement)
                 }
                 continue 'outer; // reconsider all rules
             }
             // finished all rules
-            println!("COORDINATE OVER. READY={:?} MEM={:?}", &self.ready, &self.mem);
+            //DeBUGGY:println!("COORDINATE OVER. READY={:?} MEM={:?}", &self.ready, &self.mem);
             return;
         }
     }
@@ -856,7 +856,7 @@ impl ProtoCr {
             match &r.spaces[putter.0] {
                 Space::PoGe { .. } => panic!("CANNOT BE!"),
                 Space::PoPu { ps, mb } => {
-                    println!("POPU MOVEMENT");
+                    //DeBUGGY:println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
                     if let Some(mem_0) = me_ge_iter.next() {
                         // SPECIAL CASE! storing external value into protocol memory
@@ -867,7 +867,7 @@ impl ProtoCr {
                         let dest_space = r.spaces[mem_0.0].get_putter_space().expect("dest");
                         assert_eq!(dest_space.type_info, ps.type_info);
                         let dest_ptr = unsafe { self.allocator.alloc_uninit(ps.type_info) };
-                        println!("ALLOCATED {:p}", dest_ptr);
+                        //DeBUGGY:println!("ALLOCATED {:p}", dest_ptr);
                         // do the movement, then release the putter with a message
                         if !putter_retains {
                             let src_ptr = ps.ptr.swap(NULL, SeqCst);
@@ -892,8 +892,8 @@ impl ProtoCr {
                     }
                 }
                 Space::Memo { ps } => {
-                    println!("MEMO MOVEMENT");
-                    println!("PTR IS {:p}", ps.ptr.load(SeqCst));
+                    //DeBUGGY:println!("MEMO MOVEMENT");
+                    //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
                     // FINAL LOOP
                     // alias the memory in all memory getters. datum itself does not move.
                     let src = ps.ptr.load(SeqCst);
@@ -922,8 +922,8 @@ impl ProtoCr {
             }
         };
         // PHASE 2: "take care of port getters"
-        println!("releasing getters!");
-        println!("PTR IS {:p}", ps.ptr.load(SeqCst));
+        //DeBUGGY:println!("releasing getters!");
+        //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
         if !movement.po_ge.is_empty() {
             ps.rendesvous.move_flags.reset(!putter_retains);
             assert_eq!(0, ps.rendesvous.countdown.swap(movement.po_ge.len(), SeqCst));
@@ -1002,7 +1002,7 @@ impl Allocator {
 }
 impl Drop for Allocator {
     fn drop(&mut self) {
-        println!("ALLOCATOR DROPPING...");
+        //DeBUGGY:println!("ALLOCATOR DROPPING...");
         // drop all owned values
         for (&vtable, data_vec) in self.allocated.iter() {
             for &data in data_vec.iter() {
@@ -1016,7 +1016,7 @@ impl Drop for Allocator {
                 drop(unsafe { trait_obj_build(data as TraitData, empty_box_vtable) });
             }
         }
-        println!("ALLOCATOR DROPPING DONE");
+        //DeBUGGY:println!("ALLOCATOR DROPPING DONE");
     }
 }
 

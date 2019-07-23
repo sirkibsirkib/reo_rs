@@ -437,14 +437,14 @@ pub fn build_proto(
             ins.push(instruction);
         }
 
-        println!("WHOSE {:?}", &whose_mem_is_this);
+        //DeBUGGY:println!("WHOSE {:?}", &whose_mem_is_this);
 
         let mut bit_assign = BitStatePredicate {
             ready: (), // always identical to bit_guard.ready. use that instead
             empty_mem: Default::default(),
             full_mem: Default::default(),
         };
-        println!("KS BEFORE {:?}", &known_state);
+        //DeBUGGY:println!("KS BEFORE {:?}", &known_state);
         let mut output: SmallVec<[Movement;4]> = rule
             .output
             .iter()
@@ -496,7 +496,7 @@ pub fn build_proto(
                 Ok(Movement { putter: putter_id, po_ge, me_ge, putter_retains: *putter_retains })
             })
             .collect::<Result<_, ProtoBuildError>>()?;
-        println!("KS AFTER {:?}. P|G: {:?}", &known_state, (&puts, &gets));
+        //DeBUGGY:println!("KS AFTER {:?}. P|G: {:?}", &known_state, (&puts, &gets));
         for (name, is_full) in known_state.drain() {
             if puts.contains(name) || gets.contains(name) {
                 continue; // ok it was covered
@@ -528,7 +528,7 @@ pub fn build_proto(
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
     let r = ProtoR { rules, spaces, name_mapping, port_info, perm_space_rng,  };
-    println!("PROTO R {:#?}", &r);
+    //DeBUGGY:println!("PROTO R {:#?}", &r);
     let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts };
     r.sanity_check(&cr); // DEBUG
     Ok(ProtoHandle(Arc::new(Proto {

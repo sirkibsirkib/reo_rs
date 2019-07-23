@@ -894,3 +894,83 @@ fn mem_swap_run() {
     assert_eq!(g.get(), false);
 }
 
+
+
+lazy_static::lazy_static! {
+    static ref FIFO_ARR: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "Producer" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
+            "Consumer" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
+            "Memory" => NameDef::Mem(TypeInfo::of::<Whack>()),
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"Producer"},
+                full_mem: hashset! {},
+                empty_mem: hashset! {"Memory"},
+            },
+            ins: vec![],
+            output: hashmap! {
+                "Producer" => (false, hashset!{"Memory"})
+            },
+        },
+        RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"Consumer"},
+                full_mem: hashset! {"Memory"},
+                empty_mem: hashset! {},
+            },
+            ins: vec![],
+            output: hashmap! {
+                "Memory" => (false, hashset!{"Consumer"})
+            },
+        }],
+    };
+}
+
+struct Whack([u8; N]);
+impl PubPortDatum for Whack {
+    const IS_COPY: bool = true;
+    fn my_clone2(&self) -> Self {
+        Self(self.0.clone())
+    }
+    fn my_eq2(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+const Q: usize = 0;
+const N: usize = 1<<Q;
+
+
+fn one_run() -> Duration {
+    let (s, r) = std::sync::mpsc::channel::<Whack>();
+
+    // let p = FIFO_ARR.build(MemInitial::default()).unwrap();
+    // let (mut s, mut r) = (
+    //     Putter::<Whack>::claim(&p, "Producer").unwrap(),
+    //     Getter::<Whack>::claim(&p, "Consumer").unwrap(),
+    // );
+
+    let mut taken = Duration::from_millis(0);
+    for i in 0..100_000usize {
+        let val = Whack([i as u8; N]);
+        let t = Instant::now();
+        s.send(val).unwrap();
+        let _ = r.recv().unwrap();
+        taken += t.elapsed();
+    }
+    taken
+}
+
+use std::time::{Duration, Instant};
+#[test]
+fn benchy1() {
+    let mut taken = Duration::from_millis(0);
+    const REPS: u32 = 10;
+    for _ in 0..REPS {
+        taken += one_run();
+    }
+    println!("{:?}", taken / REPS);
+
+}
