@@ -19,7 +19,7 @@ impl MemInitial {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NameDef {
     Port { is_putter: bool, type_info: TypeInfo },
     Mem(TypeInfo),
@@ -27,19 +27,19 @@ pub enum NameDef {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProtoDef {
     pub name_defs: HashMap<Name, NameDef>,
     pub rules: Vec<RuleDef>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StatePredicate {
     pub ready_ports: HashSet<Name>,
     pub full_mem: HashSet<Name>,
     pub empty_mem: HashSet<Name>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RuleDef {
     pub state_guard: StatePredicate,
     pub ins: Vec<Instruction<Name, Name>>,
@@ -192,7 +192,7 @@ pub fn build_proto(
     let mut mem: BitSet = Default::default();
     let mut ready = mem.clone();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
-    let mut ref_counts = hashmap!{};
+    let mut ref_counts = hashmap! {};
     for (name, def) in p.name_defs.iter() {
         let id = LocId(spaces.len());
         name_mapping.insert(name, id);
@@ -251,7 +251,7 @@ pub fn build_proto(
     // keeps track of PERM memory position for the purpose of matching the MOVEMENT to it (for changing assign bits)
     // key is location of mem (corresponding to the MOVEMENT PUTTER ultimately)
     // value is the permanent memcell where it started
-    let mut whose_mem_is_this: HashMap<LocId, LocId> = hashmap!{}; 
+    let mut whose_mem_is_this: HashMap<LocId, LocId> = hashmap! {};
 
     let mut rule_f = |rule: &RuleDef| {
         puts.clear();
@@ -271,7 +271,6 @@ pub fn build_proto(
             if persistent_kind(name).ok_or(UndefinedLocName { name })? != LocKind::Memo {
                 return Err(PortInMemPremise { name });
             }
-
         }
 
         let resolve =
@@ -312,7 +311,8 @@ pub fn build_proto(
         };
 
         // identity for all permanent memcells
-        whose_mem_is_this.extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|id| (id,id)));
+        whose_mem_is_this
+            .extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|id| (id, id)));
 
         let mut ins = SmallVec::new();
         'instructions: for i in rule.ins.iter() {
@@ -385,7 +385,7 @@ pub fn build_proto(
                     known_state.insert(dest, true); // must be a fresh name
                     CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
                 }
-                MemSwap(a, b)=> {
+                MemSwap(a, b) => {
                     let aid = resolve_full(&temp_names, &name_mapping, a);
                     let bid = resolve_full(&temp_names, &name_mapping, b);
 
@@ -445,7 +445,7 @@ pub fn build_proto(
             full_mem: Default::default(),
         };
         //DeBUGGY:println!("KS BEFORE {:?}", &known_state);
-        let mut output: SmallVec<[Movement;4]> = rule
+        let mut output: SmallVec<[Movement; 4]> = rule
             .output
             .iter()
             .map(|(&putter, (putter_retains, getters))| {
@@ -503,17 +503,12 @@ pub fn build_proto(
             }
             let id = resolve_full(&temp_names, &name_mapping, name)?;
             let putter_retains = match spaces[id.0] {
-                Space::Memo{..} => perm_space_rng.contains(&id.0),
-                Space::PoPu{..} => true,
-                Space::PoGe{..} => return Err(GetterHasNoPutters { name }),
+                Space::Memo { .. } => perm_space_rng.contains(&id.0),
+                Space::PoPu { .. } => true,
+                Space::PoGe { .. } => return Err(GetterHasNoPutters { name }),
             };
             if is_full {
-                output.push(Movement {
-                    putter: id,
-                    po_ge: vec![],
-                    me_ge: vec![],
-                    putter_retains,
-                });
+                output.push(Movement { putter: id, po_ge: vec![], me_ge: vec![], putter_retains });
             }
         }
         bit_assign.full_mem.pad_to_cap(perm_space_rng.end);
@@ -527,12 +522,9 @@ pub fn build_proto(
         .enumerate()
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
-    let r = ProtoR { rules, spaces, name_mapping, port_info, perm_space_rng,  };
+    let r = ProtoR { rules, spaces, name_mapping, port_info, perm_space_rng };
     //DeBUGGY:println!("PROTO R {:#?}", &r);
     let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts };
     r.sanity_check(&cr); // DEBUG
-    Ok(ProtoHandle(Arc::new(Proto {
-        r,
-        cr: Mutex::new(cr),
-    })))
+    Ok(ProtoHandle(Arc::new(Proto { r, cr: Mutex::new(cr) })))
 }

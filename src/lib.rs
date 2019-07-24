@@ -5,17 +5,17 @@
 // #![allow(unused_imports)]
 // #![allow(dead_code)]
 
-use smallvec::SmallVec;
-use std::ops::Range;
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
+use smallvec::SmallVec;
+use std::ops::Range;
 use std::{
-    fmt,
     alloc::Layout,
     collections::{HashMap, HashSet},
+    fmt,
     marker::PhantomData,
     mem::{transmute, MaybeUninit},
     raw::TraitObject,
@@ -36,19 +36,14 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
-
 #[cfg(test)]
 mod experiments;
-
-
 
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
-
-
     /* Somehow the inlining behaviour of this function sometimes creates DUPLICATE
     trait object vtables in memory. this has ONLY the effect of sometimes causing
     false positives when checking for type-equality (the contents of the vtables are identical)
@@ -61,7 +56,7 @@ impl TypeInfo {
         let bx: Box<T> = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
         // have the compiler insert the correct vtable, using bogus data
         let dy_bx: Box<dyn PortDatum> = bx;
-        unsafe  { trait_obj_break(dy_bx).1 }
+        unsafe { trait_obj_break(dy_bx).1 }
     }
     pub fn get_layout(self) -> Layout {
         let bogus = self.0;
@@ -211,7 +206,7 @@ impl CallHandle {
 
 pub type Name = &'static str;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Term<I, F> {
     True,                                        // returns bool
     False,                                       // returns bool
@@ -223,7 +218,7 @@ pub enum Term<I, F> {
     Named(I),                                    // type of I
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Instruction<I, F> {
     CreateFromFormula { dest: I, term: Term<I, F> },
     CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
@@ -390,6 +385,18 @@ impl<T: PortDatum> Putter<T> {
             Some(datum)
         }
     }
+
+    /// returns true if it was consumed
+    pub fn put_lossy(&mut self, mut datum: T) -> bool {
+        let ptr: TraitData = unsafe { transmute(&mut datum) };
+        if self.put_entirely(ptr) {
+            std::mem::forget(datum);
+            true
+        } else {
+            drop(datum);
+            false
+        }
+    }
 }
 struct Getter<T: PubPortDatum>(PortCommon, PhantomData<T>);
 impl<T: PubPortDatum> Getter<T> {
@@ -441,7 +448,7 @@ impl<T: PubPortDatum> Getter<T> {
                     }
                     do_move(dest);
                     finalize(true);
-                    // println!("/A");
+                // println!("/A");
                 } else {
                     // println!("B");
                     do_clone(dest);
@@ -453,7 +460,7 @@ impl<T: PubPortDatum> Getter<T> {
                         } else {
                             // println!("releasing");
                             ps.rendesvous.mover_sema.release();
-                        }   
+                        }
                     }
                     // println!("/B");
                 }
@@ -468,7 +475,7 @@ impl<T: PubPortDatum> Getter<T> {
                         ps.rendesvous.mover_sema.release();
                     }
                 }
-            }   
+            }
         }
         // println!("GET COMPLETE");
     }
@@ -507,7 +514,11 @@ impl<T: PubPortDatum> Getter<T> {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
-                    self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, was_moved);
+                    let how = match was_moved {
+                        true => FinalizeMemHow::Forget,
+                        false => FinalizeMemHow::Retain,
+                    };
+                    self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, how);
                     // println!("FINALZIING DONE");
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
@@ -563,9 +574,11 @@ impl ProtoR {
             .enumerate()
             .map(|(id, x)| match x {
                 Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_info },
-                Space::PoGe { .. } => {
-                    Cap { put: false, mem: false, ty: self.port_info.get(&LocId(id)).expect("BADCAP").1 }
-                }
+                Space::PoGe { .. } => Cap {
+                    put: false,
+                    mem: false,
+                    ty: self.port_info.get(&LocId(id)).expect("BADCAP").1,
+                },
                 Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_info },
             })
             .collect();
@@ -711,9 +724,7 @@ impl ProtoR {
                 assert!(busy_doing.contains_key(&p));
             }
             // todo check NON putters in assignment set
-            for p in
-                rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter())
-            {
+            for p in rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter()) {
                 assert!(busy_doing.contains_key(&p));
             }
         }
@@ -729,8 +740,24 @@ pub struct ProtoCr {
     allocator: Allocator,
     ref_counts: HashMap<usize, usize>,
 }
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+enum FinalizeMemHow {
+    DropInside,
+    Forget, // was moved out maybe
+    Retain,
+}
 impl ProtoCr {
-    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, was_moved: bool) {
+    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, how: FinalizeMemHow) {
+        if r.perm_space_rng.contains(&this_mem_id.0) {
+            self.ready.insert(this_mem_id);
+            self.coordinate(r);
+        } else {
+            // this was a temp memcell
+        }
+        if let FinalizeMemHow::Retain = how {
+            return;
+        }
         let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
         let ptr = putter_space.ptr.swap(NULL, SeqCst);
         let ref_count = self.ref_counts.get_mut(&(ptr as usize)).expect("RC");
@@ -739,19 +766,11 @@ impl ProtoCr {
         *ref_count -= 1;
         if *ref_count == 0 {
             self.ref_counts.remove(&(ptr as usize));
-            if !was_moved {
+            if let FinalizeMemHow::DropInside = how {
                 assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
             } else {
                 assert!(self.allocator.forget_inside(ptr, putter_space.type_info));
             }
-        } else {
-            assert!(!was_moved);
-        }
-        if r.perm_space_rng.contains(&this_mem_id.0) {
-            self.ready.insert(this_mem_id);
-            self.coordinate(r);
-        } else {
-            // this was a temp memcell
         }
     }
     fn swap_putter_ptrs(&mut self, r: &ProtoR, a: LocId, b: LocId) {
@@ -771,10 +790,10 @@ impl ProtoCr {
         //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
-                let g1 = rule.bit_guard.ready.is_subset(&self.ready);
-                let g2 = rule.bit_guard.full_mem.is_subset(&self.mem);
-                let g3 = rule.bit_guard.empty_mem.is_disjoint(&self.mem);
-                if !(g1 && g2 && g3) {
+                if !rule.bit_guard.ready.is_subset(&self.ready)
+                    || !rule.bit_guard.full_mem.is_subset(&self.mem)
+                    || !rule.bit_guard.empty_mem.is_disjoint(&self.mem)
+                {
                     // failed guard
                     //DeBUGGY:println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
@@ -826,13 +845,13 @@ impl ProtoCr {
                                     // //DeBUGGY:println!("... rolling back {:?}", i);
                                     match i {
                                         CreateFromFormula { dest, .. } => {
-                                            self.finalize_memo(r, *dest, false)
+                                            self.finalize_memo(r, *dest, FinalizeMemHow::DropInside)
                                         }
                                         CreateFromCall { dest, .. } => {
-                                            self.finalize_memo(r, *dest, false)
+                                            self.finalize_memo(r, *dest, FinalizeMemHow::DropInside)
                                         }
                                         Check { .. } => {}
-                                        MemSwap(a,b) => self.swap_putter_ptrs(r, *a, *b),
+                                        MemSwap(a, b) => self.swap_putter_ptrs(r, *a, *b),
                                     }
                                 }
                                 // //DeBUGGY:println!("DID CreateFromCall");
@@ -840,7 +859,7 @@ impl ProtoCr {
                             }
                             // //DeBUGGY:println!("Passed check!");
                         }
-                        MemSwap(a,b) => self.swap_putter_ptrs(r, *a, *b),
+                        MemSwap(a, b) => self.swap_putter_ptrs(r, *a, *b),
                     }
                 }
                 // made it past the instructions! time to commit!
@@ -913,7 +932,8 @@ impl ProtoCr {
                     // alias the memory in all memory getters. datum itself does not move.
                     let src = ps.ptr.load(SeqCst);
                     assert!(src != NULL);
-                    let ref_count: &mut usize = self.ref_counts.get_mut(&(src as usize)).expect("eub");
+                    let ref_count: &mut usize =
+                        self.ref_counts.get_mut(&(src as usize)).expect("eub");
                     for m in me_ge_iter {
                         *ref_count += 1;
                         let getter_space = r.spaces[m.0].get_putter_space().expect("e8h8");
@@ -949,8 +969,6 @@ impl ProtoCr {
         }
     }
 }
-
-
 
 pub type TraitData = *mut ();
 const NULL: TraitData = std::ptr::null_mut();
@@ -1042,8 +1060,8 @@ struct MoveFlags {
 impl MoveFlags {
     const FLAG_VISITED: u8 = 0b01;
     const FLAG_RETAINS: u8 = 0b10;
-    
-    fn visit(&self) -> [bool;2] {
+
+    fn visit(&self) -> [bool; 2] {
         let val = self.move_flags.fetch_or(Self::FLAG_VISITED, SeqCst);
         let visited_first = val & Self::FLAG_VISITED == 0;
         let retains = val & Self::FLAG_RETAINS != 0;
@@ -1088,9 +1106,9 @@ impl PutterSpace {
 #[derive(Debug)]
 pub struct Rule {
     bit_guard: BitStatePredicate<BitSet>,
-    ins: SmallVec<[Instruction<LocId, CallHandle>;4]>, // dummy
+    ins: SmallVec<[Instruction<LocId, CallHandle>; 4]>, // dummy
     /// COMMITMENTS BELOW HERE
-    output: SmallVec<[Movement;4]>,
+    output: SmallVec<[Movement; 4]>,
     // .ready is always identical to bit_guard.ready. use that instead
     bit_assign: BitStatePredicate<()>,
 }

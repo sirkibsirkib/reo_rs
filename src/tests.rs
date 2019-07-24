@@ -817,7 +817,6 @@ fn even_odd_run() {
     }
 }
 
-
 lazy_static::lazy_static! {
     static ref INIT_MEM: ProtoDef = ProtoDef {
         name_defs: hashmap! {
@@ -883,7 +882,6 @@ lazy_static::lazy_static! {
 fn mem_swap_create() {
     MEM_SWAP.build(MemInitial::default()).unwrap();
 }
-
 
 #[test]
 fn mem_swap_run() {
