@@ -54,7 +54,7 @@ fn one_run() -> Duration {
 
 use std::time::{Duration, Instant};
 #[test]
-fn benchy1() {
+fn test_1() {
     let mut taken = Duration::from_millis(0);
     const REPS: u32 = 10;
     for _ in 0..REPS {
@@ -64,7 +64,7 @@ fn benchy1() {
 }
 
 #[test]
-fn benchy2() {
+fn test_2() {
     let mut tot = Duration::from_millis(0);
     const REPS: u32 = 10;
 
@@ -129,7 +129,7 @@ fn benchy2() {
 }
 
 #[test]
-fn benchy3() {
+fn test_3() {
     let mut tot = Duration::from_millis(0);
     const REPS: u32 = 10;
 
@@ -234,7 +234,7 @@ fn make(num_bogus: usize, bogus_rule: &RuleDef) -> Getter<String> {
 }
 
 #[test]
-fn benchy4() {
+fn test_4() {
     let values = (0..200 / 5).map(|x| x * 5);
     const REBUILDS: u32 = 50;
     const REPS: u32 = 1_000;
@@ -279,7 +279,7 @@ fn benchy4() {
 
 pub struct Whack([u8; N]);
 impl PubPortDatum for Whack {
-    const IS_COPY: bool = false;
+    const IS_COPY: bool = true;
     fn my_clone2(&self) -> Self {
         // const CLONE_NANOS: u64 = 10000;
         // std::thread::sleep(Duration::from_nanos(CLONE_NANOS));
@@ -302,10 +302,10 @@ const Q: usize = 2;
 const N: usize = (1 << Q) - 1;
 
 #[test]
-fn benchy5() {
+fn test_5() {
     let mut rules = vec![];
-    let putters = ["P0", "P1", "P2", "P3", "P4"];
-    let getters = ["C0", "C1", "C2", "C3", "C4"];
+    let putters = ["P0", "P1", "P2"];//, "P3", "P4"];
+    let getters = ["C0", "C1", "C2"];//, "C3", "C4"];
     for putter in putters.iter().copied() {
         for getter in getters.iter().copied() {
             let rule = RuleDef {
@@ -315,7 +315,7 @@ fn benchy5() {
                     empty_mem: hashset! {},
                 },
                 ins: vec![],
-                output: hashmap! { putter => (true, hashset!{ getter }) },
+                output: hashmap! { putter => (false, hashset!{ getter }) },
             };
             rules.push(rule);
         }
@@ -325,13 +325,13 @@ fn benchy5() {
             "P0" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
             "P1" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
             "P2" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            "P3" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            "P4" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
+            // "P3" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
+            // "P4" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
             "C0" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
             "C1" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
             "C2" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            "C3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            "C4" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
+            // "C3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
+            // "C4" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
         },
         rules,
     };
@@ -342,7 +342,7 @@ fn benchy5() {
     for getter in getters.iter().copied() {
         let mut x = Getter::<Whack>::claim(&p, getter).unwrap();
         std::thread::spawn(move || loop {
-            x.get_signal();
+            x.get();
         });
     }
 
@@ -398,19 +398,43 @@ pub fn work_units(mut x: Whack) -> Whack {
 DONT RETAIN
 moving takes per op: [3.127µs, 2.898µs, 3.012µs, 3.2µs, 729ns]
 main thread 465.9925 ms
+2.7 syncs in motion at a time
 
 
 RETAIN + CLONE
 takes per op [112.347µs, 112.395µs, 112.433µs, 112.491µs, 66.569µs]
 main thread 17.1207015 s
+2.6 syncs in motion at a time
 
 
 RETAIN + COPY
 takes averages [3.118µs, 3.387µs, 3.318µs, 3.431µs, 842ns]
 main thread 457.8214ms
+2.7 syncs in motion at a time
 
 
 RETAIN + CLONE + GET_SIGNAL
 [3.238µs, 3.179µs, 3.252µs, 3.326µs, 667ns] | 403.1617ms
 main thread 456.2361ms
+2.7 syncs in motion at a time
+*/
+
+
+
+/*
+MOVE
+[2.037µs, 2.031µs, 2.017µs] | 214.9909ms
+2.83
+
+RETAIN + COPY
+[1.744µs, 1.852µs, 1.844µs] | 197.6762ms
+2.75
+
+RETAIN + CLONE
+[94.021µs, 94.082µs, 94.058µs] | 9.4201482s
+2.995 syncs at a time
+
+RETAIN + CLONE + GET_SIGNAL
+[1.962µs, 1.956µs, 1.937µs] | 207.181ms
+2.83 syncs in motion at a time
 */
