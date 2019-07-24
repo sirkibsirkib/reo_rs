@@ -32,24 +32,29 @@ lazy_static::lazy_static! {
     };
 }
 
+const N: usize = 1 << 1;
+
 fn one_run() -> Duration {
-    let (s, r) = std::sync::mpsc::channel::<Whack>();
+    // let (s, r) = std::sync::mpsc::channel::<Whack>();
 
-    // let p = FIFO_ARR.build(MemInitial::default()).unwrap();
-    // let (mut s, mut r) = (
-    //     Putter::<Whack>::claim(&p, "Producer").unwrap(),
-    //     Getter::<Whack>::claim(&p, "Consumer").unwrap(),
-    // );
+    let p = FIFO_ARR.build(MemInitial::default()).unwrap();
+    let (mut s, mut r) = (
+        Putter::<Whack>::claim(&p, "Producer").unwrap(),
+        Getter::<Whack>::claim(&p, "Consumer").unwrap(),
+    );
 
+    const MOVS: u32 = 25_000;
     let mut taken = Duration::from_millis(0);
-    for i in 0..100_000usize {
-        let val = Whack([i as u8; N]);
+    let mut val: MaybeUninit<Whack> = MaybeUninit::new(Whack([3;N]));
+    for _ in 0..MOVS {
         let t = Instant::now();
-        s.send(val).unwrap();
-        let _ = r.recv().unwrap();
+        unsafe {
+            s.put_raw(val.as_mut_ptr());
+        };
+        r.get();
         taken += t.elapsed();
     }
-    taken
+    taken / MOVS
 }
 
 use std::time::{Duration, Instant};
@@ -298,8 +303,6 @@ impl PubPortDatum for Whack {
     }
 }
 
-const Q: usize = 2;
-const N: usize = (1 << Q) - 1;
 
 #[test]
 fn test_5() {
@@ -394,47 +397,46 @@ pub fn work_units(mut x: Whack) -> Whack {
     x
 }
 
-/*  NUM OPS = 100_000 * 5
-DONT RETAIN
-moving takes per op: [3.127µs, 2.898µs, 3.012µs, 3.2µs, 729ns]
-main thread 465.9925 ms
-2.7 syncs in motion at a time
+
+#[test]
+fn test_6() {
+    let mut rng = rand::thread_rng();
+    const REPS: u32 = 100;
+
+    let mut len = 1;
+    while len < 1<<13 {
+        let mut x = [Duration::default(); 2];
+        for _ in 0..REPS {
+            let [y0, y1] = go(&mut rng, len, 0.5);
+            x[0] += y0;
+            x[1] += y1;
+        }
+        x[0] /= REPS;
+        x[1] /= REPS;
+        print!("{:?}, ", x[0].as_nanos());
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+        len <<= 1;
+    }
+}
+
+fn go<R: rand::Rng>(rng: &mut R, len: usize, fullness: f32) -> [Duration; 2] {
+    use rand::distributions::Distribution;
+    let uni = rand::distributions::Uniform::from(0..len);
+    let samples = (len as f32 * fullness) as usize;
+
+    let x: HashSet<LocId> = (0..samples).map(|_| uni.sample(rng)).map(LocId).collect();
 
 
-RETAIN + CLONE
-takes per op [112.347µs, 112.395µs, 112.433µs, 112.491µs, 66.569µs]
-main thread 17.1207015 s
-2.6 syncs in motion at a time
+    let a = Instant::now();
+    x.is_subset(&x);
+    let a = a.elapsed();
+
+    let x: BitSet = x.into_iter().collect();
 
 
-RETAIN + COPY
-takes averages [3.118µs, 3.387µs, 3.318µs, 3.431µs, 842ns]
-main thread 457.8214ms
-2.7 syncs in motion at a time
-
-
-RETAIN + CLONE + GET_SIGNAL
-[3.238µs, 3.179µs, 3.252µs, 3.326µs, 667ns] | 403.1617ms
-main thread 456.2361ms
-2.7 syncs in motion at a time
-*/
-
-
-
-/*
-MOVE
-[2.037µs, 2.031µs, 2.017µs] | 214.9909ms
-2.83
-
-RETAIN + COPY
-[1.744µs, 1.852µs, 1.844µs] | 197.6762ms
-2.75
-
-RETAIN + CLONE
-[94.021µs, 94.082µs, 94.058µs] | 9.4201482s
-2.995 syncs at a time
-
-RETAIN + CLONE + GET_SIGNAL
-[1.962µs, 1.956µs, 1.937µs] | 207.181ms
-2.83 syncs in motion at a time
-*/
+    let b = Instant::now();
+    x.is_subset(&x);
+    let b = b.elapsed();
+    [a, b]
+}

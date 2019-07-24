@@ -376,6 +376,20 @@ impl<T: PortDatum> Putter<T> {
         }
     }
 
+    /// datum_ptr must point to initialized data
+    /// returns `true` if the value was consumed, in which case the caller
+    ///     is reponsible for forgetting it.
+    /// otherwise, returns `false` if the value was not consumed, and should
+    ///     still be considered owned and valid.
+    pub unsafe fn put_raw(&mut self, datum_ptr: *mut T) -> bool {
+        let ptr: TraitData = transmute(datum_ptr);
+        if self.put_entirely(ptr) {
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn put(&mut self, mut datum: T) -> Option<T> {
         let ptr: TraitData = unsafe { transmute(&mut datum) };
         if self.put_entirely(ptr) {
