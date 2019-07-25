@@ -32,7 +32,6 @@ lazy_static::lazy_static! {
     };
 }
 
-const N: usize = 1 << 1;
 
 fn one_run() -> Duration {
     // let (s, r) = std::sync::mpsc::channel::<Whack>();
@@ -45,7 +44,7 @@ fn one_run() -> Duration {
 
     const MOVS: u32 = 25_000;
     let mut taken = Duration::from_millis(0);
-    let mut val: MaybeUninit<Whack> = MaybeUninit::new(Whack([3;N]));
+    let mut val: MaybeUninit<Whack> = MaybeUninit::new(Whack([3; N]));
     for _ in 0..MOVS {
         let t = Instant::now();
         unsafe {
@@ -282,33 +281,11 @@ fn test_4() {
 }
 
 
-pub struct Whack([u8; N]);
-impl PubPortDatum for Whack {
-    const IS_COPY: bool = true;
-    fn my_clone2(&self) -> Self {
-        // const CLONE_NANOS: u64 = 10000;
-        // std::thread::sleep(Duration::from_nanos(CLONE_NANOS));
-        // println!("CLONEY");
-        let mut x = self.0.clone();
-        for i in 0..10_000_usize {
-            for val in x.iter_mut() {
-                *val %= 11;
-                *val *= ((i % 7) as u8) + 1;
-            }
-        }
-        Self(x)
-    }
-    fn my_eq2(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-
 #[test]
 fn test_5() {
     let mut rules = vec![];
-    let putters = ["P0", "P1", "P2"];//, "P3", "P4"];
-    let getters = ["C0", "C1", "C2"];//, "C3", "C4"];
+    let putters = ["P0", "P1", "P2"]; //, "P3", "P4"];
+    let getters = ["C0", "C1", "C2"]; //, "C3", "C4"];
     for putter in putters.iter().copied() {
         for getter in getters.iter().copied() {
             let rule = RuleDef {
@@ -353,23 +330,18 @@ fn test_5() {
         let mut taken = Duration::default();
         for q in 0..REPS {
             let i = Instant::now();
-            x.put_lossy(Whack([q as u8;N]));
+            x.put_lossy(Whack([q as u8; N]));
             taken += i.elapsed();
         }
         taken / REPS
     }
 
     use rayon::prelude::*;
-    let ports: Vec<_> = putters
-        .into_iter()
-        .map(move |name| Putter::<Whack>::claim(&p, name).unwrap())
-        .collect();
+    let ports: Vec<_> =
+        putters.into_iter().map(move |name| Putter::<Whack>::claim(&p, name).unwrap()).collect();
 
     let start = Instant::now();
-    let times: Vec<Duration> = ports
-        .into_par_iter()
-        .map(pwork)
-        .collect();
+    let times: Vec<Duration> = ports.into_par_iter().map(pwork).collect();
     let all = start.elapsed();
     println!("{:?} | {:?}", times, all);
 }
@@ -377,11 +349,10 @@ fn test_5() {
 // TODO signal demo
 // TODO referencey demo
 
-
 #[test]
 pub fn qqwe() {
     let q = Instant::now();
-    work_units(Whack([37;N]));
+    work_units(Whack([37; N]));
     let x = q.elapsed();
     println!("{:?}", x);
 }
@@ -397,14 +368,13 @@ pub fn work_units(mut x: Whack) -> Whack {
     x
 }
 
-
 #[test]
 fn test_6() {
     let mut rng = rand::thread_rng();
     const REPS: u32 = 100;
 
     let mut len = 1;
-    while len < 1<<13 {
+    while len < 1 << 13 {
         let mut x = [Duration::default(); 2];
         for _ in 0..REPS {
             let [y0, y1] = go(&mut rng, len, 0.5);
@@ -427,16 +397,105 @@ fn go<R: rand::Rng>(rng: &mut R, len: usize, fullness: f32) -> [Duration; 2] {
 
     let x: HashSet<LocId> = (0..samples).map(|_| uni.sample(rng)).map(LocId).collect();
 
-
     let a = Instant::now();
     x.is_subset(&x);
     let a = a.elapsed();
 
     let x: BitSet = x.into_iter().collect();
 
-
     let b = Instant::now();
     x.is_subset(&x);
     let b = b.elapsed();
     [a, b]
+}
+
+
+const N: usize = 0;
+pub struct Whack([u8; N]);
+impl PubPortDatum for Whack {
+    const IS_COPY: bool = true;
+    fn my_clone2(&self) -> Self {
+        // const CLONE_NANOS: u64 = 10000;
+        // std::thread::sleep(Duration::from_nanos(CLONE_NANOS));
+        // println!("CLONEY");
+        let mut x = self.0.clone();
+        for i in 0..10_000_usize {
+            for val in x.iter_mut() {
+                *val %= 11;
+                *val *= ((i % 7) as u8) + 1;
+            }
+        }
+        Self(x)
+    }
+    fn my_eq2(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+// testing getter lock contention when they each fire separate rules
+#[test]
+fn test_7() {
+    let getters = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12"];
+
+    const REPS: u32 = 100;
+    const RUNS: u32 = 1_000;
+
+    for ports in 1..=12 {
+        let getter_slice = &getters[..ports];
+        let mut totals: Vec<Duration> =
+            std::iter::repeat(Duration::default()).take(ports).collect();
+        let type_info = TypeInfo::of::<Whack>();
+        for _ in 0..REPS {
+            let mut name_defs = hashmap! {"M" => NameDef::Mem(type_info)};
+            let d = NameDef::Port { is_putter: false, type_info };
+            let mut rules = vec![];
+
+            // always build as if we will use all the getters
+            for g in getters.iter().copied() {
+                name_defs.insert(g, d.clone());
+                let r = RuleDef {
+                    state_guard: StatePredicate {
+                        ready_ports: hashset! { g },
+                        full_mem: hashset! { "M" },
+                        empty_mem: hashset! {},
+                    },
+                    ins: vec![],
+                    output: hashmap! {
+                        "M" => (true, hashset!{ g }),
+                    },
+                };
+                rules.push(r);
+            }
+            let def = ProtoDef { name_defs, rules };
+            let p = def.build(MemInitial::default().with("M", Whack([34; N]))).unwrap();
+
+            use rayon::prelude::*;
+            let d: Vec<_> = getter_slice // but then actually initialize just a subset
+                .into_par_iter()
+                .map(|name: &Name| {
+                    let mut x = Getter::<Whack>::claim(&p, name).unwrap();
+                    let mut dur = Duration::default();
+                    for _ in 0..1000 {
+                        x.get(); // warm up
+                    }
+                    for _ in 0..RUNS {
+                        let ins = Instant::now();
+                        x.get();
+                        dur += ins.elapsed();
+                    }
+                    for _ in 0..1000 {
+                        x.get(); // cool down
+                    }
+                    dur / RUNS
+                })
+                .collect();
+            for (from, to) in d.into_iter().zip(totals.iter_mut()) {
+                *to += from;
+            }
+        }
+        for x in totals.iter_mut() {
+            *x /= REPS;
+        }
+        println!("TOTALS {:?}", &totals);
+    }
 }
