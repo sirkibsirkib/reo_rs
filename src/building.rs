@@ -33,12 +33,15 @@ pub struct ProtoDef {
     pub rules: Vec<RuleDef>,
 }
 
+#[repr(C)]
 #[derive(Debug, Clone)]
 pub struct StatePredicate {
     pub ready_ports: HashSet<Name>,
     pub full_mem: HashSet<Name>,
     pub empty_mem: HashSet<Name>,
 }
+
+#[repr(C)]
 #[derive(Debug, Clone)]
 pub struct RuleDef {
     pub state_guard: StatePredicate,
@@ -174,6 +177,7 @@ impl ProtoDef {
         build_proto(self, init)
     }
 }
+
 pub fn build_proto(
     p: &ProtoDef,
     mut init: MemInitial,
