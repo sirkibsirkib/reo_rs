@@ -485,7 +485,7 @@ fn test_7() {
 }
 
 
-const N: usize = 4096;
+const N: usize = 2048;
 
 pub struct Whack([u8; N]);
 impl Default for Whack {
@@ -525,20 +525,15 @@ fn test_8a() -> Duration {
         let barrier3_p0 = barrier3_g.clone();
         let barrier3_p1 = barrier3_g.clone();
 
-        let (data_0_s, data_0_r) = std::sync::mpsc::sync_channel(0); // rendesvous
-        let (data_1_s, data_1_r) = std::sync::mpsc::sync_channel(1); // async
-
-        let barrier2_p0 = Arc::new(std::sync::Barrier::new(2));
-        let barrier2_p1 = barrier2_p0.clone();
+        let (data_0_s, data_0_r) = crossbeam_channel::bounded(0); // rendesvous
+        let (data_1_s, data_1_r) = crossbeam_channel::bounded(1); // async
 
         let p0 = move || {
             barrier3_p0.wait();
             data_0_s.send(T8Datum::default()).unwrap();
-            barrier2_p0.wait();
         };
         let p1 = move || {
             barrier3_p1.wait();
-            barrier2_p1.wait();
             data_1_s.send(T8Datum::default()).unwrap();
         };
         let g = move || {
