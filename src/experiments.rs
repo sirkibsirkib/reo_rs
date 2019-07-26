@@ -32,7 +32,6 @@ lazy_static::lazy_static! {
     };
 }
 
-
 fn one_run() -> Duration {
     // let (s, r) = std::sync::mpsc::channel::<Whack>();
 
@@ -280,7 +279,6 @@ fn test_4() {
     }
 }
 
-
 #[test]
 fn test_5() {
     let mut rules = vec![];
@@ -409,8 +407,7 @@ fn go<R: rand::Rng>(rng: &mut R, len: usize, fullness: f32) -> [Duration; 2] {
     [a, b]
 }
 
-
-const N: usize = 0;
+const N: usize = 8;
 pub struct Whack([u8; N]);
 impl PubPortDatum for Whack {
     const IS_COPY: bool = true;
@@ -435,15 +432,17 @@ impl PubPortDatum for Whack {
 // testing getter lock contention when they each fire separate rules
 #[test]
 fn test_7() {
-    let getters = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12"];
+    let getters = [
+        "C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13",
+        "C14", "C15", "C16", "C17", "C18", "C19", "C20",
+    ];
 
     const REPS: u32 = 100;
     const RUNS: u32 = 1_000;
 
-    for ports in 1..=12 {
+    for ports in 1..getters.len() {
         let getter_slice = &getters[..ports];
-        let mut totals: Vec<Duration> =
-            std::iter::repeat(Duration::default()).take(ports).collect();
+        let mut totals: Vec<u128> = std::iter::repeat(0).take(ports).collect();
         let type_info = TypeInfo::of::<Whack>();
         for _ in 0..REPS {
             let mut name_defs = hashmap! {"M" => NameDef::Mem(type_info)};
@@ -451,7 +450,7 @@ fn test_7() {
             let mut rules = vec![];
 
             // always build as if we will use all the getters
-            for g in getters.iter().copied() {
+            for g in getter_slice.iter().copied() {
                 name_defs.insert(g, d.clone());
                 let r = RuleDef {
                     state_guard: StatePredicate {
@@ -467,6 +466,8 @@ fn test_7() {
                 rules.push(r);
             }
             let def = ProtoDef { name_defs, rules };
+            // println!("{:#?}", &def);
+            // return;
             let p = def.build(MemInitial::default().with("M", Whack([34; N]))).unwrap();
 
             use rayon::prelude::*;
@@ -490,12 +491,158 @@ fn test_7() {
                 })
                 .collect();
             for (from, to) in d.into_iter().zip(totals.iter_mut()) {
-                *to += from;
+                *to += from.as_nanos();
             }
         }
         for x in totals.iter_mut() {
-            *x /= REPS;
+            *x /= REPS as u128;
         }
-        println!("TOTALS {:?}", &totals);
+        let mean_tot: u128 = totals.iter().sum::<u128>() / ports as u128;
+        // println!("MEAN {:?}\tTOTALS {:?}", mean_tot, totals);
+        print!("{:?}, ", mean_tot);
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+    }
+}
+
+
+type T8Datum = &'static str;
+const T8_REPS: u32 = 10;
+
+#[test]
+fn test_8a() {
+    for _ in 0..T8_REPS {
+        let barrier3_g = Arc::new(std::sync::Barrier::new(3));
+        let barrier3_p0 = barrier3_g.clone();
+        let barrier3_p1 = barrier3_g.clone();
+
+        let (data_p0, data_g) = std::sync::mpsc::channel();
+        let data_p1 = data_p0.clone();
+
+        let barrier2_p0 = Arc::new(std::sync::Barrier::new(2));
+        let barrier2_p1 = barrier2_p0.clone();
+
+        let p0 = move || {
+            barrier3_p0.wait();
+            data_p0.send(T8Datum::default()).unwrap();
+            barrier2_p0.wait();
+        };
+        let p1 = move || {
+            barrier3_p1.wait();
+            barrier2_p1.wait();
+            data_p1.send(T8Datum::default()).unwrap();
+        };
+        let g = move || {
+            barrier3_g.wait();
+            let _from_p0 = data_g.recv().unwrap();
+            let _from_p1 = data_g.recv().unwrap();
+        };
+        worky(p0, p1, g);
+    }
+}
+
+fn worky<
+    P0: 'static + FnMut() + Send,
+    P1: 'static + FnMut() + Send,
+    G: 'static + FnMut() + Send,
+>(
+    mut p0: P0,
+    mut p1: P1,
+    mut g: G,
+) {
+    use std::thread;
+    const RUNS: u32 = 100_000;
+    const WARMUP: u32 = 100;
+
+    let handles = vec![
+        thread::spawn(move || {
+            for _ in 0..(RUNS + WARMUP + WARMUP) {
+                // putter 0
+                p0();
+            }
+        }),
+        thread::spawn(move || {
+            for _ in 0..(RUNS + WARMUP + WARMUP) {
+                // putter 1
+                p1();
+            }
+        }),
+        thread::spawn(move || {
+            let mut taken = Duration::default();
+            for _ in 0..WARMUP {
+                g();
+            }
+            for _ in 0..RUNS {
+                let start = Instant::now();
+                g();
+                taken += start.elapsed();
+            }
+            for _ in 0..WARMUP {
+                g();
+            }
+            println!("TOOK MEAN {:?}", taken / RUNS);
+        }),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[test]
+fn test_8b() {
+    let type_info = TypeInfo::of::<T8Datum>();
+    for _ in 0..T8_REPS {
+        let p = ProtoDef {
+            name_defs: hashmap! {
+                "P0" => NameDef::Port { is_putter:true, type_info },
+                "P1" => NameDef::Port { is_putter:true, type_info },
+                "G" => NameDef::Port { is_putter:false, type_info },
+                "M" => NameDef::Mem(type_info),
+            },
+            rules: vec![
+                RuleDef {
+                    state_guard: StatePredicate {
+                        ready_ports: hashset! {"P0", "P1", "G"},
+                        full_mem: hashset! {},
+                        empty_mem: hashset! {"M"},
+                    },
+                    ins: vec![],
+                    output: hashmap! {
+                        "P0" => (false, hashset!{"G"}),
+                        "P1" => (false, hashset!{"M"}),
+                    },
+                },
+                RuleDef {
+                    state_guard: StatePredicate {
+                        ready_ports: hashset! {"G"},
+                        full_mem: hashset! {"M"},
+                        empty_mem: hashset! {},
+                    },
+                    ins: vec![],
+                    output: hashmap! {
+                        "M" => (false, hashset!{"G"}),
+                    },
+                },
+            ],
+        }
+        .build(MemInitial::default())
+        .unwrap();
+
+        let (mut p0, mut p1, mut g) = (
+            Putter::<T8Datum>::claim(&p, "P0").unwrap(),
+            Putter::<T8Datum>::claim(&p, "P1").unwrap(),
+            Getter::<T8Datum>::claim(&p, "G").unwrap(),
+        );
+        let p0 = move || {
+            p0.put(T8Datum::default());
+        };
+        let p1 = move || {
+            p1.put(T8Datum::default());
+        };
+        let g = move || {
+            g.get();
+            g.get();
+        };
+        worky(p0, p1, g)
     }
 }
