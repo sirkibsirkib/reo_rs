@@ -76,7 +76,8 @@ impl TypeInfo {
         let to = trait_obj_build(src, self);
         let layout = to.my_layout();
         let [src_u8, dest_u8]: [*mut u8; 2] = transmute([src, dest]);
-        //DeBUGGY:println!("COPYING with layout {:?}", layout);
+
+        // Note: slightly faster if this is copy_nonoverlapping, but this is safer
         std::ptr::copy(src_u8, dest_u8, layout.size());
         std::mem::forget(to);
     }
@@ -381,8 +382,8 @@ impl<T: PortDatum> Putter<T> {
     ///     is reponsible for forgetting it.
     /// otherwise, returns `false` if the value was not consumed, and should
     ///     still be considered owned and valid.
-    pub unsafe fn put_raw(&mut self, datum_ptr: *mut T) -> bool {
-        let ptr: TraitData = transmute(datum_ptr);
+    pub unsafe fn put_raw(&mut self, src: &mut MaybeUninit<T>) -> bool {
+        let ptr: TraitData = transmute(src.as_mut_ptr());
         if self.put_entirely(ptr) {
             true
         } else {
@@ -541,6 +542,10 @@ impl<T: PubPortDatum> Getter<T> {
             panic!("am I not a getter?");
         }
         true
+    }
+
+    pub unsafe fn get_raw(&mut self, dest: &mut MaybeUninit<T>) {
+        assert!(self.get_entirely(None, Some(dest)));
     }
 
     pub fn get(&mut self) -> T {

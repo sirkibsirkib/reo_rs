@@ -47,7 +47,7 @@ fn one_run() -> Duration {
     for _ in 0..MOVS {
         let t = Instant::now();
         unsafe {
-            s.put_raw(val.as_mut_ptr());
+            s.put_raw(&mut val);
         };
         r.get();
         taken += t.elapsed();
@@ -239,8 +239,8 @@ fn make(num_bogus: usize, bogus_rule: &RuleDef) -> Getter<String> {
 #[test]
 fn test_4() {
     let values = (0..200 / 5).map(|x| x * 5);
-    const REBUILDS: u32 = 50;
-    const REPS: u32 = 1_000;
+    const REBUILDS: u32 = 100;
+    const REPS: u32 = 10_000;
 
     use Term::*;
     let bogus = RuleDef {
@@ -407,27 +407,6 @@ fn go<R: rand::Rng>(rng: &mut R, len: usize, fullness: f32) -> [Duration; 2] {
     [a, b]
 }
 
-const N: usize = 8;
-pub struct Whack([u8; N]);
-impl PubPortDatum for Whack {
-    const IS_COPY: bool = true;
-    fn my_clone2(&self) -> Self {
-        // const CLONE_NANOS: u64 = 10000;
-        // std::thread::sleep(Duration::from_nanos(CLONE_NANOS));
-        // println!("CLONEY");
-        let mut x = self.0.clone();
-        for i in 0..10_000_usize {
-            for val in x.iter_mut() {
-                *val %= 11;
-                *val *= ((i % 7) as u8) + 1;
-            }
-        }
-        Self(x)
-    }
-    fn my_eq2(&self, _other: &Self) -> bool {
-        true
-    }
-}
 
 // testing getter lock contention when they each fire separate rules
 #[test]
@@ -506,91 +485,75 @@ fn test_7() {
 }
 
 
-type T8Datum = &'static str;
-const T8_REPS: u32 = 10;
+const N: usize = 4096;
+
+pub struct Whack([u8; N]);
+impl Default for Whack {
+    fn default() -> Self {
+        Self([21; N])
+    }
+}
+impl PubPortDatum for Whack {
+    const IS_COPY: bool = true;
+    fn my_clone2(&self) -> Self {
+        let mut x = self.0.clone();
+        for i in 0..10_000_usize {
+            for val in x.iter_mut() {
+                *val %= 11;
+                *val *= ((i % 7) as u8) + 1;
+            }
+        }
+        Self(x)
+    }
+    fn my_eq2(&self, _other: &Self) -> bool {
+        true
+    }
+}
+type T8Datum = Whack;
+const T8_REPS: u32 = 1_000;
+const T8_RUNS: u32 = 3_000;
 
 #[test]
-fn test_8a() {
+fn test_8() {
+    println!("Handmade {:?} | Reo-rs {:?}", test_8a().as_nanos(), "Skipped!");
+}
+
+fn test_8a() -> Duration {
+    let mut total = Duration::default();
     for _ in 0..T8_REPS {
         let barrier3_g = Arc::new(std::sync::Barrier::new(3));
         let barrier3_p0 = barrier3_g.clone();
         let barrier3_p1 = barrier3_g.clone();
 
-        let (data_p0, data_g) = std::sync::mpsc::channel();
-        let data_p1 = data_p0.clone();
+        let (data_0_s, data_0_r) = std::sync::mpsc::sync_channel(0); // rendesvous
+        let (data_1_s, data_1_r) = std::sync::mpsc::sync_channel(1); // async
 
         let barrier2_p0 = Arc::new(std::sync::Barrier::new(2));
         let barrier2_p1 = barrier2_p0.clone();
 
         let p0 = move || {
             barrier3_p0.wait();
-            data_p0.send(T8Datum::default()).unwrap();
+            data_0_s.send(T8Datum::default()).unwrap();
             barrier2_p0.wait();
         };
         let p1 = move || {
             barrier3_p1.wait();
             barrier2_p1.wait();
-            data_p1.send(T8Datum::default()).unwrap();
+            data_1_s.send(T8Datum::default()).unwrap();
         };
         let g = move || {
             barrier3_g.wait();
-            let _from_p0 = data_g.recv().unwrap();
-            let _from_p1 = data_g.recv().unwrap();
+            let _from_p0 = data_0_r.recv().unwrap();
+            let _from_p1 = data_1_r.recv().unwrap();
         };
-        worky(p0, p1, g);
+        worky(p0, p1, g, &mut total);
     }
+    total / T8_REPS
 }
 
-fn worky<
-    P0: 'static + FnMut() + Send,
-    P1: 'static + FnMut() + Send,
-    G: 'static + FnMut() + Send,
->(
-    mut p0: P0,
-    mut p1: P1,
-    mut g: G,
-) {
-    use std::thread;
-    const RUNS: u32 = 100_000;
-    const WARMUP: u32 = 100;
-
-    let handles = vec![
-        thread::spawn(move || {
-            for _ in 0..(RUNS + WARMUP + WARMUP) {
-                // putter 0
-                p0();
-            }
-        }),
-        thread::spawn(move || {
-            for _ in 0..(RUNS + WARMUP + WARMUP) {
-                // putter 1
-                p1();
-            }
-        }),
-        thread::spawn(move || {
-            let mut taken = Duration::default();
-            for _ in 0..WARMUP {
-                g();
-            }
-            for _ in 0..RUNS {
-                let start = Instant::now();
-                g();
-                taken += start.elapsed();
-            }
-            for _ in 0..WARMUP {
-                g();
-            }
-            println!("TOOK MEAN {:?}", taken / RUNS);
-        }),
-    ];
-    for h in handles {
-        h.join().unwrap();
-    }
-}
-
-#[test]
-fn test_8b() {
+fn test_8b() -> Duration {
     let type_info = TypeInfo::of::<T8Datum>();
+    let mut total = Duration::default();
     for _ in 0..T8_REPS {
         let p = ProtoDef {
             name_defs: hashmap! {
@@ -635,14 +598,72 @@ fn test_8b() {
         );
         let p0 = move || {
             p0.put(T8Datum::default());
-        };
+        }; 
         let p1 = move || {
             p1.put(T8Datum::default());
-        };
+        }; 
         let g = move || {
             g.get();
             g.get();
         };
-        worky(p0, p1, g)
+
+        // let mut p0d = MaybeUninit::new(T8Datum::default());
+        // let p0 = move || {
+        //     unsafe { p0.put_raw(&mut p0d) };
+        // };
+        // let mut p1d = MaybeUninit::new(T8Datum::default());
+        // let p1 = move || {
+        //     unsafe { p1.put_raw(&mut p1d) };
+        // };
+        // let mut gd = MaybeUninit::uninit();
+        // let g = move || unsafe {
+        //     g.get_raw(&mut gd);
+        //     g.get_raw(&mut gd);
+        // };
+        worky(p0, p1, g, &mut total)
     }
+    total / T8_REPS
+}
+
+fn worky<
+    P0: 'static + FnMut() + Send,
+    P1: 'static + FnMut() + Send,
+    G: 'static + FnMut() + Send,
+>(
+    mut p0: P0,
+    mut p1: P1,
+    mut g: G,
+    total: &mut Duration, 
+) {
+    const WARMUP: u32 = 100;
+
+    crossbeam_utils::thread::scope(|s| {
+        s.spawn(move |_| {
+            for _ in 0..(T8_RUNS + WARMUP + WARMUP) {
+                // putter 0
+                p0();
+            }
+        });
+        s.spawn(move |_| {
+            for _ in 0..(T8_RUNS + WARMUP + WARMUP) {
+                // putter 1
+                p1();
+            }
+        });
+        s.spawn(|_| {
+            let mut taken = Duration::default();
+            for _ in 0..WARMUP {
+                g();
+            }
+            for _ in 0..T8_RUNS {
+                let start = Instant::now();
+                g();
+                taken += start.elapsed();
+            }
+            for _ in 0..WARMUP {
+                g();
+            }
+            *total += taken / T8_RUNS;
+        });
+    }).unwrap();
 }
