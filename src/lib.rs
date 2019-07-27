@@ -36,8 +36,8 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod experiments;
+// #[cfg(test)]
+// mod experiments;
 
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
@@ -223,7 +223,7 @@ pub enum Term<I, F> {
 pub enum Instruction<I, F> {
     CreateFromFormula { dest: I, term: Term<I, F> },
     CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
-    Check { term: Term<I, F> },
+    Check(Term<I, F>),
     MemSwap(I, I),
 }
 #[derive(Debug)]
@@ -419,7 +419,7 @@ impl<T: PubPortDatum> Getter<T> {
         Ok(Self(PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?, Default::default()))
     }
 
-    fn get_data<F: FnOnce(bool)>(
+    fn get_data<F: FnOnce(FinalizeHow)>(
         ps: &PutterSpace,
         maybe_dest: Option<&mut MaybeUninit<T>>,
         finalize: F,
@@ -449,12 +449,17 @@ impl<T: PubPortDatum> Getter<T> {
             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
             if was == LAST {
                 let [_, retains] = ps.rendesvous.move_flags.visit();
-                finalize(!retains);
+                let how = if retains {
+                    FinalizeHow::Retain
+                } else {
+                    FinalizeHow::Forget
+                };
+                finalize(how);
             }
         } else {
             if let Some(dest) = maybe_dest {
                 let [visited_first, retains] = ps.rendesvous.move_flags.visit();
-                if visited_first && !retains {
+                if visited_first && !retains { // I move!
                     // println!("A");
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                     // println!("was (A) {}, retains {}", was, retains);
@@ -462,7 +467,7 @@ impl<T: PubPortDatum> Getter<T> {
                         ps.rendesvous.mover_sema.acquire();
                     }
                     do_move(dest);
-                    finalize(true);
+                    finalize(FinalizeHow::Forget);
                 // println!("/A");
                 } else {
                     // println!("B");
@@ -471,7 +476,7 @@ impl<T: PubPortDatum> Getter<T> {
                     // println!("was (B) {}, retains {}", was, retains);
                     if was == LAST {
                         if retains {
-                            finalize(false);
+                            finalize(FinalizeHow::Retain);
                         } else {
                             // println!("releasing");
                             ps.rendesvous.mover_sema.release();
@@ -485,7 +490,12 @@ impl<T: PubPortDatum> Getter<T> {
                 if was == LAST {
                     let [visited_first, retains] = ps.rendesvous.move_flags.visit();
                     if visited_first {
-                        finalize(retains);
+                        let how = if retains {
+                            FinalizeHow::Retain
+                        } else {
+                            FinalizeHow::DropInside
+                        };
+                        finalize(how);
                     } else {
                         ps.rendesvous.mover_sema.release();
                     }
@@ -514,25 +524,20 @@ impl<T: PubPortDatum> Getter<T> {
             };
             // println!("My putter has id {:?}", putter_id);
             match &self.0.p.0.r.spaces[putter_id.0] {
-                Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |was_moved| {
+                Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
-                    if was_moved {
-                        assert!(NULL != ps.ptr.swap(NULL, SeqCst));
-                        mb.send(MsgBox::MOVED_MSG)
-                    } else {
-                        mb.send(MsgBox::UNMOVED_MSG)
-                    };
+                    mb.send(match how {
+                        FinalizeHow::DropInside |
+                        FinalizeHow::Retain => MsgBox::UNMOVED_MSG,
+                        FinalizeHow::Forget => MsgBox::MOVED_MSG,
+                    })
                     // println!("FINALZIING DONE");
                 }),
-                Space::Memo { ps } => Self::get_data(ps, maybe_dest, |was_moved| {
+                Space::Memo { ps } => Self::get_data(ps, maybe_dest, |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
-                    let how = match was_moved {
-                        true => FinalizeMemHow::Forget,
-                        false => FinalizeMemHow::Retain,
-                    };
                     self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, how);
                     // println!("FINALZIING DONE");
                 }),
@@ -676,7 +681,7 @@ impl ProtoR {
             }
             for i in rule.ins.iter() {
                 match &i {
-                    Instruction::Check { term } => assert_eq!(
+                    Instruction::Check(term) => assert_eq!(
                         TypeInfo::of::<bool>(),
                         check_and_ret_type(&capabilities, &known_filled, term)
                     ),
@@ -761,35 +766,39 @@ pub struct ProtoCr {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum FinalizeMemHow {
+enum FinalizeHow {
     DropInside,
     Forget, // was moved out maybe
     Retain,
 }
 impl ProtoCr {
-    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, how: FinalizeMemHow) {
+    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, how: FinalizeHow) {
+        // println!("FINALIZING how={:?}", how);
+        if how != FinalizeHow::Retain {
+            let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
+            let ptr = putter_space.ptr.swap(NULL, SeqCst);
+            let ref_count = self.ref_counts.get_mut(&(ptr as usize)).expect("RC");
+            //DeBUGGY:println!("FINALIZING SO {:?} IS READY", this_mem_id);
+            assert!(*ref_count > 0);
+            *ref_count -= 1;
+            if *ref_count == 0 {
+                self.ref_counts.remove(&(ptr as usize));
+                if let FinalizeHow::DropInside = how {
+                    assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
+                } else {
+                    assert!(self.allocator.forget_inside(ptr, putter_space.type_info));
+                }
+            }
+        }
         if r.perm_space_rng.contains(&this_mem_id.0) {
             self.ready.insert(this_mem_id);
             self.coordinate(r);
         } else {
-            // this was a temp memcell
-        }
-        if let FinalizeMemHow::Retain = how {
-            return;
-        }
-        let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
-        let ptr = putter_space.ptr.swap(NULL, SeqCst);
-        let ref_count = self.ref_counts.get_mut(&(ptr as usize)).expect("RC");
-        //DeBUGGY:println!("FINALIZING SO {:?} IS READY", this_mem_id);
-        assert!(*ref_count > 0);
-        *ref_count -= 1;
-        if *ref_count == 0 {
-            self.ref_counts.remove(&(ptr as usize));
-            if let FinalizeMemHow::DropInside = how {
-                assert!(self.allocator.drop_inside(ptr, putter_space.type_info));
-            } else {
-                assert!(self.allocator.forget_inside(ptr, putter_space.type_info));
-            }
+            // this was a temp memcell. the port behind this thread MUST be ready
+            // to fire the SINGLE rule associated with the memcell. Thus, we can
+            // safely conclude that we do not need to consider the possibility that
+            // this memcell becoming empty will enable some other rule without
+            // involving this thread's port.
         }
     }
     fn swap_putter_ptrs(&mut self, r: &ProtoR, a: LocId, b: LocId) {
@@ -856,7 +865,7 @@ impl ProtoCr {
                             let was = self.ref_counts.insert(dest_ptr as usize, 1);
                             assert!(was.is_none());
                         }
-                        Check { term } => {
+                        Check(term) => {
                             if !eval_bool(term, r) {
                                 // ROLLBACK!
                                 // //DeBUGGY:println!("ROLLBACK!");
@@ -864,12 +873,12 @@ impl ProtoCr {
                                     // //DeBUGGY:println!("... rolling back {:?}", i);
                                     match i {
                                         CreateFromFormula { dest, .. } => {
-                                            self.finalize_memo(r, *dest, FinalizeMemHow::DropInside)
+                                            self.finalize_memo(r, *dest, FinalizeHow::DropInside)
                                         }
                                         CreateFromCall { dest, .. } => {
-                                            self.finalize_memo(r, *dest, FinalizeMemHow::DropInside)
+                                            self.finalize_memo(r, *dest, FinalizeHow::DropInside)
                                         }
-                                        Check { .. } => {}
+                                        Check(_) => {}
                                         MemSwap(a, b) => self.swap_putter_ptrs(r, *a, *b),
                                     }
                                 }
@@ -882,7 +891,8 @@ impl ProtoCr {
                     }
                 }
                 // made it past the instructions! time to commit!
-                self.ready.set_sub(&rule.bit_guard.ready);
+                // println!("FIRING RULE {:?}", rule);
+                self.ready.set_sub(&rule.bit_assign.ready);
                 self.mem.set_sub(&rule.bit_assign.empty_mem);
                 self.mem.set_add(&rule.bit_assign.full_mem);
 
@@ -1124,17 +1134,17 @@ impl PutterSpace {
 // putters by default retain their da
 #[derive(Debug)]
 pub struct Rule {
-    bit_guard: BitStatePredicate<BitSet>,
+    bit_guard: BitStatePredicate,
     ins: SmallVec<[Instruction<LocId, CallHandle>; 4]>, // dummy
     /// COMMITMENTS BELOW HERE
     output: SmallVec<[Movement; 4]>,
     // .ready is always identical to bit_guard.ready. use that instead
-    bit_assign: BitStatePredicate<()>,
+    bit_assign: BitStatePredicate,
 }
 
 #[derive(Debug)]
-struct BitStatePredicate<P> {
-    ready: P,
+struct BitStatePredicate {
+    ready: BitSet,
     full_mem: BitSet,
     empty_mem: BitSet,
 }

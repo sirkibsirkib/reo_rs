@@ -74,7 +74,7 @@ pub enum ProtoBuildError {
     CanOnlySwapMemory { name: Name },
 }
 
-fn resolve_full(
+fn resolve_fully(
     temp_names: &HashMap<Name, (LocId, TypeInfo)>,
     name_mapping: &BidirMap<Name, LocId>,
     name: Name,
@@ -97,7 +97,7 @@ fn term_eval_tid(
     use Term::*;
     Ok(match term {
         Named(name) => {
-            spaces[resolve_full(temp_names, name_mapping, name)?.0]
+            spaces[resolve_fully(temp_names, name_mapping, name)?.0]
                 .get_putter_space()
                 .ok_or(TermNameIsNotPutter { name })?
                 .type_info
@@ -160,7 +160,7 @@ fn term_convert(
             if known_state.get(name).copied() != Some(true) {
                 return Err(ReadWithoutFullCertainty { name });
             }
-            resolve_full(temp_names, name_mapping, name)?
+            resolve_fully(temp_names, name_mapping, name)?
         }),
     })
 }
@@ -298,7 +298,7 @@ pub fn build_proto(
 
         // 5 build the bit guard
         let bit_guard = {
-            let mut bit_guard: BitStatePredicate<BitSet> = BitStatePredicate {
+            let mut bit_guard: BitStatePredicate = BitStatePredicate {
                 ready: ready_ports
                     .iter()
                     .chain(full_mem.iter())
@@ -322,29 +322,27 @@ pub fn build_proto(
         'instructions: for i in rule.ins.iter() {
             use Instruction::*;
             let instruction = match i {
-                Check { term } => {
+                Check(term) => {
                     if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
                         != TypeInfo::of::<bool>()
                     {
                         return Err(CheckingNonBoolType);
                     }
-                    Instruction::Check {
-                        term: term_convert(
-                            &spaces,
-                            &temp_names,
-                            &name_mapping,
-                            &call_handles,
-                            &known_state,
-                            term,
-                        )?,
-                    }
+                    Instruction::Check(term_convert(
+                        &spaces,
+                        &temp_names,
+                        &name_mapping,
+                        &call_handles,
+                        &known_state,
+                        term,
+                    )?)
                 }
                 CreateFromFormula { dest, term } => {
                     let type_info = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
                     if type_info != TypeInfo::of::<bool>() {
                         return Err(CreatingNonBoolFromFormula);
                     }
-                    if resolve_full(&temp_names, &name_mapping, dest).is_ok() {
+                    if resolve_fully(&temp_names, &name_mapping, dest).is_ok() {
                         return Err(InstructionCannotOverwrite { name: dest });
                     }
                     let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
@@ -390,8 +388,8 @@ pub fn build_proto(
                     CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
                 }
                 MemSwap(a, b) => {
-                    let aid = resolve_full(&temp_names, &name_mapping, a);
-                    let bid = resolve_full(&temp_names, &name_mapping, b);
+                    let aid = resolve_fully(&temp_names, &name_mapping, a);
+                    let bid = resolve_fully(&temp_names, &name_mapping, b);
 
                     let [aid, bid] = if aid.is_err() && bid.is_err() {
                         // swap of nothing to nothing
@@ -444,7 +442,7 @@ pub fn build_proto(
         //DeBUGGY:println!("WHOSE {:?}", &whose_mem_is_this);
 
         let mut bit_assign = BitStatePredicate {
-            ready: (), // always identical to bit_guard.ready. use that instead
+            ready: bit_guard.ready.clone(),
             empty_mem: Default::default(),
             full_mem: Default::default(),
         };
@@ -456,7 +454,7 @@ pub fn build_proto(
                 if known_state.get(putter).copied() != Some(true) {
                     return Err(PutWithoutFullCertainty { name: putter });
                 }
-                let putter_id: LocId = resolve_full(&temp_names, &name_mapping, putter)?;
+                let putter_id: LocId = resolve_fully(&temp_names, &name_mapping, putter)?;
                 puts.insert(putter); // no overwrite possible
                 let putter_type_info =
                     spaces[putter_id.0].get_putter_space().expect("CCC").type_info;
@@ -505,7 +503,7 @@ pub fn build_proto(
             if puts.contains(name) || gets.contains(name) {
                 continue; // ok it was covered
             }
-            let id = resolve_full(&temp_names, &name_mapping, name)?;
+            let id = resolve_fully(&temp_names, &name_mapping, name)?;
             let putter_retains = match spaces[id.0] {
                 Space::Memo { .. } => perm_space_rng.contains(&id.0),
                 Space::PoPu { .. } => true,
@@ -513,6 +511,8 @@ pub fn build_proto(
             };
             if is_full {
                 output.push(Movement { putter: id, po_ge: vec![], me_ge: vec![], putter_retains });
+            } else {
+                // bit_assign.ready.remove(&id);
             }
         }
         bit_assign.full_mem.pad_to_cap(perm_space_rng.end);

@@ -386,6 +386,7 @@ fn prod_cons_single() {
 #[test]
 fn prod_cons_mult() {
     let p = FIFO1_STRING.build(MemInitial::default()).unwrap();
+    // println!("{:#?}", &p);
     let (mut p, mut g): (Putter<String>, Getter<String>) =
         (Putter::claim(&p, "Producer").unwrap(), Getter::claim(&p, "Consumer").unwrap());
     use std::thread::spawn;
@@ -539,7 +540,7 @@ lazy_static::lazy_static! {
                     full_mem: hashset! {},
                     empty_mem: hashset! {},
                 },
-                ins: vec![Instruction::Check { term: Term::BoolCall{ func: "is_neg", args: vec![Term::Named("P")] } }],
+                ins: vec![Instruction::Check(Term::BoolCall{ func: "is_neg", args: vec![Term::Named("P")] })],
                 output: hashmap! {
                     "P" => (false, hashset!{"Cneg"})
                 },
@@ -550,9 +551,9 @@ lazy_static::lazy_static! {
                     full_mem: hashset! {},
                     empty_mem: hashset! {},
                 },
-                ins: vec![Instruction::Check { term: Term::Not(
+                ins: vec![Instruction::Check(Term::Not(
                     Box::new(Term::BoolCall{ func: "is_neg", args: vec![Term::Named("P")] })
-                )}],
+                ))],
                 output: hashmap! {
                     "P" => (false, hashset!{"Cpos"})
                 },
@@ -749,7 +750,7 @@ lazy_static::lazy_static! {
                     empty_mem: hashset! {},
                 },
                 ins: vec![
-                    Instruction::Check { term: Term::BoolCall { func: "is_even", args: vec![Term::Named("I")] }},
+                    Instruction::Check (Term::BoolCall { func: "is_even", args: vec![Term::Named("I")] }),
                 ],
                 output: hashmap! { "I" => (false, hashset!{"Oeven"}) },
             },
@@ -760,9 +761,9 @@ lazy_static::lazy_static! {
                     empty_mem: hashset! {},
                 },
                 ins: vec![
-                    Instruction::Check { term: Term::Not(Box::new(
+                    Instruction::Check(Term::Not(Box::new(
                         Term::BoolCall { func: "is_even", args: vec![Term::Named("I")]}
-                    ))},
+                    ))),
                 ],
                 output: hashmap! { "I" => (false, hashset!{"Oodd"}) },
             },
