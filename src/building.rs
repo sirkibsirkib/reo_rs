@@ -512,7 +512,8 @@ pub fn build_proto(
             if is_full {
                 output.push(Movement { putter: id, po_ge: vec![], me_ge: vec![], putter_retains });
             } else {
-                // bit_assign.ready.remove(&id);
+                // cover the case of an EMPTY movement. nobody drains it AND its not full
+                bit_assign.ready.remove(&id);
             }
         }
         bit_assign.full_mem.pad_to_cap(perm_space_rng.end);

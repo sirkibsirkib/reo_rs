@@ -36,8 +36,8 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
-// #[cfg(test)]
-// mod experiments;
+#[cfg(test)]
+mod experiments;
 
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
@@ -46,7 +46,7 @@ pub struct TypeInfo(pub(crate) TraitVtable);
 impl TypeInfo {
     /* Somehow the inlining behaviour of this function sometimes creates DUPLICATE
     trait object vtables in memory. this has ONLY the effect of sometimes causing
-    false positives when checking for type-equality (the contents of the vtables are identical)
+    false negatives when checking for type-equality (the contents of the vtables are identical)
     ie: TypeInfo::of::<T>() != trait_obj_break(my_box_string)
     Until I figure this out more robustly, I've solved it just by prohibiting inlining
     */
@@ -613,6 +613,10 @@ impl ProtoR {
             assert_eq!(cap.ty, *tinfo);
         }
         for rule in self.rules.iter() {
+            assert!(rule.bit_assign.ready.is_subset(&rule.bit_guard.ready));
+            assert!(rule.bit_guard.full_mem.is_subset(&rule.bit_guard.ready));
+            assert!(rule.bit_guard.empty_mem.is_subset(&rule.bit_guard.ready));
+
             assert_eq!(chunks, rule.bit_guard.ready.data.len());
             assert_eq!(chunks, rule.bit_guard.empty_mem.data.len());
             assert_eq!(chunks, rule.bit_guard.full_mem.data.len());
@@ -742,15 +746,14 @@ impl ProtoR {
                     assert!(busy_doing.insert(g, false).is_none());
                 }
             }
-            // make sure everyone in READY set is covered
-            // YES even mem cells that are not consumed. this just sets them to READY
-            for p in rule.bit_guard.ready.iter() {
+            // make sure everyone whose readiness is UNSET has a means of again
+            // becoming ready
+            for p in rule.bit_assign.ready.iter() {
                 assert!(busy_doing.contains_key(&p));
             }
-            // todo check NON putters in assignment set
-            for p in rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter()) {
-                assert!(busy_doing.contains_key(&p));
-            }
+            // for p in rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter()) {
+            //     assert!(busy_doing.contains_key(&p));
+            // }
         }
     }
 }

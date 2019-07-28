@@ -229,7 +229,6 @@ fn make(num_bogus: usize, bogus_rule: &RuleDef) -> Getter<String> {
             "A" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<String>() },
             "Bogus" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<String>() },
             "M" => NameDef::Mem(TypeInfo::of::<String>()),
-            "M2" => NameDef::Mem(TypeInfo::of::<String>()),
         },
         rules,
     };
@@ -248,13 +247,13 @@ fn test_4() {
         state_guard: StatePredicate {
             ready_ports: hashset! { "A" },
             full_mem: hashset! { "M" },
-            empty_mem: hashset! { "M2" },
+            empty_mem: hashset! {},
         },
         ins: vec![
-            Instruction::MemSwap("M", "M2"),
+            // Instruction::MemSwap("M", "M2"),
             Instruction::Check(Term::False),
         ],
-        output: hashmap! { "M2" => (true, hashset!{ "A" }) },
+        output: hashmap! { "M" => (true, hashset!{ "A" }) },
     };
 
     for v in values {
