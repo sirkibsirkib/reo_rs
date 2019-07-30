@@ -61,7 +61,7 @@ impl TypeInfo {
     }
 
     /// THESE THREE FUNCTIONS ASSUME THE LAYOUT OF TRAIT OBJECTS IN MEMORY.
-    /// Replace with hooks from "raw" once its fully fleshed-out. 
+    /// Replace with hooks from "raw" once its fully fleshed-out.
     /// - 0: drop function core::ptr::real_drop_in_place
     /// - 1: Layout::size
     /// - 2: Layout::align
@@ -186,6 +186,10 @@ impl CallHandle {
                 let funcy: fn(TraitData, TraitData, TraitData) = transmute(to);
                 funcy(dest_ptr, args[0], args[1]);
             }
+            3 => {
+                let funcy: fn(TraitData, TraitData, TraitData, TraitData) = transmute(to);
+                funcy(dest_ptr, args[0], args[1], args[2]);
+            }
             // TODO
             _ => unreachable!(),
         };
@@ -193,54 +197,76 @@ impl CallHandle {
     pub unsafe fn new_nullary_raw<R: 'static + Send + Sync + Sized>(func: fn(*mut R)) -> Self {
         CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
     }
-    pub unsafe fn new_unary_raw<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized>(func: fn(*mut R, *const A0)) -> Self {
+    pub unsafe fn new_unary_raw<
+        R: 'static + Send + Sync + Sized,
+        A0: 'static + Send + Sync + Sized,
+    >(
+        func: fn(*mut R, *const A0),
+    ) -> Self {
         CallHandle {
             func: transmute(func),
             ret: TypeInfo::of::<R>(),
             args: vec![TypeInfo::of::<A0>()],
         }
     }
-    pub unsafe fn new_binary_raw<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized, A1: 'static + Send + Sync + Sized>(func: fn(*mut R, *const A0, *const A1)) -> Self {
+    pub unsafe fn new_binary_raw<
+        R: 'static + Send + Sync + Sized,
+        A0: 'static + Send + Sync + Sized,
+        A1: 'static + Send + Sync + Sized,
+    >(
+        func: fn(*mut R, *const A0, *const A1),
+    ) -> Self {
         CallHandle {
             func: transmute(func),
             ret: TypeInfo::of::<R>(),
             args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>()],
         }
     }
-
-    //////////////////
-    pub fn new_nullary<R: 'static + Send + Sync + Sized>(func: fn(Outputter<R>) -> OutputToken<R>) -> Self {
-        unsafe { Self::new_nullary_raw::<R>(transmute(func)) }
+    pub unsafe fn new_ternary_raw<
+        R: 'static + Send + Sync + Sized,
+        A0: 'static + Send + Sync + Sized,
+        A1: 'static + Send + Sync + Sized,
+        A2: 'static + Send + Sync + Sized,
+    >(
+        func: fn(*mut R, *const A0, *const A1, *const A2),
+    ) -> Self {
+        CallHandle {
+            func: transmute(func),
+            ret: TypeInfo::of::<R>(),
+            args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>(), TypeInfo::of::<A2>()],
+        }
     }
 
+    //////////////////
+    pub fn new_nullary<R: 'static + Send + Sync + Sized>(
+        func: fn(Outputter<R>) -> OutputToken<R>,
+    ) -> Self {
+        unsafe { Self::new_nullary_raw::<R>(transmute(func)) }
+    }
     pub fn new_unary<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized>(
         func: fn(Outputter<R>, &A0) -> OutputToken<R>,
     ) -> Self {
         unsafe { Self::new_unary_raw::<R, A0>(transmute(func)) }
     }
-    pub fn new_binary<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized, A1: 'static + Send + Sync + Sized>(
+    pub fn new_binary<
+        R: 'static + Send + Sync + Sized,
+        A0: 'static + Send + Sync + Sized,
+        A1: 'static + Send + Sync + Sized,
+    >(
         func: fn(Outputter<R>, &A0, &A1) -> OutputToken<R>,
     ) -> Self {
         unsafe { Self::new_binary_raw::<R, A0, A1>(transmute(func)) }
     }
-    // pub unsafe fn new_binary_raw<R: PortDatum, A0: PortDatum, A1: PortDatum>(
-    //     func: Arc<dyn Fn(*mut R, *const A0, *const A1) + Sync>,
-    // ) -> Self {
-    //     CallHandle {
-    //         func: transmute(func),
-    //         ret: TypeInfo::of::<R>(),
-    //         args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>()],
-    //     }
-    // }
-    // pub unsafe fn new_ternary_raw<R: PortDatum, A0: PortDatum, A1: PortDatum, A2: PortDatum>(
-    //     func: Arc<dyn Fn(*mut R, *const A0, *const A1, *const A2) + Sync>,
-    // ) -> Self {
-    //     CallHandle {
-    //         func: transmute(func),
-    //         ret: TypeInfo::of::<R>(),
-    //         args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>(), TypeInfo::of::<A2>()],
-    //     }
-    // }
+    pub fn new_ternary<
+        R: 'static + Send + Sync + Sized,
+        A0: 'static + Send + Sync + Sized,
+        A1: 'static + Send + Sync + Sized,
+        A2: 'static + Send + Sync + Sized,
+    >(
+        func: fn(Outputter<R>, &A0, &A1, &A2) -> OutputToken<R>,
+    ) -> Self {
+        unsafe { Self::new_ternary_raw::<R, A0, A1, A2>(transmute(func)) }
+    }
 }
 
 pub type Name = &'static str;
@@ -301,12 +327,10 @@ impl MsgBox {
     const MOVED_MSG: usize = 0xadded;
     const UNMOVED_MSG: usize = 0xdeaf;
     pub fn send(&self, msg: usize) {
-        //DeBUGGY:println!(">>> sending {:X}", msg);
         self.s.try_send(msg).expect("SEND BAD");
     }
     pub fn recv(&self) -> usize {
         let msg = self.r.recv().expect("RECV BAD");
-        //DeBUGGY:println!("<<< recved {:X}", msg);
         msg
     }
     pub fn recv_timeout(&self, timeout: Duration) -> Option<usize> {
@@ -487,17 +511,14 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
             let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
             if was == LAST {
                 let [_, retains] = ps.rendesvous.move_flags.visit();
-                let how = if retains {
-                    FinalizeHow::Retain
-                } else {
-                    FinalizeHow::Forget
-                };
+                let how = if retains { FinalizeHow::Retain } else { FinalizeHow::Forget };
                 finalize(how);
             }
         } else {
             if let Some(dest) = maybe_dest {
                 let [visited_first, retains] = ps.rendesvous.move_flags.visit();
-                if visited_first && !retains { // I move!
+                if visited_first && !retains {
+                    // I move!
                     // println!("A");
                     let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                     // println!("was (A) {}, retains {}", was, retains);
@@ -528,11 +549,8 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
                 if was == LAST {
                     let [visited_first, retains] = ps.rendesvous.move_flags.visit();
                     if visited_first {
-                        let how = if retains {
-                            FinalizeHow::Retain
-                        } else {
-                            FinalizeHow::DropInside
-                        };
+                        let how =
+                            if retains { FinalizeHow::Retain } else { FinalizeHow::DropInside };
                         finalize(how);
                     } else {
                         ps.rendesvous.mover_sema.release();
@@ -566,8 +584,7 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
-                        FinalizeHow::DropInside |
-                        FinalizeHow::Retain => MsgBox::UNMOVED_MSG,
+                        FinalizeHow::DropInside | FinalizeHow::Retain => MsgBox::UNMOVED_MSG,
                         FinalizeHow::Forget => MsgBox::MOVED_MSG,
                     })
                     // println!("FINALZIING DONE");
@@ -1076,9 +1093,7 @@ impl Allocator {
     pub fn drop_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
         if let Some(set) = self.allocated.get_mut(&type_info) {
             if set.remove(&(data as usize)) {
-                unsafe {
-                    type_info.drop_me(data)
-                }
+                unsafe { type_info.drop_me(data) }
                 // unsafe {
                 //     let mut bx = trait_obj_build(data, type_info);
                 //     bx.drop_in_place();
@@ -1261,7 +1276,6 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
     }
 }
 
-
 /////////////
 trait MaybeCopy {
     const IS_COPY: bool = false;
@@ -1279,8 +1293,8 @@ trait MaybeClone {
 impl<T> MaybeClone for T {}
 impl<T: Clone> MaybeClone for T {
     fn maybe_clone(&self, oth: TraitData) {
-        let oth: *mut T = unsafe {std::mem::transmute(oth)};
-        unsafe {oth.write(self.clone())}
+        let oth: *mut T = unsafe { std::mem::transmute(oth) };
+        unsafe { oth.write(self.clone()) }
     }
 }
 /////////////
@@ -1292,7 +1306,7 @@ trait MaybePartialEq {
 impl<T> MaybePartialEq for T {}
 impl<T: PartialEq> MaybePartialEq for T {
     fn maybe_partial_eq(&self, oth: TraitData) -> bool {
-        let oth: &T = unsafe {std::mem::transmute(oth)};
+        let oth: &T = unsafe { std::mem::transmute(oth) };
         self == oth
     }
 }

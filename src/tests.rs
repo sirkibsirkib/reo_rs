@@ -1,6 +1,4 @@
-
 use super::*;
-
 
 #[test]
 pub fn type_info_neq() {
@@ -176,7 +174,7 @@ pub fn allocator_reuse() {
 
 #[test]
 pub fn get_layout_raw_eq() {
-    let a = Layout::new::<[u8;21]>();
+    let a = Layout::new::<[u8; 21]>();
 
     let x: Box<dyn PortDatum> = Box::new([7u8; 21]);
     let (data, info) = unsafe { trait_obj_break(x) };
