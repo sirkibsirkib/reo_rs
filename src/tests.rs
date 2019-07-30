@@ -242,6 +242,20 @@ fn call_handle_unary() {
     assert_eq!(o, 4);
 }
 
+#[test]
+fn call_handle_binary() {
+    let f: fn(Outputter<u32>, &u32, &u32) -> OutputToken<u32> = |o, a0, a1| o.output(*a0 + *a1);
+    let ch = CallHandle::new_binary(f);
+
+    let mut o: u32 = 9999;
+    let dest: TraitData = unsafe { transmute(&mut o) };
+    let args: [u32; 2] = [7, 14];
+    let arg_ref = unsafe { [transmute(&args[0]), transmute(&args[1])] };
+
+    unsafe { ch.exec(dest, &arg_ref[..]) };
+    assert_eq!(o, 21);
+}
+
 lazy_static::lazy_static! {
     static ref SYNC_U32: ProtoDef = ProtoDef {
         name_defs: hashmap! {

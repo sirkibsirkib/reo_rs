@@ -182,6 +182,10 @@ impl CallHandle {
                 let funcy: fn(TraitData, TraitData) = transmute(to);
                 funcy(dest_ptr, args[0]);
             }
+            2 => {
+                let funcy: fn(TraitData, TraitData, TraitData) = transmute(to);
+                funcy(dest_ptr, args[0], args[1]);
+            }
             // TODO
             _ => unreachable!(),
         };
@@ -196,6 +200,13 @@ impl CallHandle {
             args: vec![TypeInfo::of::<A0>()],
         }
     }
+    pub unsafe fn new_binary_raw<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized, A1: 'static + Send + Sync + Sized>(func: fn(*mut R, *const A0, *const A1)) -> Self {
+        CallHandle {
+            func: transmute(func),
+            ret: TypeInfo::of::<R>(),
+            args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>()],
+        }
+    }
 
     //////////////////
     pub fn new_nullary<R: 'static + Send + Sync + Sized>(func: fn(Outputter<R>) -> OutputToken<R>) -> Self {
@@ -206,6 +217,11 @@ impl CallHandle {
         func: fn(Outputter<R>, &A0) -> OutputToken<R>,
     ) -> Self {
         unsafe { Self::new_unary_raw::<R, A0>(transmute(func)) }
+    }
+    pub fn new_binary<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized, A1: 'static + Send + Sync + Sized>(
+        func: fn(Outputter<R>, &A0, &A1) -> OutputToken<R>,
+    ) -> Self {
+        unsafe { Self::new_binary_raw::<R, A0, A1>(transmute(func)) }
     }
     // pub unsafe fn new_binary_raw<R: PortDatum, A0: PortDatum, A1: PortDatum>(
     //     func: Arc<dyn Fn(*mut R, *const A0, *const A1) + Sync>,
