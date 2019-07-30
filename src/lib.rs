@@ -36,9 +36,10 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod experiments;
+// #[cfg(test)]
+// mod experiments;
 
+// safe. moving the TypeInfo around is fine. vtables are send and sync
 unsafe impl Send for TypeInfo {}
 unsafe impl Sync for TypeInfo {}
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -51,19 +52,42 @@ impl TypeInfo {
     Until I figure this out more robustly, I've solved it just by prohibiting inlining
     */
     #[inline(never)]
-    pub fn of<T: PortDatum>() -> Self {
+    pub fn of<T: 'static + Send + Sync + Sized>() -> Self {
         // fabricate the data itself
         let bx: Box<T> = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
         // have the compiler insert the correct vtable, using bogus data
         let dy_bx: Box<dyn PortDatum> = bx;
         unsafe { trait_obj_break(dy_bx).1 }
     }
+
+    /// THESE THREE FUNCTIONS ASSUME THE LAYOUT OF TRAIT OBJECTS IN MEMORY.
+    /// Replace with hooks from "raw" once its fully fleshed-out. 
+    /// - 0: drop function core::ptr::real_drop_in_place
+    /// - 1: Layout::size
+    /// - 2: Layout::align
+    #[inline(always)]
+    pub fn get_drop_ptr(self) -> unsafe fn(TraitData) {
+        let table: &[unsafe fn(TraitData); 3] = unsafe { transmute(self.0) };
+        table[0]
+    }
+    #[inline(always)]
+    pub fn get_size(self) -> usize {
+        let table: &[usize; 3] = unsafe { transmute(self.0) };
+        table[1]
+    }
+    #[inline(always)]
+    pub fn get_align(self) -> usize {
+        let table: &[usize; 3] = unsafe { transmute(self.0) };
+        table[2]
+    }
+
+    #[inline(always)]
     pub fn get_layout(self) -> Layout {
-        let bogus = self.0;
-        let to = unsafe { trait_obj_build(bogus, self) };
-        let r = to.my_layout();
-        std::mem::forget(to);
-        r
+        unsafe { Layout::from_size_align_unchecked(self.get_size(), self.get_align()) }
+    }
+    #[inline(always)]
+    pub unsafe fn drop_me(self, data: TraitData) {
+        (self.get_drop_ptr())(data)
     }
     pub fn is_copy(self) -> bool {
         let bogus = self.0;
@@ -74,11 +98,9 @@ impl TypeInfo {
     }
     pub unsafe fn copy(self, src: TraitData, dest: TraitData) {
         let to = trait_obj_build(src, self);
-        let layout = to.my_layout();
         let [src_u8, dest_u8]: [*mut u8; 2] = transmute([src, dest]);
-
         // Note: slightly faster if this is copy_nonoverlapping, but this is safer
-        std::ptr::copy(src_u8, dest_u8, layout.size());
+        std::ptr::copy(src_u8, dest_u8, self.get_size());
         std::mem::forget(to);
     }
     pub unsafe fn clone(self, src: TraitData, dest: TraitData) {
@@ -164,10 +186,10 @@ impl CallHandle {
             _ => unreachable!(),
         };
     }
-    pub unsafe fn new_nonary_raw<R: PortDatum>(func: fn(*mut R)) -> Self {
+    pub unsafe fn new_nullary_raw<R: 'static + Send + Sync + Sized>(func: fn(*mut R)) -> Self {
         CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
     }
-    pub unsafe fn new_unary_raw<R: PortDatum, A0: PortDatum>(func: fn(*mut R, *const A0)) -> Self {
+    pub unsafe fn new_unary_raw<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized>(func: fn(*mut R, *const A0)) -> Self {
         CallHandle {
             func: transmute(func),
             ret: TypeInfo::of::<R>(),
@@ -176,11 +198,11 @@ impl CallHandle {
     }
 
     //////////////////
-    pub fn new_nonary<R: PortDatum>(func: fn(Outputter<R>) -> OutputToken<R>) -> Self {
-        unsafe { Self::new_nonary_raw::<R>(transmute(func)) }
+    pub fn new_nullary<R: 'static + Send + Sync + Sized>(func: fn(Outputter<R>) -> OutputToken<R>) -> Self {
+        unsafe { Self::new_nullary_raw::<R>(transmute(func)) }
     }
 
-    pub fn new_unary<R: PortDatum, A0: PortDatum>(
+    pub fn new_unary<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized>(
         func: fn(Outputter<R>, &A0) -> OutputToken<R>,
     ) -> Self {
         unsafe { Self::new_unary_raw::<R, A0>(transmute(func)) }
@@ -413,8 +435,8 @@ impl<T: PortDatum> Putter<T> {
         }
     }
 }
-struct Getter<T: PubPortDatum>(PortCommon, PhantomData<T>);
-impl<T: PubPortDatum> Getter<T> {
+struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+impl<T: 'static + Send + Sync + Sized> Getter<T> {
     fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?, Default::default()))
     }
@@ -434,8 +456,8 @@ impl<T: PubPortDatum> Getter<T> {
             dest.as_mut_ptr().write(s.read());
         };
         let do_clone = move |dest: &mut MaybeUninit<T>| unsafe {
-            let s: &T = transmute(ptr);
-            dest.as_mut_ptr().write(s.my_clone2());
+            let dest: TraitData = transmute(dest);
+            ps.type_info.clone(ptr, dest);
         };
 
         const LAST: usize = 1;
@@ -1008,7 +1030,7 @@ const NULL: TraitData = std::ptr::null_mut();
 pub type TraitVtable = *mut ();
 
 #[derive(Debug, Default)]
-pub struct Allocator {
+pub(crate) struct Allocator {
     allocated: HashMap<TypeInfo, HashSet<usize>>,
     free: HashMap<TypeInfo, HashSet<usize>>,
 }
@@ -1039,10 +1061,13 @@ impl Allocator {
         if let Some(set) = self.allocated.get_mut(&type_info) {
             if set.remove(&(data as usize)) {
                 unsafe {
-                    let mut bx = trait_obj_build(data, type_info);
-                    bx.drop_in_place();
-                    trait_obj_break(bx);
+                    type_info.drop_me(data)
                 }
+                // unsafe {
+                //     let mut bx = trait_obj_build(data, type_info);
+                //     bx.drop_in_place();
+                //     trait_obj_break(bx);
+                // }
                 let success =
                     self.free.entry(type_info).or_insert_with(HashSet::new).insert(data as usize);
                 return success;
@@ -1220,52 +1245,57 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
     }
 }
 
-pub trait PubPortDatum: 'static + Send + Sync {
-    const IS_COPY: bool;
-    fn my_clone2(&self) -> Self;
-    fn my_eq2(&self, other: &Self) -> bool;
-}
 
-impl<T: 'static + Clone + PartialEq + Send + Sync> PubPortDatum for T {
+/////////////
+trait MaybeCopy {
     const IS_COPY: bool = false;
-    fn my_clone2(&self) -> Self {
-        <Self as Clone>::clone(self)
-    }
-    fn my_eq2(&self, other: &Self) -> bool {
-        self == other
+}
+impl<T> MaybeCopy for T {}
+impl<T: Copy> MaybeCopy for T {
+    const IS_COPY: bool = true;
+}
+/////////////
+trait MaybeClone {
+    fn maybe_clone(&self, _: TraitData) {
+        panic!("This type cannot clone!")
     }
 }
+impl<T> MaybeClone for T {}
+impl<T: Clone> MaybeClone for T {
+    fn maybe_clone(&self, oth: TraitData) {
+        let oth: *mut T = unsafe {std::mem::transmute(oth)};
+        unsafe {oth.write(self.clone())}
+    }
+}
+/////////////
+trait MaybePartialEq {
+    fn maybe_partial_eq(&self, _: TraitData) -> bool {
+        panic!("This type cannot check partial equality!")
+    }
+}
+impl<T> MaybePartialEq for T {}
+impl<T: PartialEq> MaybePartialEq for T {
+    fn maybe_partial_eq(&self, oth: TraitData) -> bool {
+        let oth: &T = unsafe {std::mem::transmute(oth)};
+        self == oth
+    }
+}
+/////////
 
-pub trait PortDatum: Send + Sync + 'static {
+//
+trait PortDatum: Send + Sync + 'static {
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
-    unsafe fn drop_in_place(&mut self);
-    fn my_layout(&self) -> Layout;
     fn is_copy(&self) -> bool;
 }
-
-impl<T: PubPortDatum + Copy> PortDatum for T {
-    fn is_copy(&self) -> bool {
-        true
-    }
-}
-
-impl<T: PubPortDatum> PortDatum for T {
+impl<T: Send + Sync + 'static + Sized> PortDatum for T {
     fn my_clone(&self, other: TraitData) {
-        let x: *mut Self = unsafe { transmute(other) };
-        unsafe { x.write(self.my_clone2()) }
+        <Self as MaybeClone>::maybe_clone(self, other)
     }
-    default fn my_eq(&self, other: TraitData) -> bool {
-        let x: &Self = unsafe { transmute(other) };
-        self.my_eq2(x)
+    fn my_eq(&self, other: TraitData) -> bool {
+        <Self as MaybePartialEq>::maybe_partial_eq(self, other)
     }
-    unsafe fn drop_in_place(&mut self) {
-        std::intrinsics::drop_in_place(self)
-    }
-    fn my_layout(&self) -> Layout {
-        Layout::new::<T>()
-    }
-    default fn is_copy(&self) -> bool {
-        <Self as PubPortDatum>::IS_COPY
+    fn is_copy(&self) -> bool {
+        <Self as MaybeCopy>::IS_COPY
     }
 }

@@ -7,7 +7,7 @@ pub struct MemInitial {
 }
 impl MemInitial {
     #[inline]
-    pub fn with<T: PubPortDatum>(mut self, name: Name, init: T) -> Self {
+    pub fn with<T: 'static + Send + Sync + Sized>(mut self, name: Name, init: T) -> Self {
         let dy: Box<dyn PortDatum> = Box::new(init);
         let i1 = TypeInfo::of::<T>();
         // TODO for some reason Rustc makes two trait objects?

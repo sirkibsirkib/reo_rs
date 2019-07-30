@@ -1,4 +1,6 @@
+
 use super::*;
+
 
 #[test]
 pub fn type_info_neq() {
@@ -173,31 +175,17 @@ pub fn allocator_reuse() {
 }
 
 #[test]
-pub fn get_layout_from_trait() {
-    let m = Arc::new(Mutex::new(0));
-
-    let x: Box<dyn PortDatum> = Box::new(Incrementor(m.clone()));
-    let layout = x.my_layout();
-    assert_eq!(layout.size(), 8);
-    assert_eq!(layout.align(), 8);
-
-    let x: Box<dyn PortDatum> = Box::new(true);
-    let layout = x.my_layout();
-    assert_eq!(layout.size(), 1);
-    assert_eq!(layout.align(), 1);
-}
-
-#[test]
 pub fn get_layout_raw_eq() {
-    let m = Arc::new(Mutex::new(0));
+    let a = Layout::new::<[u8;21]>();
 
-    let x: Box<dyn PortDatum> = Box::new(Incrementor(m.clone()));
-    let (_, i) = trait_obj_read(&x);
-    assert_eq!(x.my_layout(), i.get_layout());
+    let x: Box<dyn PortDatum> = Box::new([7u8; 21]);
+    let (data, info) = unsafe { trait_obj_break(x) };
 
-    let x: Box<dyn PortDatum> = Box::new(true);
-    let (_, i) = trait_obj_read(&x);
-    assert_eq!(x.my_layout(), i.get_layout());
+    let b = info.get_layout();
+    assert_eq!(a, b);
+
+    let x = unsafe { trait_obj_build(data, info) };
+    drop(x);
 }
 
 #[test]
@@ -228,9 +216,9 @@ pub fn allocator_fresh_alloc() {
 }
 
 #[test]
-fn call_handle_nonary() {
+fn call_handle_nullary() {
     let f: fn(Outputter<String>) -> OutputToken<String> = |o| o.output(String::from("HI"));
-    let ch = CallHandle::new_nonary(f);
+    let ch = CallHandle::new_nullary(f);
 
     let mut dest_datum: MaybeUninit<String> = MaybeUninit::uninit();
     let dest: TraitData = unsafe { transmute(&mut dest_datum) };
