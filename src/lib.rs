@@ -1,9 +1,5 @@
 #![feature(raw)]
-#![feature(box_patterns)]
 #![feature(specialization)]
-// #![allow(unused_variables)]
-// #![allow(unused_imports)]
-// #![allow(dead_code)]
 
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
@@ -36,6 +32,7 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
+
 // #[cfg(test)]
 // mod experiments;
 
@@ -61,7 +58,7 @@ impl TypeInfo {
     }
 
     /// THESE THREE FUNCTIONS ASSUME THE LAYOUT OF TRAIT OBJECTS IN MEMORY.
-    /// Replace with hooks from "raw" once its fully fleshed-out.
+    /// Replace with hooks from experimental "raw" Rust feature once its fleshed-out.
     /// - 0: drop function core::ptr::real_drop_in_place
     /// - 1: Layout::size
     /// - 2: Layout::align
@@ -81,6 +78,7 @@ impl TypeInfo {
         table[2]
     }
 
+    // derived
     #[inline(always)]
     pub fn get_layout(self) -> Layout {
         unsafe { Layout::from_size_align_unchecked(self.get_size(), self.get_align()) }
@@ -194,10 +192,10 @@ impl CallHandle {
             _ => unreachable!(),
         };
     }
-    pub unsafe fn new_nullary_raw<R: 'static + Send + Sync + Sized>(func: fn(*mut R)) -> Self {
+    pub unsafe fn new_args0_raw<R: 'static + Send + Sync + Sized>(func: fn(*mut R)) -> Self {
         CallHandle { func: transmute(func), ret: TypeInfo::of::<R>(), args: vec![] }
     }
-    pub unsafe fn new_unary_raw<
+    pub unsafe fn new_args1_raw<
         R: 'static + Send + Sync + Sized,
         A0: 'static + Send + Sync + Sized,
     >(
@@ -209,7 +207,7 @@ impl CallHandle {
             args: vec![TypeInfo::of::<A0>()],
         }
     }
-    pub unsafe fn new_binary_raw<
+    pub unsafe fn new_args2_raw<
         R: 'static + Send + Sync + Sized,
         A0: 'static + Send + Sync + Sized,
         A1: 'static + Send + Sync + Sized,
@@ -222,7 +220,7 @@ impl CallHandle {
             args: vec![TypeInfo::of::<A0>(), TypeInfo::of::<A1>()],
         }
     }
-    pub unsafe fn new_ternary_raw<
+    pub unsafe fn new_args3_raw<
         R: 'static + Send + Sync + Sized,
         A0: 'static + Send + Sync + Sized,
         A1: 'static + Send + Sync + Sized,
@@ -238,26 +236,26 @@ impl CallHandle {
     }
 
     //////////////////
-    pub fn new_nullary<R: 'static + Send + Sync + Sized>(
+    pub fn new_args0<R: 'static + Send + Sync + Sized>(
         func: fn(Outputter<R>) -> OutputToken<R>,
     ) -> Self {
-        unsafe { Self::new_nullary_raw::<R>(transmute(func)) }
+        unsafe { Self::new_args0_raw::<R>(transmute(func)) }
     }
-    pub fn new_unary<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized>(
+    pub fn new_args1<R: 'static + Send + Sync + Sized, A0: 'static + Send + Sync + Sized>(
         func: fn(Outputter<R>, &A0) -> OutputToken<R>,
     ) -> Self {
-        unsafe { Self::new_unary_raw::<R, A0>(transmute(func)) }
+        unsafe { Self::new_args1_raw::<R, A0>(transmute(func)) }
     }
-    pub fn new_binary<
+    pub fn new_args2<
         R: 'static + Send + Sync + Sized,
         A0: 'static + Send + Sync + Sized,
         A1: 'static + Send + Sync + Sized,
     >(
         func: fn(Outputter<R>, &A0, &A1) -> OutputToken<R>,
     ) -> Self {
-        unsafe { Self::new_binary_raw::<R, A0, A1>(transmute(func)) }
+        unsafe { Self::new_args2_raw::<R, A0, A1>(transmute(func)) }
     }
-    pub fn new_ternary<
+    pub fn new_args3<
         R: 'static + Send + Sync + Sized,
         A0: 'static + Send + Sync + Sized,
         A1: 'static + Send + Sync + Sized,
@@ -265,7 +263,7 @@ impl CallHandle {
     >(
         func: fn(Outputter<R>, &A0, &A1, &A2) -> OutputToken<R>,
     ) -> Self {
-        unsafe { Self::new_ternary_raw::<R, A0, A1, A2>(transmute(func)) }
+        unsafe { Self::new_args3_raw::<R, A0, A1, A2>(transmute(func)) }
     }
 }
 
@@ -1224,8 +1222,6 @@ impl fmt::Debug for LocId {
     }
 }
 
-// type BitSet = HashSet<LocId>;
-
 #[inline]
 fn bool_to_ptr(x: bool) -> TraitData {
     unsafe { transmute(if x { &true } else { &false }) }
@@ -1312,13 +1308,19 @@ impl<T: PartialEq> MaybePartialEq for T {
 }
 /////////
 
-//
-trait PortDatum: Send + Sync + 'static {
+/* This is a trait that can be derived for any 'static type.
+   it is used for our dynamic dispatch system; we need all types to
+   have the same-shaped v-tables, including a ptr for equality and clone 
+   operations. The trouble is that not all types have these. our solution
+   is to rely on the specialization feature to place PANIC calls with helpeful
+   error messages if my_clone is invoked on a type that does not implement Clone etc.
+*/
+unsafe trait PortDatum: Send + Sync + 'static {
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
     fn is_copy(&self) -> bool;
 }
-impl<T: Send + Sync + 'static + Sized> PortDatum for T {
+unsafe impl<T: Send + Sync + 'static + Sized> PortDatum for T {
     fn my_clone(&self, other: TraitData) {
         <Self as MaybeClone>::maybe_clone(self, other)
     }

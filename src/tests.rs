@@ -216,7 +216,7 @@ pub fn allocator_fresh_alloc() {
 #[test]
 fn call_handle_nullary() {
     let f: fn(Outputter<String>) -> OutputToken<String> = |o| o.output(String::from("HI"));
-    let ch = CallHandle::new_nullary(f);
+    let ch = CallHandle::new_args0(f);
 
     let mut dest_datum: MaybeUninit<String> = MaybeUninit::uninit();
     let dest: TraitData = unsafe { transmute(&mut dest_datum) };
@@ -229,7 +229,7 @@ fn call_handle_nullary() {
 #[test]
 fn call_handle_unary() {
     let f: fn(Outputter<u32>, &u32) -> OutputToken<u32> = |o, i| o.output(*i + 1);
-    let ch = CallHandle::new_unary(f);
+    let ch = CallHandle::new_args1(f);
 
     let mut o: u32 = 9999;
     let dest: TraitData = unsafe { transmute(&mut o) };
@@ -243,7 +243,7 @@ fn call_handle_unary() {
 #[test]
 fn call_handle_binary() {
     let f: fn(Outputter<u32>, &u32, &u32) -> OutputToken<u32> = |o, a0, a1| o.output(*a0 + *a1);
-    let ch = CallHandle::new_binary(f);
+    let ch = CallHandle::new_args2(f);
 
     let mut o: u32 = 9999;
     let dest: TraitData = unsafe { transmute(&mut o) };
@@ -529,7 +529,7 @@ lazy_static::lazy_static! {
             "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<i32>() },
             "Cpos" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
             "Cneg" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<i32>() },
-            "is_neg" => NameDef::Func(CallHandle::new_unary(|o: Outputter<bool>, i: &i32| {
+            "is_neg" => NameDef::Func(CallHandle::new_args1(|o: Outputter<bool>, i: &i32| {
                 o.output(*i < 0)
             })),
         },
@@ -654,7 +654,7 @@ lazy_static::lazy_static! {
     static ref MANUAL_CLONE: ProtoDef = ProtoDef {
         name_defs: hashmap! {
             "A" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Incrementor>() },
-            "f_clone" => NameDef::Func(CallHandle::new_unary(|o, i: &Incrementor| o.output(i.clone()))),
+            "f_clone" => NameDef::Func(CallHandle::new_args1(|o, i: &Incrementor| o.output(i.clone()))),
             "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
             "C" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Incrementor>() },
         },
@@ -740,7 +740,7 @@ lazy_static::lazy_static! {
             "I" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<u32>() },
             "Oeven" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
             "Oodd" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<u32>() },
-            "is_even" => NameDef::Func(CallHandle::new_unary(|o, i: &u32| o.output(*i %2 == 0))),
+            "is_even" => NameDef::Func(CallHandle::new_args1(|o, i: &u32| o.output(*i %2 == 0))),
         },
         rules: vec![
             RuleDef {

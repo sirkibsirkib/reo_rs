@@ -140,7 +140,8 @@ fn term_convert(
         },
         And(fs) => And(clos(fs)?),
         Or(fs) => Or(clos(fs)?),
-        IsEq(tid, box [lhs, rhs]) => {
+        IsEq(tid, boxed) => {
+            let [lhs, rhs] = [&boxed[0], &boxed[1]];
             let [t0, t1] = [
                 term_eval_tid(spaces, temp_names, name_mapping, &lhs)?,
                 term_eval_tid(spaces, temp_names, name_mapping, &rhs)?,
