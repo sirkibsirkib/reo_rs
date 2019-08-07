@@ -32,9 +32,8 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
-
-// #[cfg(test)]
-// mod experiments;
+#[cfg(test)]
+mod experiments;
 
 // safe. moving the TypeInfo around is fine. vtables are send and sync
 unsafe impl Send for TypeInfo {}
@@ -1092,11 +1091,6 @@ impl Allocator {
         if let Some(set) = self.allocated.get_mut(&type_info) {
             if set.remove(&(data as usize)) {
                 unsafe { type_info.drop_me(data) }
-                // unsafe {
-                //     let mut bx = trait_obj_build(data, type_info);
-                //     bx.drop_in_place();
-                //     trait_obj_break(bx);
-                // }
                 let success =
                     self.free.entry(type_info).or_insert_with(HashSet::new).insert(data as usize);
                 return success;
@@ -1105,6 +1099,16 @@ impl Allocator {
         false
     }
     pub fn forget_inside(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
+        if let Some(set) = self.allocated.get_mut(&type_info) {
+            if set.remove(&(data as usize)) {
+                let success =
+                    self.free.entry(type_info).or_insert_with(HashSet::new).insert(data as usize);
+                return success;
+            }
+        }
+        false
+    }
+    pub fn forget_entirely(&mut self, data: TraitData, type_info: TypeInfo) -> bool {
         if let Some(set) = self.allocated.get_mut(&type_info) {
             set.remove(&(data as usize))
         } else {
@@ -1310,7 +1314,7 @@ impl<T: PartialEq> MaybePartialEq for T {
 
 /* This is a trait that can be derived for any 'static type.
    it is used for our dynamic dispatch system; we need all types to
-   have the same-shaped v-tables, including a ptr for equality and clone 
+   have the same-shaped v-tables, including a ptr for equality and clone
    operations. The trouble is that not all types have these. our solution
    is to rely on the specialization feature to place PANIC calls with helpeful
    error messages if my_clone is invoked on a type that does not implement Clone etc.

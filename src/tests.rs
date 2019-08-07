@@ -892,3 +892,37 @@ fn mem_swap_run() {
     assert_eq!(g.get(), false);
     assert_eq!(g.get(), false);
 }
+
+pub fn protocol<X, Y>(f: fn(Outputter<X>, &Y) -> OutputToken<X>) -> ProtoHandle
+where
+    X: 'static + Send + Sync,
+    Y: 'static + Send + Sync,
+{
+    use {Instruction::*, NameDef::*, Term::*};
+    let (tx, ty) = (TypeInfo::of::<X>(), TypeInfo::of::<Y>());
+    let blueprint = ProtoDef {
+        name_defs: hashmap! {
+            "A" => Port{ is_putter:true, type_info:tx },
+            "B" => Port{ is_putter:true, type_info:tx },
+            "f" => Func(CallHandle::new_args1(f)),
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {"A", "B"},
+                full_mem: hashset! {},
+                empty_mem: hashset! {},
+            },
+            ins: vec![
+                CreateFromCall { dest: "fA", func: "f", args: vec![Named("A")], info: ty },
+                CreateFromCall { dest: "fB", func: "f", args: vec![Named("B")], info: ty },
+                Instruction::Check(IsEq(ty, Box::new([Named("fA"), Named("fB")]))),
+            ],
+            output: hashmap! {},
+        }],
+    };
+    blueprint.build(MemInitial::default()).unwrap()
+}
+
+fn main() {
+    protocol::<f32, f32>(|o, a0| o.output(*a0 + 2.));
+}

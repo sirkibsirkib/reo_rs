@@ -237,8 +237,6 @@ fn make(num_bogus: usize, bogus_rule: &RuleDef) -> Getter<String> {
     Getter::<String>::claim(&p, "A").unwrap()
 }
 
-
-
 #[test]
 fn test_4() {
     let values = (0..200 / 5).map(|x| x * 5);
@@ -405,7 +403,6 @@ fn go<R: rand::Rng>(rng: &mut R, len: usize, fullness: f32) -> [Duration; 2] {
     [a, b]
 }
 
-
 // testing getter lock contention when they each fire separate rules
 #[test]
 fn test_7() {
@@ -482,29 +479,12 @@ fn test_7() {
     }
 }
 
-
 const N: usize = 2048;
 
 pub struct Whack([u8; N]);
 impl Default for Whack {
     fn default() -> Self {
         Self([21; N])
-    }
-}
-impl PubPortDatum for Whack {
-    const IS_COPY: bool = true;
-    fn my_clone2(&self) -> Self {
-        let mut x = self.0.clone();
-        for i in 0..10_000_usize {
-            for val in x.iter_mut() {
-                *val %= 11;
-                *val *= ((i % 7) as u8) + 1;
-            }
-        }
-        Self(x)
-    }
-    fn my_eq2(&self, _other: &Self) -> bool {
-        true
     }
 }
 type T8Datum = Whack;
@@ -591,10 +571,10 @@ fn test_8b() -> Duration {
         );
         let p0 = move || {
             p0.put(T8Datum::default());
-        }; 
+        };
         let p1 = move || {
             p1.put(T8Datum::default());
-        }; 
+        };
         let g = move || {
             g.get();
             g.get();
@@ -626,7 +606,7 @@ fn worky<
     mut p0: P0,
     mut p1: P1,
     mut g: G,
-    total: &mut Duration, 
+    total: &mut Duration,
 ) {
     const WARMUP: u32 = 100;
 
@@ -658,5 +638,88 @@ fn worky<
             }
             *total += taken / T8_RUNS;
         });
-    }).unwrap();
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_9() {
+    const M: usize = 8192;
+    struct Biggun([u32; M]);
+    const REPS: u32 = 100;
+    const RUNS: u32 = 10_000;
+    let type_info = TypeInfo::of::<Biggun>();
+    let memnames = vec![
+        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13",
+        "M14", "M15", "M16", "M17", "M18", "M19", "M20", "M21", "M22",
+    ];
+    for num_mems in 1..memnames.len() {
+        let mut took = Duration::default();
+        for _ in 0..REPS {
+            let names_slice = &memnames[..num_mems];
+            let mut name_defs = hashmap! {
+                "P" => NameDef::Port { is_putter:true, type_info },
+                "C" => NameDef::Port { is_putter:false, type_info },
+            };
+            for name in names_slice {
+                name_defs.insert(name, NameDef::Mem(type_info));
+            }
+            assert!(!names_slice.is_empty());
+            let mut rules = vec![
+                {
+                    let mfirst = *names_slice.first().unwrap();
+                    RuleDef {
+                        state_guard: StatePredicate {
+                            ready_ports: hashset! {"P"},
+                            full_mem: hashset! {},
+                            empty_mem: hashset! {mfirst},
+                        },
+                        ins: vec![],
+                        output: hashmap! { "P" => (false, hashset!{mfirst}) },
+                    }
+                },
+                {
+                    let mlast = *names_slice.last().unwrap();
+                    RuleDef {
+                        state_guard: StatePredicate {
+                            ready_ports: hashset! {"C"},
+                            full_mem: hashset! {mlast},
+                            empty_mem: hashset! {},
+                        },
+                        ins: vec![],
+                        output: hashmap! { mlast => (false, hashset!{"C"}) },
+                    }
+                },
+            ];
+            use itertools::Itertools as _;
+            for (from, to) in names_slice.iter().copied().tuple_windows() {
+                rules.push(RuleDef {
+                    state_guard: StatePredicate {
+                        ready_ports: hashset! {},
+                        full_mem: hashset! {from},
+                        empty_mem: hashset! {to},
+                    },
+                    ins: vec![],
+                    output: hashmap! { from => (false, hashset!{to}) },
+                });
+            }
+            let def = ProtoDef { name_defs, rules };
+
+            let p = def.build(MemInitial::default()).unwrap();
+            let (mut p, mut c) = (
+                Putter::<Biggun>::claim(&p, "P").unwrap(),
+                Getter::<Biggun>::claim(&p, "C").unwrap(),
+            );
+            let mut x = MaybeUninit::new(Biggun([21; M]));
+            for _ in 0..RUNS {
+                let i = Instant::now();
+                unsafe { p.put_raw(&mut x) };
+                c.get_signal();
+                took += i.elapsed();
+            }
+        }
+        print!("{}, ", ((took / REPS) / RUNS).as_nanos());
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+    }
 }
