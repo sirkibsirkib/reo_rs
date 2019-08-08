@@ -120,25 +120,6 @@ fn yes_clone() {
     assert_eq!(value, value2);
 }
 
-
-#[test] 
-fn yes_clone_indirect() {
-    #[derive(Clone, PartialEq, Debug)]
-    struct Idk([u8;32]);
-
-    let value: Box<dyn PortDatum> = Box::new(String::from("Hi"));
-    let (src, info) = unsafe { trait_obj_break(value) };
-
-    let mut dest = MaybeUninit::<Idk>::uninit();
-    unsafe {
-        let d: TraitData = transmute(dest.as_mut_ptr());
-        info.clone(src, d);
-    };
-
-    unsafe { trait_obj_build(src, info) };
-}
-
-
 #[test] 
 #[should_panic]
 fn no_clone() {
@@ -152,6 +133,65 @@ fn no_clone() {
         <Idk as PortDatum>::my_clone(&value, d); // oanics
     };
 }
+
+#[test] 
+fn yes_eq() {
+    #[derive(Clone, PartialEq, Debug)]
+    struct Idk([u8;32]);
+
+    let a = Idk([11;32]);
+    let b = Idk([00;32]);
+    unsafe {
+        let b2: TraitData = transmute(&b);
+        assert!( ! <Idk as PortDatum>::my_eq(&a, b2));
+    };
+}
+
+#[test] 
+#[should_panic]
+fn no_eq() {
+    #[derive(Clone, Debug)]
+    struct Idk([u8;32]);
+
+    let a = Idk([11;32]);
+    let b = Idk([00;32]);
+    unsafe {
+        let b2: TraitData = transmute(&b);
+        assert!( ! <Idk as PortDatum>::my_eq(&a, b2));
+    };
+}
+
+
+#[test] 
+#[should_panic]
+fn yes_eq_indirect() {
+    #[derive(Clone, Debug)]
+    struct Idk([u8;32]);
+
+    let a = Idk([11;32]);
+    let b = Idk([00;32]);
+    unsafe {
+        let b2: TraitData = transmute(&b);
+        assert!( ! <Idk as PortDatum>::my_eq(&a, b2));
+    };
+}
+
+#[test] 
+fn yes_clone_indirect() {
+    #[derive(Clone, PartialEq, Debug, Default)]
+    struct Idk([u8;32]);
+
+    let value: Box<dyn PortDatum> = Box::new(Idk::default());
+    let (src, info) = unsafe { trait_obj_break(value) };
+
+    let mut dest = MaybeUninit::<Idk>::uninit();
+    unsafe {
+        let d: TraitData = transmute(dest.as_mut_ptr());
+        info.clone(src, d);
+    };
+    unsafe { trait_obj_build(src, info) };
+}
+
 
 #[test]
 pub fn allocator_ok() {
@@ -939,38 +979,4 @@ fn mem_swap_run() {
     assert_eq!(g.get(), false);
     assert_eq!(g.get(), false);
     assert_eq!(g.get(), false);
-}
-
-pub fn protocol<X, Y>(f: fn(Outputter<X>, &Y) -> OutputToken<X>) -> ProtoHandle
-where
-    X: 'static + Send + Sync,
-    Y: 'static + Send + Sync,
-{
-    use {Instruction::*, NameDef::*, Term::*};
-    let (tx, ty) = (TypeInfo::of::<X>(), TypeInfo::of::<Y>());
-    let blueprint = ProtoDef {
-        name_defs: hashmap! {
-            "A" => Port{ is_putter:true, type_info:tx },
-            "B" => Port{ is_putter:true, type_info:tx },
-            "f" => Func(CallHandle::new_args1(f)),
-        },
-        rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {"A", "B"},
-                full_mem: hashset! {},
-                empty_mem: hashset! {},
-            },
-            ins: vec![
-                CreateFromCall { dest: "fA", func: "f", args: vec![Named("A")], info: ty },
-                CreateFromCall { dest: "fB", func: "f", args: vec![Named("B")], info: ty },
-                Instruction::Check(IsEq(ty, Box::new([Named("fA"), Named("fB")]))),
-            ],
-            output: hashmap! {},
-        }],
-    };
-    blueprint.build(MemInitial::default()).unwrap()
-}
-
-fn main() {
-    protocol::<f32, f32>(|o, a0| o.output(*a0 + 2.));
 }

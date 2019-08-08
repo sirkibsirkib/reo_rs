@@ -61,20 +61,40 @@ impl TypeInfo {
     /// - 0: drop function core::ptr::real_drop_in_place
     /// - 1: Layout::size
     /// - 2: Layout::align
+    /// - 3: my_clone function ptr
+    /// - 4: my_eq function ptr
+    /// - 5: is_copy function ptr
     #[inline(always)]
     pub fn get_drop_ptr(self) -> unsafe fn(TraitData) {
-        let table: &[unsafe fn(TraitData); 3] = unsafe { transmute(self.0) };
+        let table: &[unsafe fn(TraitData); 7] = unsafe { transmute(self.0) };
         table[0]
     }
     #[inline(always)]
     pub fn get_size(self) -> usize {
-        let table: &[usize; 3] = unsafe { transmute(self.0) };
+        let table: &[usize; 7] = unsafe { transmute(self.0) };
         table[1]
     }
     #[inline(always)]
     pub fn get_align(self) -> usize {
-        let table: &[usize; 3] = unsafe { transmute(self.0) };
+        let table: &[usize; 7] = unsafe { transmute(self.0) };
         table[2]
+    }
+    #[inline(always)]
+    pub fn get_my_clone(self) -> unsafe fn(TraitData, TraitData) {
+        // temp. Rust compiler is too smart for (my) own good.
+        // is able to conclude that since we are using dynamic dispatch, 
+        // whatever dynamic object it is, must be using the DEFAULT (unspecialized)
+        // implementation of MaybeClone, and thus it does not need to traverse the
+        // pointer. Whack. So instead I am stealing the function pointer manually,
+        // forcing rust to execute it, ignoring this (unwanted) optimization.
+        let table: &[unsafe fn(TraitData, TraitData); 7] = unsafe { transmute(self.0) };
+        table[3]
+
+        // how to do this (semi) idiomatically
+        // let to = trait_obj_build(src, self);
+        // let r = to.my_clone(dest);
+        // std::mem::forget(to);
+        // r
     }
 
     // derived
@@ -101,10 +121,8 @@ impl TypeInfo {
         std::mem::forget(to);
     }
     pub unsafe fn clone(self, src: TraitData, dest: TraitData) {
-        let to = trait_obj_build(src, self);
-        let r = to.my_clone(dest);
-        std::mem::forget(to);
-        r
+        let f = self.get_my_clone();
+        f(src, dest);        
     }
 }
 
@@ -873,10 +891,16 @@ impl ProtoCr {
         //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
+
+                // let a = !rule.bit_guard.ready.is_subset(&self.ready);
+                // let b = !rule.bit_guard.full_mem.is_subset(&self.mem);
+                // let c = !rule.bit_guard.empty_mem.is_disjoint(&self.mem);
+                // println!("{:?}", (a,b,c));
                 if !rule.bit_guard.ready.is_subset(&self.ready)
                     || !rule.bit_guard.full_mem.is_subset(&self.mem)
                     || !rule.bit_guard.empty_mem.is_disjoint(&self.mem)
                 {
+                    // println!("failed");
                     // failed guard
                     //DeBUGGY:println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
@@ -1006,6 +1030,11 @@ impl ProtoCr {
                         putter = mem_0;
                     } else {
                         // memory taken care of
+                        if movement.po_ge.is_empty() {
+                            // no getters case. do cleanup myself
+                            mb.send(MsgBox::UNMOVED_MSG);
+                            return;
+                        }
                         break ps;
                     }
                 }
@@ -1286,11 +1315,13 @@ impl<T: Copy> MaybeCopy for T {
 }
 /////////////
 trait MaybeClone {
-    fn maybe_clone(&self, _: TraitData) {
+    fn maybe_clone(&self, _: TraitData);
+}
+impl<T> MaybeClone for T {
+    default fn maybe_clone(&self, _: TraitData) {
         panic!("This type cannot clone!")
     }
 }
-impl<T> MaybeClone for T {}
 impl<T: Clone> MaybeClone for T {
     fn maybe_clone(&self, oth: TraitData) {
         let oth: *mut T = unsafe { std::mem::transmute(oth) };
@@ -1320,6 +1351,7 @@ impl<T: PartialEq> MaybePartialEq for T {
    error messages if my_clone is invoked on a type that does not implement Clone etc.
 */
 unsafe trait PortDatum: Send + Sync + 'static {
+    // DO NOT REORDER
     fn my_clone(&self, other: TraitData);
     fn my_eq(&self, other: TraitData) -> bool;
     fn is_copy(&self) -> bool;

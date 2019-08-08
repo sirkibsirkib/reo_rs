@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 lazy_static::lazy_static! {
     static ref FIFO_ARR: ProtoDef = ProtoDef {
@@ -32,7 +33,7 @@ lazy_static::lazy_static! {
     };
 }
 
-use std::time::{Duration, Instant};
+// FIXED
 #[test]
 fn test_1() {
     const REPS: u32 = 100;
@@ -88,69 +89,88 @@ fn test_1() {
         taken_0.as_nanos(), taken_1.as_nanos(), taken_2.as_nanos());
 }
 
+
+// FIXED
 #[test]
 fn test_2() {
-    let mut tot = Duration::from_millis(0);
-    const REPS: u32 = 10;
+    static mut WORK_STEPS: usize = 100;
 
-    for _ in 0..REPS {
-        let def = ProtoDef {
-            name_defs: hashmap! {
-                "P" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-                "C0" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-                "C1" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-                "C2" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-                "C3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-                "C4" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            },
-            rules: vec![RuleDef {
-                state_guard: StatePredicate {
-                    ready_ports: hashset! {"P", "C0", "C1", "C2", "C3", "C4"},
-                    full_mem: hashset! {},
-                    empty_mem: hashset! {},
-                },
-                ins: vec![],
-                output: hashmap! {
-                    "P" => (false, hashset!{"C0", "C1", "C2", "C3", "C4"})
-                },
-            }],
-        };
-
-        let p = def.build(MemInitial::default()).unwrap();
-
-        const FIRINGS: u32 = 5_000 + 1;
-
-        use crossbeam_utils::thread;
-        let work = |name: &'static str| {
-            let mut g = Getter::<Whack>::claim(&p, name).unwrap();
-            for _ in 0..FIRINGS {
-                g.get();
-            }
-        };
-        thread::scope(|s| {
-            s.spawn(|_| {
-                // ensure getters are ready
-                // std::thread::sleep(Duration::from_millis(30));
-                let mut taken = Duration::from_millis(0);
-                let mut p = Putter::<Whack>::claim(&p, "P").unwrap();
-                for i in 0..FIRINGS {
-                    let before = Instant::now();
-                    p.put(Whack([i as u8; N]));
-                    if i > 0 {
-                        taken += before.elapsed();
-                    }
+    #[derive(Default)]
+    struct SlowWhack(Whack);
+    impl Clone for SlowWhack {
+        fn clone(&self) -> Self {
+            let n = unsafe {WORK_STEPS};
+            let mut whack = self.0;
+            for i in 0..n {
+                for val in whack.0.iter_mut() {
+                    *val %= 11;
+                    *val *= ((i % 7) as u8) + 1;
                 }
-                tot += taken / (FIRINGS - 1);
-            });
-            s.spawn(|_| work("C0"));
-            s.spawn(|_| work("C1"));
-            s.spawn(|_| work("C2"));
-            s.spawn(|_| work("C3"));
-            s.spawn(|_| work("C4"));
-        })
-        .unwrap();
+            }
+            Self(whack)
+        }
     }
-    println!("TOOK AVG {:?} ns", (tot / REPS as u32).as_nanos());
+
+    const REPS: u32 = 100;
+    const RUNS: u32 = 3_000;
+    let all_getters = ["C0", "C1", "C2", "C3", "C4"];
+    let type_info = TypeInfo::of::<SlowWhack>();
+
+    for w in 0..30 {
+        unsafe { WORK_STEPS = 1<<w };
+        for i in 0..=all_getters.len() {
+            let mut taken = Duration::from_millis(0);
+            for _ in 0..REPS {
+                let getter_slice = &all_getters[..i];
+                let name_defs = hashmap! {
+                    "P" => NameDef::Port { is_putter:true, type_info },
+                    "C0" => NameDef::Port { is_putter:false, type_info },
+                    "C1" => NameDef::Port { is_putter:false, type_info },
+                    "C2" => NameDef::Port { is_putter:false, type_info },
+                    "C3" => NameDef::Port { is_putter:false, type_info },
+                    "C4" => NameDef::Port { is_putter:false, type_info },
+                };
+                let mut r = RuleDef {
+                    state_guard: StatePredicate {
+                        ready_ports: hashset! {"P"},
+                        full_mem: hashset! {},
+                        empty_mem: hashset! {},
+                    },
+                    ins: vec![],
+                    output: hashmap! {
+                        "P" => (false, hashset!{})
+                    },
+                };
+                for g in getter_slice {
+                    r.state_guard.ready_ports.insert(g);
+                    r.output.get_mut("P").unwrap().1.insert(g);
+                }
+                let def = ProtoDef{name_defs, rules: vec![r]};
+                let p = def.build(MemInitial::default()).unwrap();
+                // println!("{:#?}", def);
+
+                for name in getter_slice {
+                    let mut g = Getter::<SlowWhack>::claim(&p, name).unwrap();
+                    std::thread::spawn(move || {
+                        for _ in 0..(RUNS+1) {
+                            g.get();
+                        }
+                    });
+                }
+                let mut p = Putter::<SlowWhack>::claim(&p, "P").unwrap();
+                p.put(SlowWhack::default()); // freebie acts like a barrier
+                let before = Instant::now();
+                for _ in 0..RUNS {
+                p.put(SlowWhack::default());
+                }
+                taken += before.elapsed();
+            }
+            print!("{:?}, ", (taken / (RUNS * REPS)).as_nanos());
+            use std::io::Write;
+            std::io::stdout().flush().unwrap();
+        }
+        println!();
+    }
 }
 
 #[test]
@@ -297,14 +317,9 @@ fn test_4() {
     }
 }
 
+// FIXED
 #[test]
 fn test_5() {
-    #[derive(Debug, Clone, PartialEq)]
-    struct Datum([u8;32]);
-    type Datummy = String;
-
-    println!("OK");
-
     let mut rules = vec![];
     let putters = ["P0", "P1", "P2"]; //, "P3", "P4"];
     let getters = ["C0", "C1", "C2"]; //, "C3", "C4"];
@@ -322,7 +337,7 @@ fn test_5() {
             rules.push(rule);
         }
     }
-    let type_info = TypeInfo::of::<Datummy>();
+    let type_info = TypeInfo::of::<Whack>();
     let def = ProtoDef {
         name_defs: hashmap! {
             "P0" => NameDef::Port { is_putter:true, type_info },
@@ -335,21 +350,21 @@ fn test_5() {
         rules,
     };
 
-    const REPS: u32 = 100_000;
+    const REPS: u32 = 10_000;
     let p = def.build(MemInitial::default()).unwrap();
 
     for getter in getters.iter().copied() {
-        let mut x = Getter::<Datummy>::claim(&p, getter).unwrap();
+        let mut x = Getter::<Whack>::claim(&p, getter).unwrap();
         std::thread::spawn(move || loop {
             x.get();
         });
     }
 
-    fn pwork(mut x: Putter<Datummy>) -> std::time::Duration {
+    fn pwork(mut x: Putter<Whack>) -> std::time::Duration {
         let mut taken = Duration::default();
         for _q in 0..REPS {
             let i = Instant::now();
-            x.put_lossy(Datummy::default());
+            x.put_lossy(Whack([0;N]));
             taken += i.elapsed();
         }
         taken / REPS
@@ -357,7 +372,7 @@ fn test_5() {
 
     use rayon::prelude::*;
     let ports: Vec<_> =
-        putters.into_iter().map(move |name| Putter::<Datummy>::claim(&p, name).unwrap()).collect();
+        putters.into_iter().map(move |name| Putter::<Whack>::claim(&p, name).unwrap()).collect();
 
     let start = Instant::now();
     let times: Vec<Duration> = ports.into_par_iter().map(pwork).collect();
@@ -368,25 +383,8 @@ fn test_5() {
 // TODO signal demo
 // TODO referencey demo
 
-#[test]
-pub fn qqwe() {
-    let q = Instant::now();
-    work_units(Whack([37; N]));
-    let x = q.elapsed();
-    println!("{:?}", x);
-}
 
-#[inline(never)]
-pub fn work_units(mut x: Whack) -> Whack {
-    for i in 0..10_000usize {
-        for val in x.0.iter_mut() {
-            *val %= 11;
-            *val *= ((i % 7) as u8) + 1;
-        }
-    }
-    x
-}
-
+// fixed
 #[test]
 fn test_6() {
     let mut rng = rand::thread_rng();
@@ -429,6 +427,7 @@ fn go<R: rand::Rng>(rng: &mut R, len: usize, fullness: f32) -> [Duration; 2] {
 }
 
 // testing getter lock contention when they each fire separate rules
+// FIXED
 #[test]
 fn test_7() {
     let getters = [
@@ -504,20 +503,16 @@ fn test_7() {
     }
 }
 
-const N: usize = 32;
+const N: usize = 1<<4;
 
+#[derive(Copy, Clone)]
 pub struct Whack([u8; N]);
 impl Default for Whack {
     fn default() -> Self {
         Self([21; N])
     }
 }
-impl Clone for Whack {
-    fn clone(&self) -> Self {
-        work_units(Whack([32;N]))
-    }
-}
-type T8Datum = Whack;
+type T8Whack = Whack;
 const T8_REPS: u32 = 500;
 const T8_RUNS: u32 = 5_000;
 
@@ -540,11 +535,11 @@ fn test_8a() -> Duration {
 
         let p0 = move || {
             barrier3_p0.wait();
-            data_0_s.send(T8Datum::default()).unwrap();
+            data_0_s.send(T8Whack::default()).unwrap();
         };
         let p1 = move || {
             barrier3_p1.wait();
-            data_1_s.send(T8Datum::default()).unwrap();
+            data_1_s.send(T8Whack::default()).unwrap();
         };
         let g = move || {
             barrier3_g.wait();
@@ -557,7 +552,7 @@ fn test_8a() -> Duration {
 }
 
 fn test_8b() -> Duration {
-    let type_info = TypeInfo::of::<T8Datum>();
+    let type_info = TypeInfo::of::<T8Whack>();
     let mut total = Duration::default();
     for _ in 0..T8_REPS {
         let p = ProtoDef {
@@ -597,27 +592,27 @@ fn test_8b() -> Duration {
         .unwrap();
 
         let (mut p0, mut p1, mut g) = (
-            Putter::<T8Datum>::claim(&p, "P0").unwrap(),
-            Putter::<T8Datum>::claim(&p, "P1").unwrap(),
-            Getter::<T8Datum>::claim(&p, "G").unwrap(),
+            Putter::<T8Whack>::claim(&p, "P0").unwrap(),
+            Putter::<T8Whack>::claim(&p, "P1").unwrap(),
+            Getter::<T8Whack>::claim(&p, "G").unwrap(),
         );
 
         // let p0 = move || {
-        //     p0.put(T8Datum::default());
+        //     p0.put(T8Whack::default());
         // };
         // let p1 = move || {
-        //     p1.put(T8Datum::default());
+        //     p1.put(T8Whack::default());
         // };
         // let g = move || {
         //     g.get();
         //     g.get();
         // };
 
-        let mut p0d = MaybeUninit::new(T8Datum::default());
+        let mut p0d = MaybeUninit::new(T8Whack::default());
         let p0 = move || {
             unsafe { p0.put_raw(&mut p0d) };
         };
-        let mut p1d = MaybeUninit::new(T8Datum::default());
+        let mut p1d = MaybeUninit::new(T8Whack::default());
         let p1 = move || {
             unsafe { p1.put_raw(&mut p1d) };
         };
