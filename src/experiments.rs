@@ -301,6 +301,7 @@ fn test_4() {
 fn test_5() {
     #[derive(Debug, Clone, PartialEq)]
     struct Datum([u8;32]);
+    type Datummy = String;
 
     println!("OK");
 
@@ -316,12 +317,12 @@ fn test_5() {
                     empty_mem: hashset! {},
                 },
                 ins: vec![],
-                output: hashmap! { putter => (false, hashset!{ getter }) },
+                output: hashmap! { putter => (true, hashset!{ getter }) },
             };
             rules.push(rule);
         }
     }
-    let type_info = TypeInfo::of::<Datum>();
+    let type_info = TypeInfo::of::<Datummy>();
     let def = ProtoDef {
         name_defs: hashmap! {
             "P0" => NameDef::Port { is_putter:true, type_info },
@@ -338,17 +339,17 @@ fn test_5() {
     let p = def.build(MemInitial::default()).unwrap();
 
     for getter in getters.iter().copied() {
-        let mut x = Getter::<Datum>::claim(&p, getter).unwrap();
+        let mut x = Getter::<Datummy>::claim(&p, getter).unwrap();
         std::thread::spawn(move || loop {
             x.get();
         });
     }
 
-    fn pwork(mut x: Putter<Datum>) -> std::time::Duration {
+    fn pwork(mut x: Putter<Datummy>) -> std::time::Duration {
         let mut taken = Duration::default();
-        for q in 0..REPS {
+        for _q in 0..REPS {
             let i = Instant::now();
-            x.put_lossy(Datum([q as u8; N]));
+            x.put_lossy(Datummy::default());
             taken += i.elapsed();
         }
         taken / REPS
@@ -356,7 +357,7 @@ fn test_5() {
 
     use rayon::prelude::*;
     let ports: Vec<_> =
-        putters.into_iter().map(move |name| Putter::<Datum>::claim(&p, name).unwrap()).collect();
+        putters.into_iter().map(move |name| Putter::<Datummy>::claim(&p, name).unwrap()).collect();
 
     let start = Instant::now();
     let times: Vec<Duration> = ports.into_par_iter().map(pwork).collect();

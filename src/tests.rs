@@ -122,6 +122,24 @@ fn yes_clone() {
 
 
 #[test] 
+fn yes_clone_indirect() {
+    #[derive(Clone, PartialEq, Debug)]
+    struct Idk([u8;32]);
+
+    let value: Box<dyn PortDatum> = Box::new(String::from("Hi"));
+    let (src, info) = unsafe { trait_obj_break(value) };
+
+    let mut dest = MaybeUninit::<Idk>::uninit();
+    unsafe {
+        let d: TraitData = transmute(dest.as_mut_ptr());
+        info.clone(src, d);
+    };
+
+    unsafe { trait_obj_build(src, info) };
+}
+
+
+#[test] 
 #[should_panic]
 fn no_clone() {
     #[derive(PartialEq, Debug)]
