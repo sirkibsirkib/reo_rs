@@ -32,38 +32,60 @@ lazy_static::lazy_static! {
     };
 }
 
-fn one_run() -> Duration {
-    // let (s, r) = std::sync::mpsc::channel::<Whack>();
-
-    let p = FIFO_ARR.build(MemInitial::default()).unwrap();
-    let (mut s, mut r) = (
-        Putter::<Whack>::claim(&p, "Producer").unwrap(),
-        Getter::<Whack>::claim(&p, "Consumer").unwrap(),
-    );
-
-    const MOVS: u32 = 25_000;
-    let mut taken = Duration::from_millis(0);
-    let mut val: MaybeUninit<Whack> = MaybeUninit::new(Whack([3; N]));
-    for _ in 0..MOVS {
-        let t = Instant::now();
-        unsafe {
-            s.put_raw(&mut val);
-        };
-        r.get();
-        taken += t.elapsed();
-    }
-    taken / MOVS
-}
-
 use std::time::{Duration, Instant};
 #[test]
 fn test_1() {
-    let mut taken = Duration::from_millis(0);
-    const REPS: u32 = 10;
+    const REPS: u32 = 100;
+    const RUNS: u32 = 1000;
+
+    let mut taken_0 = Duration::from_millis(0);
+    let taken = &mut taken_0;
     for _ in 0..REPS {
-        taken += one_run();
+        let p = FIFO_ARR.build(MemInitial::default()).unwrap();
+        let (mut s, mut r) = (
+            Putter::<Whack>::claim(&p, "Producer").unwrap(),
+            Getter::<Whack>::claim(&p, "Consumer").unwrap(),
+        );
+        let mut val: MaybeUninit<Whack> = MaybeUninit::new(Whack([3; N]));
+        for _ in 0..RUNS {
+            let t = Instant::now();
+            unsafe {
+                s.put_raw(&mut val);
+            };
+            r.get();
+            *taken += t.elapsed();
+        }
     }
-    println!("{:?}", taken / REPS);
+    taken_0 /= RUNS * REPS;
+
+    let mut taken_1 = Duration::from_millis(0);
+    let taken = &mut taken_1;
+    let mut x = Box::new(Whack([3; N]));
+    for _ in 0..REPS {
+        for _ in 0..RUNS {
+            let t = Instant::now();
+            unsafe { (&mut x as &mut Whack as *mut Whack).write(Whack([32;N])) };
+            // unsafe { (&mut x as &mut Whack as *mut Whack).read() };
+            *taken += t.elapsed();
+        }
+    }
+    taken_1 /= RUNS * REPS;
+
+    let mut taken_2 = Duration::from_millis(0);
+    let taken = &mut taken_2;
+    let (s, r) = crossbeam_channel::bounded(1);
+    for _ in 0..REPS {
+        for _ in 0..RUNS {
+            let t = Instant::now();
+            s.send(Whack([32;N])).unwrap();
+            r.recv().unwrap();
+            *taken += t.elapsed();
+        }
+    }
+    taken_2 /= RUNS * REPS;
+
+    println!(" reo-rs {:?} | native {:?} | channel {:?}",
+        taken_0.as_nanos(), taken_1.as_nanos(), taken_2.as_nanos());
 }
 
 #[test]
@@ -240,8 +262,8 @@ fn make(num_bogus: usize, bogus_rule: &RuleDef) -> Getter<String> {
 #[test]
 fn test_4() {
     let values = (0..200 / 5).map(|x| x * 5);
-    const REBUILDS: u32 = 100;
-    const REPS: u32 = 10_000;
+    const REPS: u32 = 100;
+    const RUNS: u32 = 10_000;
 
     // use Term::*;
     let bogus = RuleDef {
@@ -259,16 +281,16 @@ fn test_4() {
 
     for v in values {
         let mut taken = Duration::default();
-        for _ in 0..REBUILDS {
+        for _ in 0..REPS {
             let mut g = make(v, &bogus);
-            for _ in 0..REPS {
+            for _ in 0..RUNS {
                 let x = Instant::now();
                 let val = g.get();
                 taken += x.elapsed();
                 drop(val);
             }
         }
-        taken /= REBUILDS * REPS;
+        taken /= REPS * RUNS;
         print!("{}, ", taken.as_nanos());
         use std::io::Write;
         std::io::stdout().flush().unwrap();
@@ -277,6 +299,11 @@ fn test_4() {
 
 #[test]
 fn test_5() {
+    #[derive(Debug, Clone, PartialEq)]
+    struct Datum([u8;32]);
+
+    println!("OK");
+
     let mut rules = vec![];
     let putters = ["P0", "P1", "P2"]; //, "P3", "P4"];
     let getters = ["C0", "C1", "C2"]; //, "C3", "C4"];
@@ -294,18 +321,15 @@ fn test_5() {
             rules.push(rule);
         }
     }
+    let type_info = TypeInfo::of::<Datum>();
     let def = ProtoDef {
         name_defs: hashmap! {
-            "P0" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            "P1" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            "P2" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            // "P3" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            // "P4" => NameDef::Port { is_putter:true, type_info: TypeInfo::of::<Whack>() },
-            "C0" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            "C1" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            "C2" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            // "C3" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
-            // "C4" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<Whack>() },
+            "P0" => NameDef::Port { is_putter:true, type_info },
+            "P1" => NameDef::Port { is_putter:true, type_info },
+            "P2" => NameDef::Port { is_putter:true, type_info },
+            "C0" => NameDef::Port { is_putter:false, type_info },
+            "C1" => NameDef::Port { is_putter:false, type_info },
+            "C2" => NameDef::Port { is_putter:false, type_info },
         },
         rules,
     };
@@ -314,17 +338,17 @@ fn test_5() {
     let p = def.build(MemInitial::default()).unwrap();
 
     for getter in getters.iter().copied() {
-        let mut x = Getter::<Whack>::claim(&p, getter).unwrap();
+        let mut x = Getter::<Datum>::claim(&p, getter).unwrap();
         std::thread::spawn(move || loop {
             x.get();
         });
     }
 
-    fn pwork(mut x: Putter<Whack>) -> std::time::Duration {
+    fn pwork(mut x: Putter<Datum>) -> std::time::Duration {
         let mut taken = Duration::default();
         for q in 0..REPS {
             let i = Instant::now();
-            x.put_lossy(Whack([q as u8; N]));
+            x.put_lossy(Datum([q as u8; N]));
             taken += i.elapsed();
         }
         taken / REPS
@@ -332,7 +356,7 @@ fn test_5() {
 
     use rayon::prelude::*;
     let ports: Vec<_> =
-        putters.into_iter().map(move |name| Putter::<Whack>::claim(&p, name).unwrap()).collect();
+        putters.into_iter().map(move |name| Putter::<Datum>::claim(&p, name).unwrap()).collect();
 
     let start = Instant::now();
     let times: Vec<Duration> = ports.into_par_iter().map(pwork).collect();
@@ -479,7 +503,7 @@ fn test_7() {
     }
 }
 
-const N: usize = 2048;
+const N: usize = 32;
 
 pub struct Whack([u8; N]);
 impl Default for Whack {
@@ -487,13 +511,20 @@ impl Default for Whack {
         Self([21; N])
     }
 }
+impl Clone for Whack {
+    fn clone(&self) -> Self {
+        work_units(Whack([32;N]))
+    }
+}
 type T8Datum = Whack;
-const T8_REPS: u32 = 1_000;
-const T8_RUNS: u32 = 3_000;
+const T8_REPS: u32 = 500;
+const T8_RUNS: u32 = 5_000;
 
-#[test]
+
+
+#[test] // FIXED
 fn test_8() {
-    println!("Handmade {:?} | Reo-rs {:?}", test_8a().as_nanos(), "Skipped!");
+    println!("Handmade {:?} | Reo-rs {:?}", "NAH", test_8b().as_nanos());
 }
 
 fn test_8a() -> Duration {
@@ -569,30 +600,31 @@ fn test_8b() -> Duration {
             Putter::<T8Datum>::claim(&p, "P1").unwrap(),
             Getter::<T8Datum>::claim(&p, "G").unwrap(),
         );
-        let p0 = move || {
-            p0.put(T8Datum::default());
-        };
-        let p1 = move || {
-            p1.put(T8Datum::default());
-        };
-        let g = move || {
-            g.get();
-            g.get();
-        };
 
-        // let mut p0d = MaybeUninit::new(T8Datum::default());
         // let p0 = move || {
-        //     unsafe { p0.put_raw(&mut p0d) };
+        //     p0.put(T8Datum::default());
         // };
-        // let mut p1d = MaybeUninit::new(T8Datum::default());
         // let p1 = move || {
-        //     unsafe { p1.put_raw(&mut p1d) };
+        //     p1.put(T8Datum::default());
         // };
-        // let mut gd = MaybeUninit::uninit();
-        // let g = move || unsafe {
-        //     g.get_raw(&mut gd);
-        //     g.get_raw(&mut gd);
+        // let g = move || {
+        //     g.get();
+        //     g.get();
         // };
+
+        let mut p0d = MaybeUninit::new(T8Datum::default());
+        let p0 = move || {
+            unsafe { p0.put_raw(&mut p0d) };
+        };
+        let mut p1d = MaybeUninit::new(T8Datum::default());
+        let p1 = move || {
+            unsafe { p1.put_raw(&mut p1d) };
+        };
+        let mut gd = MaybeUninit::uninit();
+        let g = move || unsafe {
+            g.get_raw(&mut gd);
+            g.get_raw(&mut gd);
+        };
         worky(p0, p1, g, &mut total)
     }
     total / T8_REPS
@@ -642,7 +674,7 @@ fn worky<
     .unwrap();
 }
 
-#[test]
+#[test] // FIXED
 fn test_9() {
     const M: usize = 8192;
     struct Biggun([u32; M]);
@@ -710,10 +742,11 @@ fn test_9() {
                 Putter::<Biggun>::claim(&p, "P").unwrap(),
                 Getter::<Biggun>::claim(&p, "C").unwrap(),
             );
-            let mut x = MaybeUninit::new(Biggun([21; M]));
+            // let mut x = MaybeUninit::new(Biggun([21; M]));
             for _ in 0..RUNS {
                 let i = Instant::now();
-                unsafe { p.put_raw(&mut x) };
+                p.put_lossy(Biggun([21; M]));
+                // unsafe { p.put_raw(&mut x) };
                 c.get_signal();
                 took += i.elapsed();
             }

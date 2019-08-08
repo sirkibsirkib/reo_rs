@@ -105,6 +105,36 @@ pub fn drop_ok() {
     }
 }
 
+#[test] 
+fn yes_clone() {
+    #[derive(Clone, PartialEq, Debug)]
+    struct Idk([u8;32]);
+
+    let value = Idk([32;32]);
+    let mut dest = MaybeUninit::<Idk>::uninit();
+    let value2 = unsafe {
+        let d: TraitData = transmute(dest.as_mut_ptr());
+        <Idk as PortDatum>::my_clone(&value, d);
+        dest.assume_init()
+    };
+    assert_eq!(value, value2);
+}
+
+
+#[test] 
+#[should_panic]
+fn no_clone() {
+    #[derive(PartialEq, Debug)]
+    struct Idk([u8;32]);
+
+    let value = Idk([32;32]);
+    let mut dest = MaybeUninit::<Idk>::uninit();
+    unsafe {
+        let d: TraitData = transmute(dest.as_mut_ptr());
+        <Idk as PortDatum>::my_clone(&value, d); // oanics
+    };
+}
+
 #[test]
 pub fn allocator_ok() {
     let m = Arc::new(Mutex::new(0));
