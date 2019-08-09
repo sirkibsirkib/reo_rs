@@ -425,7 +425,7 @@ fn test_7() {
     }
 }
 
-const N: usize = 1<<4;
+const N: usize = 512;
 
 #[derive(Copy, Clone)]
 pub struct Whack([u8; N]);
@@ -442,29 +442,29 @@ const T8_RUNS: u32 = 5_000;
 
 #[test] // FIXED
 fn test_8() {
-    println!("Handmade {:?} | Reo-rs {:?}", "NAH", test_8b().as_nanos());
+    println!("Handmade {:?} | Reo-rs {:?}", test_8a().as_nanos(), test_8b().as_nanos());
 }
 
 fn test_8a() -> Duration {
     let mut total = Duration::default();
     for _ in 0..T8_REPS {
-        let barrier3_g = Arc::new(std::sync::Barrier::new(3));
-        let barrier3_p0 = barrier3_g.clone();
-        let barrier3_p1 = barrier3_g.clone();
+        let barrier_g = Arc::new(std::sync::Barrier::new(3));
+        let barrier_p0 = barrier_g.clone();
+        let barrier_p1 = barrier_g.clone();
 
         let (data_0_s, data_0_r) = crossbeam_channel::bounded(0); // rendesvous
         let (data_1_s, data_1_r) = crossbeam_channel::bounded(1); // async
 
         let p0 = move || {
-            barrier3_p0.wait();
+            barrier_p0.wait();
             data_0_s.send(T8Whack::default()).unwrap();
         };
         let p1 = move || {
-            barrier3_p1.wait();
+            barrier_p1.wait();
             data_1_s.send(T8Whack::default()).unwrap();
         };
         let g = move || {
-            barrier3_g.wait();
+            barrier_g.wait();
             let _from_p0 = data_0_r.recv().unwrap();
             let _from_p1 = data_1_r.recv().unwrap();
         };
@@ -519,30 +519,30 @@ fn test_8b() -> Duration {
             Getter::<T8Whack>::claim(&p, "G").unwrap(),
         );
 
-        // let p0 = move || {
-        //     p0.put(T8Whack::default());
-        // };
-        // let p1 = move || {
-        //     p1.put(T8Whack::default());
-        // };
-        // let g = move || {
-        //     g.get();
-        //     g.get();
-        // };
-
-        let mut p0d = MaybeUninit::new(T8Whack::default());
         let p0 = move || {
-            unsafe { p0.put_raw(&mut p0d) };
+            p0.put(T8Whack::default());
         };
-        let mut p1d = MaybeUninit::new(T8Whack::default());
         let p1 = move || {
-            unsafe { p1.put_raw(&mut p1d) };
+            p1.put(T8Whack::default());
         };
-        let mut gd = MaybeUninit::uninit();
-        let g = move || unsafe {
-            g.get_raw(&mut gd);
-            g.get_raw(&mut gd);
+        let g = move || {
+            g.get();
+            g.get();
         };
+
+        // let mut p0d = MaybeUninit::new(T8Whack::default());
+        // let p0 = move || {
+        //     unsafe { p0.put_raw(&mut p0d) };
+        // };
+        // let mut p1d = MaybeUninit::new(T8Whack::default());
+        // let p1 = move || {
+        //     unsafe { p1.put_raw(&mut p1d) };
+        // };
+        // let mut gd = MaybeUninit::uninit();
+        // let g = move || unsafe {
+        //     g.get_raw(&mut gd);
+        //     g.get_raw(&mut gd);
+        // };
         worky(p0, p1, g, &mut total)
     }
     total / T8_REPS
