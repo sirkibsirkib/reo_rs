@@ -32,8 +32,8 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod experiments;
+// #[cfg(test)]
+// mod experiments;
 
 // safe. moving the TypeInfo around is fine. vtables are send and sync
 unsafe impl Send for TypeInfo {}
