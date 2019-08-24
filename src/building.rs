@@ -60,7 +60,7 @@ pub enum ProtoBuildError {
     UndefinedFuncName { name: Name },
     TermNameIsNotPutter { name: Name },
     EqForDifferentTypes,
-    GetterHasMuliplePutters { name: Name },
+    GetterHasMultiplePutters { name: Name },
     GetterHasNoPutters { name: Name },
     PortInMemPremise { name: Name },
     MemInPortPremise { name: Name },
@@ -475,7 +475,7 @@ pub fn build_proto(
                         LocKind::PoPu => return Err(PutterCannotGet { name }),
                         LocKind::PoGe => {
                             if !gets.insert(name) {
-                                return Err(GetterHasMuliplePutters { name });
+                                return Err(GetterHasMultiplePutters { name });
                             }
                             if port_info.get(gid).expect("EE").1 != putter_type_info {
                                 return Err(MovementTypeMismatch { putter, getter: name });
