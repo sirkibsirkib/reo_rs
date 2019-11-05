@@ -1307,11 +1307,13 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
 
 /////////////
 trait MaybeCopy {
-    const IS_COPY: bool = false;
+    const IS_COPY: bool;
 }
-impl<T> MaybeCopy for T {}
+impl<T> MaybeCopy for T {
+    default const IS_COPY: bool = false;
+}
 impl<T: Copy> MaybeCopy for T {
-    default const IS_COPY: bool = true;
+    const IS_COPY: bool = true;
 }
 /////////////
 trait MaybeClone {
@@ -1330,13 +1332,15 @@ impl<T: Clone> MaybeClone for T {
 }
 /////////////
 trait MaybePartialEq {
-    fn maybe_partial_eq(&self, _: TraitData) -> bool {
+    fn maybe_partial_eq(&self, _: TraitData) -> bool;
+}
+impl<T> MaybePartialEq for T {
+    default fn maybe_partial_eq(&self, _: TraitData) -> bool {
         panic!("This type cannot check partial equality!")
     }
 }
-impl<T> MaybePartialEq for T {}
 impl<T: PartialEq> MaybePartialEq for T {
-    default fn maybe_partial_eq(&self, oth: TraitData) -> bool {
+    fn maybe_partial_eq(&self, oth: TraitData) -> bool {
         let oth: &T = unsafe { std::mem::transmute(oth) };
         self == oth
     }
