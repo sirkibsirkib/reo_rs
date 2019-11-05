@@ -23,7 +23,7 @@ use std::{
 };
 use std_semaphore::Semaphore;
 
-mod building;
+pub mod building;
 use building::*;
 
 mod bit_set;
