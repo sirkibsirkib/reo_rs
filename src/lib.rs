@@ -1311,7 +1311,7 @@ trait MaybeCopy {
 }
 impl<T> MaybeCopy for T {}
 impl<T: Copy> MaybeCopy for T {
-    const IS_COPY: bool = true;
+    default const IS_COPY: bool = true;
 }
 /////////////
 trait MaybeClone {
@@ -1336,7 +1336,7 @@ trait MaybePartialEq {
 }
 impl<T> MaybePartialEq for T {}
 impl<T: PartialEq> MaybePartialEq for T {
-    fn maybe_partial_eq(&self, oth: TraitData) -> bool {
+    default fn maybe_partial_eq(&self, oth: TraitData) -> bool {
         let oth: &T = unsafe { std::mem::transmute(oth) };
         self == oth
     }
