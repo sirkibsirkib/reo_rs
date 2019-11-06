@@ -41,6 +41,7 @@ pub struct CPutter {
 
 #[no_mangle]
 pub unsafe extern fn reors_putter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CPutter {
+	println!("REORS TID {:?}", crate::TypeInfo::of::<isize>());
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
 	let inner = Putter::<isize>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
 	CPutter { _p: inner }
@@ -65,7 +66,6 @@ pub struct CGetter {
 
 #[no_mangle]
 pub unsafe extern fn reors_getter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CGetter {
-	println!("REORS TID {:?}", crate::TypeInfo::of::<isize>());
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
 	let inner = Getter::<isize>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
 	CGetter { _p: inner }
