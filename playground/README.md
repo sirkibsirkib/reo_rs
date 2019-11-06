@@ -14,6 +14,8 @@ See `./rust/` for more.
 # C Output
 The Reo compiler outputs two files: `X.so`. This dynamically-linked library defines the behavior in the declarations given in the header file available in the repository [here](https://github.com/sirkibsirkib/reo_rs/reo_rs_ext.h). The latter must appear in your source, and the former can be linked later.
 
+*Note*: Installing Rust can be avoided in the case of C programs by acquiring `X.so` file from elsewhere provided it is compiled under suitable circumstances.
+
 See `./c/` for more.
 
 ## Known issues

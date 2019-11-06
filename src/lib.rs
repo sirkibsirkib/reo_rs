@@ -527,7 +527,7 @@ impl<T: PortDatum> Putter<T> {
         }
     }
 }
-struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+pub struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
 impl<T: 'static + Send + Sync + Sized> Getter<T> {
     pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?, Default::default()))

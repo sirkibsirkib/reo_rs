@@ -1,2 +1,5 @@
 /target
 **/*.rs.bk
+/playground/rust/target
+/playground/rust/target/*
+/playground/rust/Cargo.lock
