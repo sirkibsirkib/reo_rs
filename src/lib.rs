@@ -30,7 +30,6 @@ use std::{
 use std_semaphore::Semaphore;
 
 pub mod building;
-use building::*;
 
 mod bit_set;
 use bit_set::{BitSet, SetExt};
@@ -456,8 +455,8 @@ impl PortCommon {
     }
 }
 
-struct Putter<T: PortDatum>(PortCommon, PhantomData<T>);
-impl<T: PortDatum> Putter<T> {
+pub struct Putter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+impl<T: 'static + Send + Sync + Sized> Putter<T> {
 
     pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, true, TypeInfo::of::<T>(), p)?, Default::default()))
