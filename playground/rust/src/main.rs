@@ -1,14 +1,14 @@
-mod protocol;
 use reo_rs::{Putter, Getter};
+mod fifo1;
 
 fn main() {
 	// create a protocol instance
-	let proto = protocol::new_fifo1();
+	let proto = fifo1::proto_protocol1_build_rust::<isize, isize, isize>();
 	
 	// claim, initialize the logical ports "A" and "B" and bind them to variables.
 	/* Rust's borrowing rules will ensure only safe behavior is allowed.
 	   Note that it is permitted to move port objects between threads to
-	   achieve concurrency / parallelism. */
+	   achieve concurrency, parallelism. */
 	let mut a = Putter::<isize>::claim(&proto, "A").unwrap();
 	let mut b = Getter::<isize>::claim(&proto, "B").unwrap();
 

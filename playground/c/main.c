@@ -4,7 +4,7 @@
 
 int main() {
 	// create a protocol instance
-	CProtoHandle proto = proto_create();
+	CProtoHandle proto = reors_generated_proto_create();
 
 	// claim, initialize the logical ports "A" and "B" and bind them to variables.
 	CPutter a = reors_putter_claim(&proto, "A");
