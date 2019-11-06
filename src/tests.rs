@@ -1118,3 +1118,42 @@ fn ffi_put_get() {
         assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
     }
 }
+
+#[test]
+fn ffi_full() {
+    let p = FFI_FIFO.build(MemInitial::default()).unwrap();
+    
+    // create proto
+    let mut c_p: CProtoHandle = to_c_proto(p);
+
+    // create ports
+    let mut name: [c_char; 2] = ['A' as c_char, '\0' as c_char];
+    let mut port_a = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };
+
+    let mut name: [c_char; 2] = ['B' as c_char, '\0' as c_char];
+    let mut port_b = unsafe { c_getter_claim(&mut c_p, &mut name[0]) };
+
+    // put and get
+    let mut value: u32 = 420;
+    unsafe {
+        let mut data: *mut c_void = std::mem::transmute(&mut value);
+        c_putter_put_raw(&mut port_a, &mut data);
+
+        let mut data2: *mut c_void = std::mem::transmute(0isize);
+        assert_ne!(data, data2);
+
+        c_getter_get_raw(&mut port_b, &mut data2);
+        assert_eq!(data, data2);
+        assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
+    }
+
+    // drop everything. order doesn't matter
+    unsafe {
+        c_putter_destroy(&mut port_a);
+        std::mem::forget(port_a);
+        c_getter_destroy(&mut port_b);
+        std::mem::forget(port_b);
+        c_proto_handle_destroy(&mut c_p);
+        std::mem::forget(c_p);
+    }
+}
