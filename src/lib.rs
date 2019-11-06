@@ -1047,7 +1047,7 @@ impl ProtoCr {
                         // 2. data movement MUST follow all data clones (or undefined behavior)
                         // 3. we don't yet know if any port-getters want to MOVE (they may want signals)
                         let dest_space = r.spaces[mem_0.0].get_putter_space().expect("dest");
-                        assert_eq!(dest_space.type_info, ps.type_info);
+                        // assert_eq!(dest_space.type_info, ps.type_info);
                         let dest_ptr = unsafe { self.allocator.alloc_uninit(ps.type_info) };
                         //DeBUGGY:println!("ALLOCATED {:p}", dest_ptr);
                         // do the movement, then release the putter with a message
