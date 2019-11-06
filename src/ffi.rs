@@ -1,7 +1,7 @@
 
 use crate::building::{ProtoDef, MemInitial};
 use crate::{ProtoHandle, Putter, Getter};
-use libc::{c_void, intptr_t};
+use libc::{c_void};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -36,13 +36,13 @@ pub unsafe extern fn reors_proto_handle_destroy(proto: &mut CProtoHandle) {
 
 #[repr(C)]
 pub struct CPutter {
-	_p: Putter<intptr_t>
+	_p: Putter<isize>
 }
 
 #[no_mangle]
 pub unsafe extern fn reors_putter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CPutter {
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
-	let inner = Putter::<intptr_t>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
+	let inner = Putter::<isize>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
 	CPutter { _p: inner }
 }
 
@@ -60,13 +60,13 @@ pub unsafe extern fn reors_putter_destroy(putter: *mut CPutter) {
 
 #[repr(C)]
 pub struct CGetter {
-	_p: Getter<intptr_t>
+	_p: Getter<isize>
 }
 
 #[no_mangle]
 pub unsafe extern fn reors_getter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CGetter {
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
-	let inner = Getter::<intptr_t>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
+	let inner = Getter::<isize>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
 	CGetter { _p: inner }
 }
 
