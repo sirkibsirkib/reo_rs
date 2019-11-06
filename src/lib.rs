@@ -533,7 +533,7 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
         Ok(Self(PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?, Default::default()))
     }
     unsafe fn untyped_claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::untyped_claim(name, true, p)?, Default::default()))
+        Ok(Self(PortCommon::untyped_claim(name, false, p)?, Default::default()))
     }
 
     fn get_data<F: FnOnce(FinalizeHow)>(

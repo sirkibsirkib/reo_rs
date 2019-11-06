@@ -2,6 +2,7 @@
 #define REORS_DEF
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct CProtoHandle {
   uintptr_t inner;
@@ -18,7 +19,7 @@ typedef struct CPutter {
 
 CPutter reors_putter_claim(CProtoHandle*, char*);
 bool reors_putter_put_raw(CPutter*, void**);
-reors_putter_destroy(CPutter*);
+void reors_putter_destroy(CPutter*);
 
 typedef struct CGetter {
   uintptr_t locid;
@@ -28,6 +29,6 @@ typedef struct CGetter {
 
 CGetter reors_getter_claim(CProtoHandle*, char*);
 bool reors_getter_get_raw(CGetter*, void**);
-reors_getter_destroy(CGetter*);
+void reors_getter_destroy(CGetter*);
 
 #endif
