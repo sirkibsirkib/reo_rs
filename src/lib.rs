@@ -1,6 +1,12 @@
 #![feature(raw)]
 #![feature(specialization)]
 
+
+// #[no_mangle]
+// pub extern fn yass(x: u32) -> u32 {
+//     x
+// } 
+
 use bidir_map::BidirMap;
 use core::sync::atomic::AtomicBool;
 use debug_stub_derive::DebugStub;

@@ -1029,7 +1029,7 @@ fn ffi_create_and_destroy_proto() {
     let mut c_p: CProtoHandle = to_c_proto(p);
     unsafe {
         // drop using C mode
-        c_proto_handle_destroy(&mut c_p);
+        reors_proto_handle_destroy(&mut c_p);
         std::mem::forget(c_p);
     }
 }
@@ -1044,7 +1044,7 @@ fn ffi_create_and_destroy_proto_counting() {
     assert_eq!(*i.0.lock(), 0);
     unsafe {
         // drop using C mode
-        c_proto_handle_destroy(&mut c_p);
+        reors_proto_handle_destroy(&mut c_p);
         std::mem::forget(c_p);
     }
     assert_eq!(*i.0.lock(), 1);
@@ -1060,17 +1060,17 @@ fn ffi_claim() {
 
     // create putter_a
     let mut name: [c_char; 2] = ['A' as c_char, '\0' as c_char];
-    let mut port_a = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };
+    let mut port_a = unsafe { reors_putter_claim(&mut c_p, &mut name[0]) };
 
     // destroy putter_a
     unsafe {
-        c_putter_destroy(&mut port_a);
+        reors_putter_destroy(&mut port_a);
         std::mem::forget(port_a);
     }
 
     unsafe {
         // destroy proto
-        c_proto_handle_destroy(&mut c_p);
+        reors_proto_handle_destroy(&mut c_p);
         std::mem::forget(c_p);
     }
 }
@@ -1086,7 +1086,7 @@ fn ffi_claim_nonexistent() {
 
     // create putter_a
     let mut name: [c_char; 2] = ['Q' as c_char, '\0' as c_char];
-    let _ = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };  // <== wrong
+    let _ = unsafe { reors_putter_claim(&mut c_p, &mut name[0]) };  // <== wrong
     // shouldn't make it this far, but in case we do, other resources are dropped Rustily
 }
 
@@ -1100,22 +1100,31 @@ fn ffi_put_get() {
 
     // create ports
     let mut name: [c_char; 2] = ['A' as c_char, '\0' as c_char];
-    let mut port_a = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };
+    let mut port_a = unsafe { reors_putter_claim(&mut c_p, &mut name[0]) };
 
     let mut name: [c_char; 2] = ['B' as c_char, '\0' as c_char];
-    let mut port_b = unsafe { c_getter_claim(&mut c_p, &mut name[0]) };
+    let mut port_b = unsafe { reors_getter_claim(&mut c_p, &mut name[0]) };
 
     let mut value: u32 = 420;
     unsafe {
         let mut data: *mut c_void = std::mem::transmute(&mut value);
-        c_putter_put_raw(&mut port_a, &mut data);
+        reors_putter_put_raw(&mut port_a, &mut data);
 
         let mut data2: *mut c_void = std::mem::transmute(0isize);
         assert_ne!(data, data2);
 
-        c_getter_get_raw(&mut port_b, &mut data2);
+        reors_getter_get_raw(&mut port_b, &mut data2);
         assert_eq!(data, data2);
         assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
+    }
+}
+
+#[test]
+fn ffi_empty_proto() {
+    let mut c_p = reors_empty_proto_create();
+    unsafe {
+        reors_proto_handle_destroy(&mut c_p);
+        std::mem::forget(c_p);
     }
 }
 
@@ -1128,32 +1137,32 @@ fn ffi_full() {
 
     // create ports
     let mut name: [c_char; 2] = ['A' as c_char, '\0' as c_char];
-    let mut port_a = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };
+    let mut port_a = unsafe { reors_putter_claim(&mut c_p, &mut name[0]) };
 
     let mut name: [c_char; 2] = ['B' as c_char, '\0' as c_char];
-    let mut port_b = unsafe { c_getter_claim(&mut c_p, &mut name[0]) };
+    let mut port_b = unsafe { reors_getter_claim(&mut c_p, &mut name[0]) };
 
     // put and get
     let mut value: u32 = 420;
     unsafe {
         let mut data: *mut c_void = std::mem::transmute(&mut value);
-        c_putter_put_raw(&mut port_a, &mut data);
+        reors_putter_put_raw(&mut port_a, &mut data);
 
         let mut data2: *mut c_void = std::mem::transmute(0isize);
         assert_ne!(data, data2);
 
-        c_getter_get_raw(&mut port_b, &mut data2);
+        reors_getter_get_raw(&mut port_b, &mut data2);
         assert_eq!(data, data2);
         assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
     }
 
     // drop everything. order doesn't matter
     unsafe {
-        c_putter_destroy(&mut port_a);
+        reors_putter_destroy(&mut port_a);
         std::mem::forget(port_a);
-        c_getter_destroy(&mut port_b);
+        reors_getter_destroy(&mut port_b);
         std::mem::forget(port_b);
-        c_proto_handle_destroy(&mut c_p);
+        reors_proto_handle_destroy(&mut c_p);
         std::mem::forget(c_p);
     }
 }

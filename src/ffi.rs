@@ -1,64 +1,81 @@
 
+use crate::building::{ProtoDef, MemInitial};
 use crate::{ProtoHandle, Putter, Getter};
 use libc::{c_void, intptr_t};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
 // called from Reo-generated Rust code to create specialized constructors.
-pub fn to_c_proto(proto: ProtoHandle) -> CProtoHandle {
-	CProtoHandle(proto)
+pub extern fn to_c_proto(proto: ProtoHandle) -> CProtoHandle {
+	CProtoHandle { _p: proto }
 }
 
 ////////////// PROTO //////////////
 
 #[repr(C)]
-pub struct CProtoHandle(ProtoHandle);
+pub struct CProtoHandle {
+	_p: ProtoHandle
+}
 
 #[no_mangle]
-pub unsafe fn c_proto_handle_destroy(proto: *mut CProtoHandle) {
-	std::ptr::drop_in_place(&mut (*proto).0);
+pub extern fn reors_empty_proto_create() -> CProtoHandle {
+	CProtoHandle {
+		_p: ProtoDef {
+			name_defs: Default::default(),
+			rules: vec![],
+		}.build(MemInitial::default()).unwrap()
+	}
+}
+
+#[no_mangle]
+pub unsafe extern fn reors_proto_handle_destroy(proto: &mut CProtoHandle) {
+	std::ptr::drop_in_place(&mut (*proto)._p);
 }
 
 ////////////// PORTS //////////////
 
 #[repr(C)]
-pub struct CPutter(Putter<intptr_t>);
+pub struct CPutter {
+	_p: Putter<intptr_t>
+}
 
 #[no_mangle]
-pub unsafe fn c_putter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CPutter {
+pub unsafe extern fn reors_putter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CPutter {
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
-	let inner = Putter::<intptr_t>::claim(&(*proto_handle).0, name).expect("CLAIM WENT BAD");
-	CPutter(inner)
+	let inner = Putter::<intptr_t>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
+	CPutter { _p: inner }
 }
 
 #[no_mangle]
-pub unsafe fn c_putter_put_raw(putter: *mut CPutter, datum: *mut *mut c_void) -> bool {
-	(*putter).0.put_raw(std::mem::transmute(datum))
+pub unsafe extern fn reors_putter_put_raw(putter: *mut CPutter, datum: *mut *mut c_void) -> bool {
+	(*putter)._p.put_raw(std::mem::transmute(datum))
 }
 
 #[no_mangle]
-pub unsafe fn c_putter_destroy(putter: *mut CPutter) {
-	std::ptr::drop_in_place(&mut (*putter).0);
+pub unsafe extern fn reors_putter_destroy(putter: *mut CPutter) {
+	std::ptr::drop_in_place(&mut (*putter)._p);
 }
 
 ///////
 
 #[repr(C)]
-pub struct CGetter(Getter<intptr_t>);
+pub struct CGetter {
+	_p: Getter<intptr_t>
+}
 
 #[no_mangle]
-pub unsafe fn c_getter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CGetter {
+pub unsafe extern fn reors_getter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CGetter {
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
-	let inner = Getter::<intptr_t>::claim(&(*proto_handle).0, name).expect("CLAIM WENT BAD");
-	CGetter(inner)
+	let inner = Getter::<intptr_t>::claim(&(*proto_handle)._p, name).expect("CLAIM WENT BAD");
+	CGetter { _p: inner }
 }
 
 #[no_mangle]
-pub unsafe fn c_getter_get_raw(getter: *mut CGetter, dest: *mut *mut c_void) {
-	(*getter).0.get_raw(std::mem::transmute(dest))
+pub unsafe extern fn reors_getter_get_raw(getter: *mut CGetter, dest: *mut *mut c_void) {
+	(*getter)._p.get_raw(std::mem::transmute(dest))
 }
 
 #[no_mangle]
-pub unsafe fn c_getter_destroy(getter: *mut CGetter) {
-	std::ptr::drop_in_place(&mut (*getter).0);
+pub unsafe extern fn reors_getter_destroy(getter: *mut CGetter) {
+	std::ptr::drop_in_place(&mut (*getter)._p);
 }
