@@ -25,9 +25,9 @@ pub unsafe fn c_proto_handle_destroy(proto: *mut CProtoHandle) {
 pub struct CPutter(Putter<intptr_t>);
 
 #[no_mangle]
-pub unsafe fn c_putter_claim(proto_handle: *mut ProtoHandle, name: *mut c_char) -> CPutter {
+pub unsafe fn c_putter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CPutter {
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
-	let inner = Putter::<intptr_t>::claim(&(*proto_handle), name).expect("CLAIM WENT BAD");
+	let inner = Putter::<intptr_t>::claim(&(*proto_handle).0, name).expect("CLAIM WENT BAD");
 	CPutter(inner)
 }
 
@@ -47,9 +47,9 @@ pub unsafe fn c_putter_destroy(putter: *mut CPutter) {
 pub struct CGetter(Getter<intptr_t>);
 
 #[no_mangle]
-pub unsafe fn c_getter_claim(proto_handle: *mut ProtoHandle, name: *mut c_char) -> CGetter {
+pub unsafe fn c_getter_claim(proto_handle: *mut CProtoHandle, name: *mut c_char) -> CGetter {
 	let name = CStr::from_ptr(name).to_str().expect("BAD NAME STRING");
-	let inner = Getter::<intptr_t>::claim(&(*proto_handle), name).expect("CLAIM WENT BAD");
+	let inner = Getter::<intptr_t>::claim(&(*proto_handle).0, name).expect("CLAIM WENT BAD");
 	CGetter(inner)
 }
 

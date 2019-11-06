@@ -985,7 +985,7 @@ fn mem_swap_run() {
 
 //////////////// FFI TESTS ////////////////////
 
-use libc::{c_void, intptr_t};
+use libc::{c_void, c_char, intptr_t};
 lazy_static::lazy_static! {
     static ref FFI_FIFO: ProtoDef = ProtoDef {
         name_defs: hashmap! {
@@ -1048,4 +1048,73 @@ fn ffi_create_and_destroy_proto_counting() {
         std::mem::forget(c_p);
     }
     assert_eq!(*i.0.lock(), 1);
+}
+
+
+#[test]
+fn ffi_claim() {
+    let p = FFI_FIFO.build(MemInitial::default()).unwrap();
+    
+    // create proto
+    let mut c_p: CProtoHandle = to_c_proto(p);
+
+    // create putter_a
+    let mut name: [c_char; 2] = ['A' as c_char, '\0' as c_char];
+    let mut port_a = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };
+
+    // destroy putter_a
+    unsafe {
+        c_putter_destroy(&mut port_a);
+        std::mem::forget(port_a);
+    }
+
+    unsafe {
+        // destroy proto
+        c_proto_handle_destroy(&mut c_p);
+        std::mem::forget(c_p);
+    }
+}
+
+
+#[test]
+#[should_panic]
+fn ffi_claim_nonexistent() {
+    let p = FFI_FIFO.build(MemInitial::default()).unwrap();
+    
+    // create proto
+    let mut c_p: CProtoHandle = to_c_proto(p);
+
+    // create putter_a
+    let mut name: [c_char; 2] = ['Q' as c_char, '\0' as c_char];
+    let _ = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };  // <== wrong
+    // shouldn't make it this far, but in case we do, other resources are dropped Rustily
+}
+
+
+#[test]
+fn ffi_put_get() {
+    let p = FFI_FIFO.build(MemInitial::default()).unwrap();
+    
+    // create proto
+    let mut c_p: CProtoHandle = to_c_proto(p);
+
+    // create ports
+    let mut name: [c_char; 2] = ['A' as c_char, '\0' as c_char];
+    let mut port_a = unsafe { c_putter_claim(&mut c_p, &mut name[0]) };
+
+    let mut name: [c_char; 2] = ['B' as c_char, '\0' as c_char];
+    let mut port_b = unsafe { c_getter_claim(&mut c_p, &mut name[0]) };
+
+    let mut value: u32 = 420;
+    unsafe {
+        let mut data: *mut c_void = std::mem::transmute(&mut value);
+        c_putter_put_raw(&mut port_a, &mut data);
+
+        let mut data2: *mut c_void = std::mem::transmute(0isize);
+        assert_ne!(data, data2);
+
+        c_getter_get_raw(&mut port_b, &mut data2);
+        assert_eq!(data, data2);
+        assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
+    }
 }
