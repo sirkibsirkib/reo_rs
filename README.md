@@ -1,4 +1,4 @@
-# Reo-rs
+# ReoRs
 
 
 
@@ -6,12 +6,12 @@ An implementation of system components to enforce adherence to a protocol with r
 
 The library can be used in a stand-alone fashion (See examples below) but is built with the Reo Compiler in mind. The details of the implementation and the association with Reo are documented in detail as part of my [master's thesis](https://github.com/sirkibsirkib/msc_latex). 
 
-## Using the Library
+## Standalone Use
 This library is standalone, and can be imported and used as a Rust dependency in the usual way with or without Reo's code generation. The library requires the use of a _nightly_ compiler to leverage two of Rust's experimental features (see the thesis for more details). Once these features become stable, the library will be made available on Crates.io as is the Rust convention.
 
 In the meantime, Reo-rs can be integrated into a Rust crate as a path or Github dependency. See [this](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html) for up-to-date instructions. At time of writing, a github dependency is ergonomic, requiring only the following line to the dependency section of your Cargo.toml: `reo_rs = { git = "https://github.com/sirkibsirkib/reo-rs" }`.
 
-## Example Protocol
+## Protocol Objects
 At runtime, `Proto` objects do the work. Instances of this type are acquired from the `ProtoDef::build` method, which ensures they are initialized correctly. In this manner, the user is only responsible for providing a `ProtoDef` structure. For example, the canonical Reo [alternator](http://reo.project.cwi.nl/v2/#examples-of-complex-connectors) connector can be defined as:
 
 ```rust
@@ -48,3 +48,6 @@ ProtoDef {
 ```
 
 This example demonstrates that nothing is stopping you from making protocol components by hand, but they are verbose and intricate. The [Reo Compiler](http://reo.project.cwi.nl) is able to generate these definitions from more human-friendly Reo specifications.
+
+## Playground
+See the `/playground/` for a walkthrough of how this library may be used
