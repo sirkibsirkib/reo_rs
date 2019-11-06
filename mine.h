@@ -20,4 +20,14 @@ CPutter reors_putter_claim(CProtoHandle*, char*);
 bool reors_putter_put_raw(CPutter*, void**);
 reors_putter_destroy(CPutter*);
 
+typedef struct CGetter {
+  uintptr_t locid;
+  uintptr_t tid;
+  uintptr_t handle;
+} CGetter;
+
+CGetter reors_getter_claim(CProtoHandle*, char*);
+bool reors_getter_get_raw(CGetter*, void**);
+reors_getter_destroy(CGetter*);
+
 #endif
