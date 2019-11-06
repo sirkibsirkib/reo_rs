@@ -1,4 +1,4 @@
-use super::*;
+use crate::{*, building::*};
 
 #[test]
 pub fn type_info_neq() {
