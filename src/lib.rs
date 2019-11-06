@@ -514,7 +514,6 @@ impl<T: PortDatum> Putter<T> {
             Some(datum)
         }
     }
-
     /// returns true if it was consumed
     pub fn put_lossy(&mut self, mut datum: T) -> bool {
         let ptr: TraitData = unsafe { transmute(&mut datum) };
