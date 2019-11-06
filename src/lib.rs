@@ -32,6 +32,9 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod tests;
 
+mod ffi;
+pub use ffi::*;
+
 // #[cfg(test)]
 // mod experiments;
 

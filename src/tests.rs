@@ -424,28 +424,30 @@ lazy_static::lazy_static! {
             "Consumer" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<String>() },
             "Memory" => NameDef::Mem(TypeInfo::of::<String>()),
         },
-        rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {"Producer"},
-                full_mem: hashset! {},
-                empty_mem: hashset! {"Memory"},
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"Producer"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {"Memory"},
+                },
+                ins: vec![],
+                output: hashmap! {
+                    "Producer" => (false, hashset!{"Memory"})
+                },
             },
-            ins: vec![],
-            output: hashmap! {
-                "Producer" => (false, hashset!{"Memory"})
-            },
-        },
-        RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {"Consumer"},
-                full_mem: hashset! {"Memory"},
-                empty_mem: hashset! {},
-            },
-            ins: vec![],
-            output: hashmap! {
-                "Memory" => (false, hashset!{"Consumer"})
-            },
-        }],
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"Consumer"},
+                    full_mem: hashset! {"Memory"},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![],
+                output: hashmap! {
+                    "Memory" => (false, hashset!{"Consumer"})
+                },
+            }
+        ],
     };
 }
 
@@ -979,4 +981,71 @@ fn mem_swap_run() {
     assert_eq!(g.get(), false);
     assert_eq!(g.get(), false);
     assert_eq!(g.get(), false);
+}
+
+//////////////// FFI TESTS ////////////////////
+
+use libc::{c_void, intptr_t};
+lazy_static::lazy_static! {
+    static ref FFI_FIFO: ProtoDef = ProtoDef {
+        name_defs: hashmap! {
+            "A" => NameDef::Port { is_putter:true , type_info: TypeInfo::of::<intptr_t>() },
+            "B" => NameDef::Port { is_putter:false, type_info: TypeInfo::of::<intptr_t>() },
+            "M" => NameDef::Mem(TypeInfo::of::<intptr_t>()),
+        },
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"A"},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {"M"},
+                },
+                ins: vec![],
+                output: hashmap! { "A" => (false, hashset!{"M"}) },
+            },
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {"B"},
+                    full_mem: hashset! {"M"},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![],
+                output: hashmap! { "M" => (false, hashset!{"B"}) },
+            },
+        ],
+    };
+}
+
+#[test]
+fn ffi_create_and_leak_proto() {
+    let p = FFI_FIFO.build(MemInitial::default()).unwrap();
+    let _c_p: CProtoHandle = to_c_proto(p);
+    // drop using Rust mode
+}
+
+#[test]
+fn ffi_create_and_destroy_proto() {
+    let p = FFI_FIFO.build(MemInitial::default()).unwrap();
+    let mut c_p: CProtoHandle = to_c_proto(p);
+    unsafe {
+        // drop using C mode
+        c_proto_handle_destroy(&mut c_p);
+        std::mem::forget(c_p);
+    }
+}
+
+
+#[test]
+fn ffi_create_and_destroy_proto_counting() {
+    let i = Incrementor(Arc::new(Mutex::new(0)));
+    assert_eq!(*i.0.lock(), 0);
+    let p = FIFO1_INCREMENTOR.build(MemInitial::default().with("Memory", i.clone())).unwrap();
+    let mut c_p: CProtoHandle = to_c_proto(p);
+    assert_eq!(*i.0.lock(), 0);
+    unsafe {
+        // drop using C mode
+        c_proto_handle_destroy(&mut c_p);
+        std::mem::forget(c_p);
+    }
+    assert_eq!(*i.0.lock(), 1);
 }

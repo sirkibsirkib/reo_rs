@@ -69,9 +69,11 @@ pub enum ProtoBuildError {
     CheckingNonBoolType,
     CreatingNonBoolFromFormula,
     InitialTypeMismatch { name: Name },
+    UnknownInitial { name: Name },
     MovementTypeMismatch { getter: Name, putter: Name },
     InstructionCannotOverwrite { name: Name }, // todo get more sophisticated
     CanOnlySwapMemory { name: Name },
+
 }
 
 fn resolve_fully(
@@ -238,6 +240,9 @@ pub fn build_proto(
         };
         spaces.push(space);
         persistent_loc_kinds.push(kind);
+    }
+    for (name, _) in init.strg {
+        return Err((None, UnknownInitial { name }))
     }
     let perm_space_rng = 0..spaces.len();
     mem.pad_to_cap(perm_space_rng.end);
