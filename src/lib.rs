@@ -404,6 +404,30 @@ impl PortCommon {
         }
         Some(mb.recv())
     }
+    fn untyped_claim(
+        name: Name,
+        want_putter: bool,
+        p: &ProtoHandle,
+    ) -> Result<Self, ClaimError> {
+        use ClaimError::*;
+        if let Some(id) = p.0.r.name_mapping.get_by_first(&name) {
+            let (is_putter, type_info) = *p.0.r.port_info.get(id).expect("IDK");
+            if want_putter != is_putter {
+                return Err(WrongPortDirection);
+            }
+            let mut x = p.0.cr.lock();
+            if x.unclaimed.remove(id) {
+                let q = Ok(Self { id: *id, type_info, p: p.clone() });
+                //DeBUGGY:println!("{:?}", q);
+                q
+            } else {
+                Err(AlreadyClaimed)
+            }
+        } else {
+            Err(ClaimError::UnknownName)
+        }
+    }
+
     fn claim(
         name: Name,
         want_putter: bool,
@@ -434,8 +458,12 @@ impl PortCommon {
 
 struct Putter<T: PortDatum>(PortCommon, PhantomData<T>);
 impl<T: PortDatum> Putter<T> {
-    fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+
+    pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, true, TypeInfo::of::<T>(), p)?, Default::default()))
+    }
+    unsafe fn untyped_claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::untyped_claim(name, true, p)?, Default::default()))
     }
 
     // returns whether the value was CONSUMED
@@ -501,8 +529,11 @@ impl<T: PortDatum> Putter<T> {
 }
 struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
 impl<T: 'static + Send + Sync + Sized> Getter<T> {
-    fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+    pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?, Default::default()))
+    }
+    unsafe fn untyped_claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::untyped_claim(name, true, p)?, Default::default()))
     }
 
     fn get_data<F: FnOnce(FinalizeHow)>(
