@@ -51,3 +51,8 @@ This example demonstrates that nothing is stopping you from making protocol comp
 
 ## Playground
 See the `/playground/` for a walkthrough of how this library may be used
+
+## Compiling for C
+Your Rust code can be leveraged in your C programs by relying on the C ABI. The Reo compiler will emit Rusty protocol code already prepared for this. If you aren't familiar with Rust, the script `rs_to_so.sh` is provided.
+
+
