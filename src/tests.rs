@@ -1119,13 +1119,10 @@ fn ffi_put_get() {
 
     let mut value: u32 = 420;
     unsafe {
-        let mut data: *mut c_void = std::mem::transmute(&mut value);
-        reors_putter_put_raw(&mut port_a, &mut data);
+        let data: *mut c_void = std::mem::transmute(&mut value);
+        assert!(reors_putter_put(&mut port_a, data));
 
-        let mut data2: *mut c_void = std::mem::transmute(0isize);
-        assert_ne!(data, data2);
-
-        reors_getter_get_raw(&mut port_b, &mut data2);
+        let data2 = reors_getter_get(&mut port_b);
         assert_eq!(data, data2);
         assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
     }
@@ -1157,13 +1154,10 @@ fn ffi_full() {
     // put and get
     let mut value: u32 = 420;
     unsafe {
-        let mut data: *mut c_void = std::mem::transmute(&mut value);
-        reors_putter_put_raw(&mut port_a, &mut data);
+        let data: *mut c_void = std::mem::transmute(&mut value);
+        assert!(reors_putter_put(&mut port_a, data));
 
-        let mut data2: *mut c_void = std::mem::transmute(0isize);
-        assert_ne!(data, data2);
-
-        reors_getter_get_raw(&mut port_b, &mut data2);
+        let data2 = reors_getter_get(&mut port_b);
         assert_eq!(data, data2);
         assert_eq!(data2 as isize, std::mem::transmute::<_, isize>(data2));
     }

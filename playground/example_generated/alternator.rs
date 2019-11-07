@@ -19,33 +19,35 @@ where
     T0: 'static + Send + Sync + Sized,
 {
     let name_defs = hashmap!{
-        "a" => Port { is_putter:  true, type_info: TypeInfo::of::<T0>() },
-        "b" => Port { is_putter: false, type_info: TypeInfo::of::<T0>() },
+        "a" => Port { is_putter: true, type_info: TypeInfo::of::<T0>() },
+        "b" => Port { is_putter: true, type_info: TypeInfo::of::<T0>() },
+        "c" => Port { is_putter: false, type_info: TypeInfo::of::<T0>() },
         "m1" => Mem(TypeInfo::of::<T0>()),
     };
     let rules = vec![
         RuleDef {
             state_guard: StatePredicate {
-                ready_ports: hashset! {"a", },
+                ready_ports: hashset! {"a", "b", "c", },
                 full_mem: hashset! { },
                 empty_mem: hashset! {"m1", },
             },
             ins: vec![
             ],
             output: hashmap!{
-                "a" => (false, hashset!{"m1", }),
+                "a" => (false, hashset!{"c", }),
+                "b" => (false, hashset!{"m1", }),
             }
         },
         RuleDef {
             state_guard: StatePredicate {
-                ready_ports: hashset! {"b", },
+                ready_ports: hashset! {"b", "c", },
                 full_mem: hashset! {"m1", },
                 empty_mem: hashset! {},
             },
             ins: vec![
             ],
             output: hashmap!{
-                "m1" => (false, hashset!{"b", }),
+                "m1" => (false, hashset!{"c", }),
             }
         },
     ];

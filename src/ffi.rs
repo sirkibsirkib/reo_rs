@@ -48,8 +48,8 @@ pub unsafe extern fn reors_putter_claim(proto_handle: *mut CProtoHandle, name: *
 }
 
 #[no_mangle]
-pub unsafe extern fn reors_putter_put_raw(putter: *mut CPutter, datum: *mut *mut c_void) -> bool {
-	(*putter)._p.put_raw(std::mem::transmute(datum))
+pub unsafe extern fn reors_putter_put(putter: *mut CPutter, datum: *mut c_void) -> bool {
+	(*putter)._p.put(datum as isize).is_none()
 }
 
 #[no_mangle]
@@ -72,8 +72,8 @@ pub unsafe extern fn reors_getter_claim(proto_handle: *mut CProtoHandle, name: *
 }
 
 #[no_mangle]
-pub unsafe extern fn reors_getter_get_raw(getter: *mut CGetter, dest: *mut *mut c_void) {
-	(*getter)._p.get_raw(std::mem::transmute(dest))
+pub unsafe extern fn reors_getter_get(getter: *mut CGetter) -> *mut c_void {
+	(*getter)._p.get() as *mut c_void
 }
 
 #[no_mangle]

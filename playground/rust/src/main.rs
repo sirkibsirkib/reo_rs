@@ -3,14 +3,14 @@ mod fifo1;
 
 fn main() {
 	// create a protocol instance
-	let proto = fifo1::proto_protocol1_build_rust::<isize, isize, isize>();
+	let proto = fifo1::proto_protocol1_build_rust::<isize>();
 	
 	// claim, initialize the logical ports "A" and "B" and bind them to variables.
 	/* Rust's borrowing rules will ensure only safe behavior is allowed.
 	   Note that it is permitted to move port objects between threads to
 	   achieve concurrency, parallelism. */
-	let mut a = Putter::<isize>::claim(&proto, "A").unwrap();
-	let mut b = Getter::<isize>::claim(&proto, "B").unwrap();
+	let mut a = Putter::<isize>::claim(&proto, "a").unwrap();	
+	let mut b = Getter::<isize>::claim(&proto, "b").unwrap();
 
 	let to = std::time::Duration::from_millis(500);
 	
