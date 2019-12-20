@@ -4,7 +4,7 @@
 
 An implementation of system components to enforce adherence to a protocol with respect to data flowing through logical ports. These protocol components are able to act as a _communication medium_ for threads sending and receiving data. On its own, this is useful is facilitating data-flow as desired. However, the real utlility of these components is their preservation of their corresponding _protocol specification_ in the [Reo language](http://reo.project.cwi.nl).
 
-The library can be used in a stand-alone fashion (See examples below) but is built with the Reo Compiler in mind. The details of the implementation and the association with Reo are documented in detail as part of my [master's thesis](https://github.com/sirkibsirkib/msc_latex). 
+The library can be used in a stand-alone fashion (See examples below) but is built with the Reo Compiler in mind. The details of the implementation and the association with Reo are documented in detail as part of my [master's thesis](https://github.com/sirkibsirkib/msc_latex/blob/master/main.pdf). 
 
 ## Standalone Use
 This library is standalone, and can be imported and used as a Rust dependency in the usual way with or without Reo's code generation. The library requires the use of a _nightly_ compiler to leverage two of Rust's experimental features (see the thesis for more details). Once these features become stable, the library will be made available on Crates.io as is the Rust convention.
