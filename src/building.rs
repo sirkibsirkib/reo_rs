@@ -1,5 +1,15 @@
 use super::*;
 
+pub trait FromStrExpect: FromStr {
+    fn from_str_expect(s: &str) -> Self {
+        match Self::from_str(s) {
+            Ok(x) => x,
+            Err(_) => panic!("{:?} could not be used to instantiate a value of the given type!", s),
+        }
+    }
+}
+impl<T: FromStr> FromStrExpect for T {}
+
 #[repr(C)]
 #[derive(Default)]
 pub struct MemInitial {
@@ -73,7 +83,6 @@ pub enum ProtoBuildError {
     MovementTypeMismatch { getter: Name, putter: Name },
     InstructionCannotOverwrite { name: Name }, // todo get more sophisticated
     CanOnlySwapMemory { name: Name },
-
 }
 
 fn resolve_fully(
@@ -242,7 +251,7 @@ pub fn build_proto(
         persistent_loc_kinds.push(kind);
     }
     for (name, _) in init.strg {
-        return Err((None, UnknownInitial { name }))
+        return Err((None, UnknownInitial { name }));
     }
     let perm_space_rng = 0..spaces.len();
     mem.pad_to_cap(perm_space_rng.end);

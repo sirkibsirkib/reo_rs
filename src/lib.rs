@@ -1,19 +1,12 @@
 #![feature(raw)]
 #![feature(specialization)]
 
-
-// #[no_mangle]
-// pub extern fn yass(x: u32) -> u32 {
-//     x
-// } 
-
 use bidir_map::BidirMap;
-use core::sync::atomic::AtomicBool;
+use core::{ops::Range, str::FromStr, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::ops::Range;
 use std::{
     alloc::Layout,
     collections::{HashMap, HashSet},
@@ -90,7 +83,7 @@ impl TypeInfo {
     #[inline(always)]
     pub fn get_my_clone(self) -> unsafe fn(TraitData, TraitData) {
         // temp. Rust compiler is too smart for (my) own good.
-        // is able to conclude that since we are using dynamic dispatch, 
+        // is able to conclude that since we are using dynamic dispatch,
         // whatever dynamic object it is, must be using the DEFAULT (unspecialized)
         // implementation of MaybeClone, and thus it does not need to traverse the
         // pointer. Whack. So instead I am stealing the function pointer manually,
@@ -130,7 +123,7 @@ impl TypeInfo {
     }
     pub unsafe fn clone(self, src: TraitData, dest: TraitData) {
         let f = self.get_my_clone();
-        f(src, dest);        
+        f(src, dest);
     }
 }
 
@@ -403,11 +396,7 @@ impl PortCommon {
         }
         Some(mb.recv())
     }
-    fn untyped_claim(
-        name: Name,
-        want_putter: bool,
-        p: &ProtoHandle,
-    ) -> Result<Self, ClaimError> {
+    fn untyped_claim(name: Name, want_putter: bool, p: &ProtoHandle) -> Result<Self, ClaimError> {
         use ClaimError::*;
         if let Some(id) = p.0.r.name_mapping.get_by_first(&name) {
             let (is_putter, type_info) = *p.0.r.port_info.get(id).expect("IDK");
@@ -457,7 +446,6 @@ impl PortCommon {
 
 pub struct Putter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
 impl<T: 'static + Send + Sync + Sized> Putter<T> {
-
     pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, true, TypeInfo::of::<T>(), p)?, Default::default()))
     }
@@ -929,7 +917,6 @@ impl ProtoCr {
         //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
-
                 // let a = !rule.bit_guard.ready.is_subset(&self.ready);
                 // let b = !rule.bit_guard.full_mem.is_subset(&self.mem);
                 // let c = !rule.bit_guard.empty_mem.is_disjoint(&self.mem);
