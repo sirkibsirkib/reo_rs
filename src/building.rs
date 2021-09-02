@@ -40,7 +40,9 @@ pub struct StatePredicate {
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct RuleDef {
+    // precondition for firing
     pub state_guard: StatePredicate,
+    pub type_map: HashMap<TypeInfo, TypeFuncs>,
     pub ins: Vec<Instruction<Name, Name>>,
     pub output: HashMap<Name, (bool, HashSet<Name>)>,
 }
