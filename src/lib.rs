@@ -21,6 +21,9 @@ use std_semaphore::Semaphore;
 
 pub mod building;
 
+mod allocator;
+mod type_info;
+
 mod bit_set;
 use bit_set::{BitSet, SetExt};
 // #[cfg(test)]
@@ -52,7 +55,6 @@ pub struct TypeInfo {
 pub struct TypeKey(usize);
 
 
-trait PortDatum {}
 pub type Name = &'static str;
 
 #[derive(DebugStub, Clone)]
@@ -151,8 +153,6 @@ pub struct ProtoR {
     type_map: Arc<TypeMap>,
 }
 
-type IsPutter = bool;
-
 #[derive(Debug)]
 pub struct ProtoCr {
     unclaimed: HashSet<SpaceIndex>,
@@ -202,17 +202,6 @@ pub struct PutterSpace {
 struct AtomicDatumPtr {
     raw: AtomicPtr<u8>,
 }
-impl AtomicDatumPtr {
-    fn swap(&self, new: DatumPtr) -> DatumPtr {
-        DatumPtr::from_raw(self.raw.swap(new.into_raw(), SeqCst))
-    }
-    fn load(&self) -> DatumPtr {
-        DatumPtr::from_raw(self.raw.load(SeqCst))
-    }
-    fn store(&self, new: DatumPtr) {
-        self.raw.store(new.into_raw(), SeqCst)
-    }
-}
 // putters by default retain their da
 #[derive(Debug)]
 pub struct Rule {
@@ -244,6 +233,17 @@ pub struct SpaceIndex(usize);
 
 /////////////////////////////////////////
 
+impl AtomicDatumPtr {
+    fn swap(&self, new: DatumPtr) -> DatumPtr {
+        DatumPtr::from_raw(self.raw.swap(new.into_raw(), SeqCst))
+    }
+    fn load(&self) -> DatumPtr {
+        DatumPtr::from_raw(self.raw.load(SeqCst))
+    }
+    fn store(&self, new: DatumPtr) {
+        self.raw.store(new.into_raw(), SeqCst)
+    }
+}
 impl DatumPtr {
     const NULL: Self = Self(0);
 
@@ -262,20 +262,7 @@ impl CallHandle {
         todo!()
     }
 }
-impl TypeMap {
-    fn get_type_info(&self, type_key: &TypeKey) -> &TypeInfo {
-        self.type_infos.get(&type_key).expect("unknown key!")
-    }
-}
 
-impl TypedAllocations {
-    fn insert(&mut self, type_key: TypeKey, datum_ptr: DatumPtr) -> bool {
-        self.map.entry(type_key).or_insert_with(Default::default).insert(datum_ptr)
-    }
-    fn remove(&mut self, type_key: TypeKey, datum_ptr: DatumPtr) -> bool {
-        self.map.get_mut(&type_key).map(|set| set.remove(&datum_ptr)).unwrap_or(false)
-    }
-}
 impl Space {
     fn get_putter_space(&self) -> Option<&PutterSpace> {
         match self {
@@ -640,12 +627,6 @@ impl ProtoR {
                 Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_key },
             })
             .collect();
-        // for (k, (putter, ttype_key)) in self.port_type_key.iter() {
-        //     let cap = &capabilities[k.0];
-        //     assert!(!cap.mem);
-        //     assert_eq!(cap.put, *putter);
-        //     assert_eq!(cap.ty, *ttype_key);
-        // }
         for rule in self.rules.iter() {
             assert!(rule.bit_assign.ready.is_subset(&rule.bit_guard.ready));
             assert!(rule.bit_guard.full_mem.is_subset(&rule.bit_guard.ready));
@@ -1041,69 +1022,6 @@ impl ProtoCr {
     }
 }
 
-impl Allocator {
-    pub fn new(type_map: Arc<TypeMap>) -> Self {
-        Self {
-            type_map,
-            occupied: Default::default(),
-            vacant: Default::default(),
-        }
-    }
-    pub fn occupy_allocation(&mut self, type_key: TypeKey) -> DatumPtr {
-        let Self { vacant, type_map, occupied } = self;
-        let set = vacant.map.entry(type_key).or_insert_with(Default::default);
-        let datum_ptr = set.iter().copied().next().unwrap_or_else(|| {
-            let layout = type_map.get_type_info(&type_key).layout;
-            let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
-            set.insert(datum_ptr);
-            datum_ptr
-        });
-        occupied.insert(type_key, datum_ptr);
-        datum_ptr
-    }
-    // pub fn get_a_vacant(&mut self, type_key: TypeKey) -> DatumPtr {
-    //     let Self { vacant, type_map, .. } = self;
-    //     let set = vacant.map.entry(type_key).or_insert_with(Default::default);
-    //     set.iter().copied().next().unwrap_or_else(|| {
-    //         let layout = type_map.get_type_info(&type_key).layout;
-    //         let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
-    //         set.insert(datum_ptr);
-    //         datum_ptr
-    //     })
-    // }
-    pub fn swap_allocation_to(&mut self, type_key: TypeKey, datum_ptr: DatumPtr, to_occupied: bool) {
-        println!("to_occupied {} before: {:#?}", to_occupied, self);
-        let [dest, src] = match to_occupied {
-            true => [&mut self.occupied, &mut self.vacant],
-            false => [&mut self.vacant, &mut self.occupied],
-        };
-        let removed = src.remove(type_key, datum_ptr);
-        assert!(removed);
-        dest.insert(type_key, datum_ptr);
-    }
-}
-impl Drop for Allocator {
-    fn drop(&mut self) {
-        // drop all occupied contents
-        for (type_key, datum_boxes) in self.occupied.map.iter() {
-            let type_info  = self.type_map.get_type_info(type_key);
-            if let Some(drop_func) = type_info.maybe_drop {
-                for datum_box in datum_boxes.iter() {
-                    unsafe { drop_func(datum_box.into_raw()) }
-                }
-            }
-        }
-
-        // drop all allocations
-        for (type_key, datum_boxes) in self.occupied.map.iter().chain(self.vacant.map.iter()) {
-            let type_info = self.type_map.get_type_info(type_key);
-            for datum_box in datum_boxes.iter() {
-                unsafe  { std::alloc::dealloc(datum_box.into_raw(), type_info.layout) }
-            }
-        }
-        //DeBUGGY:println!("ALLOCATOR DROPPING DONE");
-    }
-}
 impl MoveFlags {
     const FLAG_VISITED: u8 = 0b01;
     const FLAG_RETAINS: u8 = 0b10;
@@ -1187,76 +1105,6 @@ fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
             let ptr1 = eval_ptr(&terms[1], r);
             let type_info = r.type_map.get_type_info(type_key);
             unsafe { (type_info.maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw()) }
-        }
-    }
-}
-
-impl TypeInfo {
-    #[inline]
-    pub fn new_raw_move_ptr<T>() -> unsafe fn( *mut u8, *const u8) {
-        |dest, src| unsafe { (dest as *mut T).write((src as *const T).read()) }
-    }
-    #[inline]
-    pub fn new_clone_ptr<T: Clone>() -> unsafe fn(*mut u8, *const u8) {
-        |dest, src| unsafe {*(dest as *mut T) = (&*(src as *const T)).clone() }
-    }
-    #[inline]
-    pub fn new_eq_ptr<T: Eq>() -> unsafe fn(*const u8, *const u8) -> bool {
-        |a, b| unsafe { (&*(a as *const T)).eq(&*(b as *const T)) }
-    }
-    #[inline]
-    pub fn new_maybe_drop_ptr<T>() -> Option<unsafe fn(*mut u8)> {
-        if std::mem::needs_drop::<T>() {
-            Some( |ptr| unsafe { drop((ptr as *const T).read()) })
-        } else {
-            None
-        }
-    }
-    pub fn new_clone_eq<T: Clone + Eq>() -> Self  {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: Some(Self::new_clone_ptr::<T>()),
-            maybe_eq: Some(Self::new_eq_ptr::<T>()),
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-    pub fn new_clone_no_eq<T: Clone>() -> Self {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: Some(Self::new_clone_ptr::<T>()),
-            maybe_eq: None,
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-    pub fn new_no_clone_eq<T: Eq>() -> Self  {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: None,
-            maybe_eq: Some(Self::new_eq_ptr::<T>()),
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-    pub fn new_no_clone_no_eq<T>() -> Self {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: None,
-            maybe_eq: None,
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-}
-
-impl TypeInfo {
-    fn is_copy(&self) -> bool {
-        self.maybe_drop.is_none()
-    }
-    unsafe fn try_drop_data(&self, data: DatumPtr) {
-        if let Some(drop_func) = self.maybe_drop {
-            drop_func(data.into_raw())
         }
     }
 }
