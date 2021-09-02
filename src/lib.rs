@@ -1,4 +1,5 @@
 
+use core::marker::PhantomData;
 use bidir_map::BidirMap;
 use core::{ops::Range, str::FromStr, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
@@ -35,6 +36,28 @@ mod new_tests;
 
 //////////////////////////////////////////////////////////////////
 
+// invariant: all TypeKey elements in inner TypeMaps correspond 1-to-1 with std::any::TypeId
+pub struct TypeProtected<T>(T);
+
+pub struct TypedPutter<T> { 
+    putter: Putter,
+    _phantom: PhantomData<T>,
+}
+pub struct TypedGetter<T> { 
+    getter: Getter,
+    _phantom: PhantomData<T>,
+}
+impl<T> TypedPutter<T> {
+    fn put(&mut self, datum: T) -> Result<(),T> {
+        let mut datum = MaybeUninit::new(datum);
+        if unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) } {
+            Ok(())
+        } else {
+            Err(unsafe{datum.assume_init()})
+        }
+    }
+}
+
 #[derive(Clone, DebugStub)]
 pub struct TypeInfo {
     // essentially a Vtable
@@ -50,7 +73,7 @@ pub struct TypeInfo {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct TypeKey(usize);
+pub struct TypeKey(u64);
 
 
 pub type Name = &'static str;
@@ -106,6 +129,7 @@ pub struct MsgBox {
 pub enum ClaimError {
     WrongPortDirection,
     NameRefersToMemoryCell,
+    TypeCheckFailed(TypeKey),
     UnknownName,
     AlreadyClaimed,
 }
@@ -306,18 +330,24 @@ impl PartialEq for ProtoHandle {
 
 impl PortCommon {
 
-    unsafe fn claim_raw(
+
+    fn claim_common(
         name: Name,
         want_putter: bool,
         p: &ProtoHandle,
+        type_check: impl FnOnce(TypeKey) -> bool,
     ) -> Result<Self, ClaimError> {
+
         use ClaimError::*;
         if let Some(space_idx) = p.0.r.name_mapping.get_by_first(&name) {
-            let is_putter = match &p.0.r.spaces[space_idx.0] {
-                Space::PoGe { .. } => false,
-                Space::PoPu { .. } => true,
+            let (is_putter, type_key) = match &p.0.r.spaces[space_idx.0] {
+                Space::PoGe { type_key, .. } => (false, *type_key),
+                Space::PoPu { ps, .. } => (true, ps.type_key),
                 Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
             };
+            if !type_check(type_key) {
+                return Err(TypeCheckFailed(type_key))
+            } 
             if want_putter != is_putter {
                 return Err(WrongPortDirection);
             } 
@@ -333,8 +363,57 @@ impl PortCommon {
             Err(ClaimError::UnknownName)
         }
     }
+    fn claim(
+        name: Name,
+        want_putter: bool,
+        p: &ProtoHandle,
+        type_key: TypeKey,
+    ) -> Result<Self, ClaimError> {
+        Self::claim_common(name, want_putter, p, |k| k == type_key)
+    }
+
+    unsafe fn claim_raw(
+        name: Name,
+        want_putter: bool,
+        p: &ProtoHandle,
+    ) -> Result<Self, ClaimError> {
+        Self::claim_common(name, want_putter, p, |_| true)
+    }
 }
 
+
+
+
+impl<T: 'static> TypedGetter<T> {
+    pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
+        let getter = Getter(PortCommon::claim(name, false, p.get_inner(), TypeKey::from_type_id::<T>())?);
+        Ok(Self { getter, _phantom: Default::default() })
+    }
+
+    pub fn get(&mut self) -> T {
+        let mut datum = MaybeUninit::uninit() ;
+        unsafe { self.getter.get_raw(Some(datum.as_mut_ptr() as *mut u8)) };
+        unsafe { datum.assume_init() }
+    }
+    pub fn get_signal(&mut self) {
+        unsafe { self.getter.get_raw(None) };
+    }
+}
+impl<T: 'static> TypedPutter<T> {
+    pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
+        let putter = Putter(PortCommon::claim(name, true, p.get_inner(), TypeKey::from_type_id::<T>())?);
+        Ok(Self { putter, _phantom: Default::default() })
+    }
+
+    pub fn put_lossy(&mut self, datum: T) -> bool {
+        let mut datum = MaybeUninit::new(datum);
+        let ret = unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) };
+        if !ret {
+            unsafe { datum.assume_init() };
+        }
+        ret
+    }
+}
 impl Putter {
     pub unsafe fn claim_raw(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim_raw(name, true, p)?))
@@ -503,8 +582,18 @@ impl Getter {
     }
 }
 
+impl TypeProtected<ProtoHandle> {
+    pub fn fill_memory<T: 'static>(&self, name: Name, datum: T) -> Result<(), FillMemError> {
+        let type_key = TypeKey::from_type_id::<T>();
+        let mut datum = MaybeUninit::new(datum);
+        unsafe { self.0.fill_memory_raw(name, type_key, &mut datum).map_err(|e| {
+            datum.assume_init();
+            e
+        }) }
+    }
+}
 impl ProtoHandle {
-    unsafe fn fill_memory_raw<T>(& self, name: Name, type_key: TypeKey, datum: &mut MaybeUninit<T>) -> Result<(), FillMemError> {
+    pub unsafe fn fill_memory_raw<T>(&self, name: Name, type_key: TypeKey, datum: &mut MaybeUninit<T>) -> Result<(), FillMemError> {
         let Proto { r, cr } = self.0.as_ref();
         let type_info = r.type_map.get_type_info(&type_key);
         let space_idx = r.name_mapping.get_by_first(&name).ok_or(FillMemError::UnknownName)?;

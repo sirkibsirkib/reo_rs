@@ -1,5 +1,49 @@
 use super::*;
 
+impl TypeProtected<ProtoHandle> {
+	pub fn get_inner(&self) -> &ProtoHandle {
+		&self.0
+	}
+}
+
+impl Default for TypeProtected<TypeMap> {
+	fn default() -> Self {
+		let bool_type_key = TypeKey::from_type_id::<bool>();
+		Self(TypeMap {
+			bool_type_key,
+			type_infos: hashmap!{
+				bool_type_key => TypeInfo::new_clone_eq::<bool>(),
+			},
+		})
+	}
+}
+impl TypeProtected<TypeMap> {
+    pub fn add_no_clone_no_eq<T: 'static>(&mut self) -> TypeKey {
+        let type_key = TypeKey::from_type_id::<T>();
+        self.0.type_infos.entry(type_key).or_insert_with(TypeInfo::new_no_clone_no_eq::<T>);
+        type_key
+    }
+    pub fn add_no_clone_eq<T: 'static + Eq>(&mut self) -> TypeKey {
+        let type_key = TypeKey::from_type_id::<T>();
+        self.0.type_infos.entry(type_key).or_insert_with(TypeInfo::new_no_clone_eq::<T>);
+        type_key
+    }
+    pub fn add_clone_no_eq<T: 'static + Clone>(&mut self) -> TypeKey {
+        let type_key = TypeKey::from_type_id::<T>();
+        self.0.type_infos.entry(type_key).or_insert_with(TypeInfo::new_clone_no_eq::<T>);
+        type_key
+    }
+    pub fn add_clone_eq<T: 'static + Eq + Clone>(&mut self) -> TypeKey {
+        let type_key = TypeKey::from_type_id::<T>();
+        self.0.type_infos.entry(type_key).or_insert_with(TypeInfo::new_clone_eq::<T>);
+        type_key
+    }
+}
+impl TypeKey {
+	pub fn from_type_id<T: 'static>() -> Self {
+		unsafe { std::mem::transmute(std::any::TypeId::of::<T>()) }
+	}
+}
 impl TypeMap {
     pub fn get_type_info(&self, type_key: &TypeKey) -> &TypeInfo {
         self.type_infos.get(&type_key).expect("unknown key!")
