@@ -13,12 +13,13 @@ use std::{
     fmt,
     marker::PhantomData,
     mem::{transmute, MaybeUninit},
-    raw::TraitObject,
+    // raw::TraitObject,
     sync::{
         atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst},
         Arc,
     },
     time::Duration,
+    // any::TypeId,
 };
 use std_semaphore::Semaphore;
 
@@ -27,20 +28,234 @@ pub mod building;
 mod bit_set;
 use bit_set::{BitSet, SetExt};
 
-#[cfg(test)]
-mod tests;
 
-mod ffi;
-pub use ffi::*;
+type N = u8;
+
+#[derive(DebugStub)]
+struct TypeFuncs {
+    // essentially a Vtable
+    layout: Layout,
+     #[debug_stub = "write from read"]
+    raw_move: fn(*mut N, *const N),
+    #[debug_stub = "optional clone function pointer"]
+    maybe_clone: Option<fn(*mut N, *const N)>,
+     #[debug_stub = "optional eq function pointer"]
+    maybe_eq: Option<fn(*const N, *const N) -> bool>,
+     #[debug_stub = "optional drop function pointer"]
+    maybe_drop: Option<fn(*mut N)>,
+}
+
+impl TypeFuncs {
+    const fn is_copy(&self) -> bool {
+        self.maybe_drop.is_none()
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct TypeKey(usize);
+
+// #[cfg(test)]
+// mod tests;
+
+// mod ffi;
+// pub use ffi::*;
+
+type TypeInfo = TypeKey;
+
 
 // #[cfg(test)]
 // mod experiments;
 
-// safe. moving the TypeInfo around is fine. vtables are send and sync
-unsafe impl Send for TypeInfo {}
-unsafe impl Sync for TypeInfo {}
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct TypeInfo(pub(crate) TraitVtable);
+
+/////////////////////////////////////////
+
+// #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+// pub struct TypeInfo(pub(crate) TraitVtable);
+
+// /// prevent user creation.
+// pub struct OutputToken<T> {
+//     _phantom: PhantomData<T>,
+// }
+
+// #[allow(bare_trait_objects)] // DebugStub can't parse the new dyn syntax :(
+// #[derive(DebugStub, Clone)]
+// pub struct CallHandle {
+//     #[debug_stub = "FuncPtr"]
+//     func: unsafe fn(), // dummy type
+//     ret: TypeInfo,
+//     args: Vec<TypeInfo>,
+// }
+
+// pub struct Outputter<T> {
+//     dest: *mut T,
+// }
+
+
+trait PortDatum {}
+pub type Name = &'static str;
+
+#[derive(Debug)]
+struct CallHandle;
+
+#[derive(Debug, Clone)]
+pub enum Term<I, F> {
+    True,                                        // returns bool
+    False,                                       // returns bool
+    Not(Box<Self>),                              // returns bool
+    And(Vec<Self>),                              // returns bool
+    Or(Vec<Self>),                               // returns bool
+    BoolCall { func: F, args: Vec<Term<I, F>> }, // returns bool
+    IsEq(TypeInfo, Box<[Self; 2]>),              // returns bool
+    Named(I),                                    // type of I
+}
+
+#[derive(Debug, Clone)]
+pub enum Instruction<I, F> {
+    CreateFromFormula { dest: I, term: Term<I, F> },
+    CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
+    Check(Term<I, F>),
+    MemSwap(I, I),
+}
+#[derive(Debug)]
+pub enum Space {
+    PoPu { ps: PutterSpace, mb: MsgBox },
+    PoGe { mb: MsgBox },
+    Memo { ps: PutterSpace },
+}
+#[derive(Debug)]
+pub struct MsgBox {
+    s: crossbeam_channel::Sender<usize>,
+    r: crossbeam_channel::Receiver<usize>,
+}
+#[derive(Debug)]
+pub enum ClaimError {
+    WrongPortDirection,
+    TypeMismatch(TypeInfo),
+    UnknownName,
+    AlreadyClaimed,
+}
+
+#[derive(Debug)]
+struct PortCommon {
+    id: LocId,
+    type_info: TypeInfo,
+    p: ProtoHandle,
+}
+// unsafe trait PortDatum: Send + Sync + 'static {
+//     // DO NOT REORDER
+//     fn my_clone(&self, other: TraitData);
+//     fn my_eq(&self, other: TraitData) -> bool;
+//     fn is_copy(&self) -> bool;
+// }
+// trait MaybeCopy {
+//     const IS_COPY: bool;
+// }
+// trait MaybeClone {
+//     fn maybe_clone(&self, _: TraitData);
+// }
+// trait MaybePartialEq {
+//     fn maybe_partial_eq(&self, _: TraitData) -> bool;
+// }
+#[derive(Debug)]
+pub struct Proto {
+    cr: Mutex<ProtoCr>,
+    r: ProtoR,
+}
+#[derive(Debug, Clone)]
+pub struct ProtoHandle(pub(crate) Arc<Proto>);
+
+pub struct Putter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+
+pub struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+
+#[derive(Debug)]
+pub struct ProtoR {
+    rules: Vec<Rule>,
+    spaces: Vec<Space>,
+    perm_space_rng: Range<usize>,
+    name_mapping: BidirMap<Name, LocId>,
+    port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
+    type_map: Arc<HashMap<TypeKey, TypeFuncs>>,
+}
+
+type IsPutter = bool;
+
+#[derive(Debug)]
+pub struct ProtoCr {
+    unclaimed: HashSet<LocId>,
+    ready: BitSet,
+    mem: BitSet, // presence means FULL
+    allocator: Allocator,
+    ref_counts: HashMap<usize, usize>,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+enum FinalizeHow {
+    DropInside,
+    Forget, // was moved out maybe
+    Retain,
+}
+pub type TraitData = *mut ();
+const NULL: TraitData = std::ptr::null_mut();
+
+// pub type TraitVtable = *mut ();
+
+#[derive(Debug, Default)]
+pub(crate) struct Allocator {
+    allocated: HashMap<TypeInfo, HashSet<usize>>,
+    free: HashMap<TypeInfo, HashSet<usize>>,
+    type_map: Arc<HashMap<TypeKey, TypeFuncs>>,
+}
+
+#[derive(Debug, Default)]
+struct MoveFlags {
+    move_flags: AtomicU8,
+}
+#[derive(DebugStub)]
+pub struct Rendesvous {
+    countdown: AtomicUsize,
+    move_flags: MoveFlags,
+    #[debug_stub = "<Semaphore>"]
+    mover_sema: Semaphore,
+}
+#[derive(Debug)]
+pub struct PutterSpace {
+    ptr: AtomicPtr<()>,
+    type_info: TypeInfo,
+    rendesvous: Rendesvous,
+}
+// putters by default retain their da
+#[derive(Debug)]
+pub struct Rule {
+    bit_guard: BitStatePredicate,
+    ins: SmallVec<[Instruction<LocId, CallHandle>; 4]>, // dummy
+    /// COMMITMENTS BELOW HERE
+    output: SmallVec<[Movement; 4]>,
+    // .ready is always identical to bit_guard.ready. use that instead
+    bit_assign: BitStatePredicate,
+}
+
+#[derive(Debug)]
+struct BitStatePredicate {
+    ready: BitSet,
+    full_mem: BitSet,
+    empty_mem: BitSet,
+}
+
+#[derive(Debug)]
+pub struct Movement {
+    putter: LocId,
+    me_ge: Vec<LocId>,
+    po_ge: Vec<LocId>,
+    putter_retains: bool,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct LocId(usize);
+
+/////////////////////////////////////////
+
+/*
 impl TypeInfo {
     /* Somehow the inlining behaviour of this function sometimes creates DUPLICATE
     trait object vtables in memory. this has ONLY the effect of sometimes causing
@@ -148,18 +363,7 @@ fn trait_obj_read(x: &Box<dyn PortDatum>) -> (TraitData, TypeInfo) {
 
 unsafe impl Send for CallHandle {}
 unsafe impl Sync for CallHandle {}
-#[allow(bare_trait_objects)] // DebugStub can't parse the new dyn syntax :(
-#[derive(DebugStub, Clone)]
-pub struct CallHandle {
-    #[debug_stub = "FuncPtr"]
-    func: unsafe fn(), // dummy type
-    ret: TypeInfo,
-    args: Vec<TypeInfo>,
-}
 
-pub struct Outputter<T> {
-    dest: *mut T,
-}
 impl<T> Outputter<T> {
     pub fn output(self, t: T) -> OutputToken<T> {
         unsafe { self.dest.write(t) }
@@ -167,10 +371,6 @@ impl<T> Outputter<T> {
     }
 }
 
-/// prevent user creation.
-pub struct OutputToken<T> {
-    _phantom: PhantomData<T>,
-}
 
 /* Call handle can store a function with signature fn(*mut R, *const A0, *const A1)
 but expose an API that allows you to input a function with signature fn(Outputter<R>, &A0, &A1) -> OutputToken<R>.
@@ -284,34 +484,8 @@ impl CallHandle {
         unsafe { Self::new_args3_raw::<R, A0, A1, A2>(transmute(func)) }
     }
 }
+*/
 
-pub type Name = &'static str;
-
-#[derive(Debug, Clone)]
-pub enum Term<I, F> {
-    True,                                        // returns bool
-    False,                                       // returns bool
-    Not(Box<Self>),                              // returns bool
-    And(Vec<Self>),                              // returns bool
-    Or(Vec<Self>),                               // returns bool
-    BoolCall { func: F, args: Vec<Term<I, F>> }, // returns bool
-    IsEq(TypeInfo, Box<[Self; 2]>),              // returns bool
-    Named(I),                                    // type of I
-}
-
-#[derive(Debug, Clone)]
-pub enum Instruction<I, F> {
-    CreateFromFormula { dest: I, term: Term<I, F> },
-    CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
-    Check(Term<I, F>),
-    MemSwap(I, I),
-}
-#[derive(Debug)]
-pub enum Space {
-    PoPu { ps: PutterSpace, mb: MsgBox },
-    PoGe { mb: MsgBox },
-    Memo { ps: PutterSpace },
-}
 impl Space {
     fn get_putter_space(&self) -> Option<&PutterSpace> {
         match self {
@@ -327,11 +501,6 @@ impl Space {
             Space::Memo { .. } => None,
         }
     }
-}
-#[derive(Debug)]
-pub struct MsgBox {
-    s: crossbeam_channel::Sender<usize>,
-    r: crossbeam_channel::Receiver<usize>,
 }
 impl Default for MsgBox {
     fn default() -> Self {
@@ -354,35 +523,14 @@ impl MsgBox {
     }
 }
 
-#[derive(Debug)]
-pub struct Proto {
-    cr: Mutex<ProtoCr>,
-    r: ProtoR,
-}
 
 impl Eq for ProtoHandle {}
-#[derive(Debug, Clone)]
-pub struct ProtoHandle(pub(crate) Arc<Proto>);
 impl PartialEq for ProtoHandle {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-#[derive(Debug)]
-pub enum ClaimError {
-    WrongPortDirection,
-    TypeMismatch(TypeInfo),
-    UnknownName,
-    AlreadyClaimed,
-}
-
-#[derive(Debug)]
-struct PortCommon {
-    id: LocId,
-    type_info: TypeInfo,
-    p: ProtoHandle,
-}
 impl PortCommon {
     fn msg_recv(&self, mb: &MsgBox, maybe_timeout: Option<Duration>) -> Option<usize> {
         if let Some(timeout) = maybe_timeout {
@@ -444,7 +592,6 @@ impl PortCommon {
     }
 }
 
-pub struct Putter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
 impl<T: 'static + Send + Sync + Sized> Putter<T> {
     pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, true, TypeInfo::of::<T>(), p)?, Default::default()))
@@ -513,7 +660,93 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
         }
     }
 }
-pub struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+
+
+fn get_data<F: FnOnce(FinalizeHow)>(
+    r: &ProtoR,
+    ps: &PutterSpace,
+    maybe_dest: Option<*mut N>,
+    finalize: F,
+) {
+    // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
+    // println!("GET DATA");
+            let type_funcs: &TypeFuncs = r.type_map.get(&ps.type_info).expect("unknown type!");
+    let src_ptr: TraitData = ps.ptr.load(SeqCst);
+    assert!(src_ptr != NULL);
+    // println!("GETTER GOT PTR {:p}", ptr);
+    // let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
+    //     let src_ptr: *const T = transmute(ptr);
+    //     dest.as_mut_ptr().write(s.read());
+    // };
+    // let do_clone = move |dest: &mut MaybeUninit<T>| unsafe {
+    //     let dest_ptr: TraitData = transmute(dest);
+
+    //                     unsafe { (type_funcs.maybe_clone.expect("NO CLONE"))(dest_ptr, src_ptr) };
+    //     ps.type_info.clone(ptr, dest);
+    // };
+
+    const LAST: usize = 1;
+
+    if type_funcs.is_copy() {
+        // irrelevant how many copy
+        if let Some(dest_ptr) = maybe_dest {
+            unsafe { (type_funcs.raw_move)(dest_ptr, src_ptr) };
+            ps.rendesvous.move_flags.visit();
+        }
+        let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+        if was == LAST {
+            let [_, retains] = ps.rendesvous.move_flags.visit();
+            let how = if retains { FinalizeHow::Retain } else { FinalizeHow::Forget };
+            finalize(how);
+        }
+    } else {
+        if let Some(dest_ptr) = maybe_dest {
+            let [visited_first, retains] = ps.rendesvous.move_flags.visit();
+            if visited_first && !retains {
+                // I move!
+                // println!("A");
+                let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+                // println!("was (A) {}, retains {}", was, retains);
+                if was != LAST {
+                    ps.rendesvous.mover_sema.acquire();
+                }
+                unsafe { (type_funcs.raw_move)(dest_ptr, src_ptr) };
+                finalize(FinalizeHow::Forget);
+            // println!("/A");
+            } else {
+                // println!("B");
+
+                    unsafe { (type_funcs.maybe_clone.expect("NEED CLONE"))(dest_ptr, src_ptr) };
+                // do_clone(dest);
+                let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+                // println!("was (B) {}, retains {}", was, retains);
+                if was == LAST {
+                    if retains {
+                        finalize(FinalizeHow::Retain);
+                    } else {
+                        // println!("releasing");
+                        ps.rendesvous.mover_sema.release();
+                    }
+                }
+                // println!("/B");
+            }
+        } else {
+            // println!("C");
+            let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+            if was == LAST {
+                let [visited_first, retains] = ps.rendesvous.move_flags.visit();
+                if visited_first {
+                    let how =
+                        if retains { FinalizeHow::Retain } else { FinalizeHow::DropInside };
+                    finalize(how);
+                } else {
+                    ps.rendesvous.mover_sema.release();
+                }
+            }
+        }
+    }
+    // println!("GET COMPLETE");
+}
 impl<T: 'static + Send + Sync + Sized> Getter<T> {
     pub fn claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, false, TypeInfo::of::<T>(), p)?, Default::default()))
@@ -522,85 +755,9 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
         Ok(Self(PortCommon::untyped_claim(name, false, p)?, Default::default()))
     }
 
-    fn get_data<F: FnOnce(FinalizeHow)>(
-        ps: &PutterSpace,
-        maybe_dest: Option<&mut MaybeUninit<T>>,
-        finalize: F,
-    ) {
-        // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
-        // println!("GET DATA");
-        let ptr: TraitData = ps.ptr.load(SeqCst);
-        assert!(ptr != NULL);
-        // println!("GETTER GOT PTR {:p}", ptr);
-        let do_move = move |dest: &mut MaybeUninit<T>| unsafe {
-            let s: *const T = transmute(ptr);
-            dest.as_mut_ptr().write(s.read());
-        };
-        let do_clone = move |dest: &mut MaybeUninit<T>| unsafe {
-            let dest: TraitData = transmute(dest);
-            ps.type_info.clone(ptr, dest);
-        };
-
-        const LAST: usize = 1;
-
-        if T::IS_COPY {
-            // irrelevant how many copy
-            if let Some(dest) = maybe_dest {
-                do_move(dest);
-                ps.rendesvous.move_flags.visit();
-            }
-            let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-            if was == LAST {
-                let [_, retains] = ps.rendesvous.move_flags.visit();
-                let how = if retains { FinalizeHow::Retain } else { FinalizeHow::Forget };
-                finalize(how);
-            }
-        } else {
-            if let Some(dest) = maybe_dest {
-                let [visited_first, retains] = ps.rendesvous.move_flags.visit();
-                if visited_first && !retains {
-                    // I move!
-                    // println!("A");
-                    let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                    // println!("was (A) {}, retains {}", was, retains);
-                    if was != LAST {
-                        ps.rendesvous.mover_sema.acquire();
-                    }
-                    do_move(dest);
-                    finalize(FinalizeHow::Forget);
-                // println!("/A");
-                } else {
-                    // println!("B");
-                    do_clone(dest);
-                    let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                    // println!("was (B) {}, retains {}", was, retains);
-                    if was == LAST {
-                        if retains {
-                            finalize(FinalizeHow::Retain);
-                        } else {
-                            // println!("releasing");
-                            ps.rendesvous.mover_sema.release();
-                        }
-                    }
-                    // println!("/B");
-                }
-            } else {
-                // println!("C");
-                let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                if was == LAST {
-                    let [visited_first, retains] = ps.rendesvous.move_flags.visit();
-                    if visited_first {
-                        let how =
-                            if retains { FinalizeHow::Retain } else { FinalizeHow::DropInside };
-                        finalize(how);
-                    } else {
-                        ps.rendesvous.mover_sema.release();
-                    }
-                }
-            }
-        }
-        // println!("GET COMPLETE");
-    }
+    fn dest_type_forget(dest: Option<&mut MaybeUninit<T>>) -> Option<*mut N> {
+        dest.map(|x| x as *mut MaybeUninit<T> as *mut N)
+    } 
 
     // returns false if it doesn't participate in a rule
     fn get_entirely(
@@ -608,20 +765,21 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
         maybe_timeout: Option<Duration>,
         maybe_dest: Option<&mut MaybeUninit<T>>,
     ) -> bool {
-        let space = &self.0.p.0.r.spaces[self.0.id.0];
+        let Proto { r, cr } = self.0.p.0.as_ref();
+        let space = &r.spaces[self.0.id.0];
         if let Space::PoGe { mb } = space {
             {
-                let mut x = self.0.p.0.cr.lock();
+                let mut x = cr.lock();
                 assert!(x.ready.insert(self.0.id));
-                x.coordinate(&self.0.p.0.r);
+                x.coordinate(r);
             }
             let putter_id = match self.0.msg_recv(mb, maybe_timeout) {
                 None => return false,
                 Some(msg) => LocId(msg),
             };
             // println!("My putter has id {:?}", putter_id);
-            match &self.0.p.0.r.spaces[putter_id.0] {
-                Space::PoPu { ps, mb } => Self::get_data(ps, maybe_dest, move |how| {
+            match &r.spaces[putter_id.0] {
+                Space::PoPu { ps, mb } => get_data(r, ps, Self::dest_type_forget(maybe_dest), move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
@@ -630,11 +788,11 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
                     })
                     // println!("FINALZIING DONE");
                 }),
-                Space::Memo { ps } => Self::get_data(ps, maybe_dest, |how| {
+                Space::Memo { ps } => get_data(r, ps, Self::dest_type_forget(maybe_dest), |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
-                    self.0.p.0.cr.lock().finalize_memo(&self.0.p.0.r, putter_id, how);
+                    self.0.p.0.cr.lock().finalize_memo(r, putter_id, how);
                     // println!("FINALZIING DONE");
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
@@ -671,14 +829,6 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct ProtoR {
-    rules: Vec<Rule>,
-    spaces: Vec<Space>,
-    perm_space_rng: Range<usize>,
-    name_mapping: BidirMap<Name, LocId>,
-    port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
-}
 impl ProtoR {
     pub fn sanity_check(&self, cr: &ProtoCr) {
         let chunks = cr.ready.data.len();
@@ -687,7 +837,7 @@ impl ProtoR {
             put: bool,
             mem: bool,
             ty: TypeInfo,
-        };
+        }
         let capabilities: Vec<Cap> = self
             .spaces
             .iter()
@@ -854,22 +1004,6 @@ impl ProtoR {
     }
 }
 
-type IsPutter = bool;
-#[derive(Debug)]
-pub struct ProtoCr {
-    unclaimed: HashSet<LocId>,
-    ready: BitSet,
-    mem: BitSet, // presence means FULL
-    allocator: Allocator,
-    ref_counts: HashMap<usize, usize>,
-}
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum FinalizeHow {
-    DropInside,
-    Forget, // was moved out maybe
-    Retain,
-}
 impl ProtoCr {
     fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, how: FinalizeHow) {
         // println!("FINALIZING how={:?}", how);
@@ -1023,6 +1157,7 @@ impl ProtoCr {
             match &r.spaces[putter.0] {
                 Space::PoGe { .. } => panic!("CANNOT BE!"),
                 Space::PoPu { ps, mb } => {
+                let type_funcs: &TypeFuncs = r.type_map.get(&ps.type_info).expect("unknown type!");
                     //DeBUGGY:println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
                     if let Some(mem_0) = me_ge_iter.next() {
@@ -1039,12 +1174,15 @@ impl ProtoCr {
                         if !putter_retains {
                             let src_ptr = ps.ptr.swap(NULL, SeqCst);
                             assert!(src_ptr != NULL);
-                            unsafe { ps.type_info.copy(src_ptr, dest_ptr) };
+                            unsafe { (type_funcs.raw_move)(dest_ptr, src_ptr) };
+                            // unsafe { ps.type_info.copy(src_ptr, dest_ptr) };
                             mb.send(MsgBox::MOVED_MSG);
                         } else {
                             let src_ptr = ps.ptr.load(SeqCst);
                             assert!(src_ptr != NULL);
-                            unsafe { ps.type_info.clone(src_ptr, dest_ptr) };
+
+                            unsafe { (type_funcs.maybe_clone.expect("NO CLONE"))(dest_ptr, src_ptr) };
+                            // unsafe { ps.type_info.clone(src_ptr, dest_ptr) };
                             mb.send(MsgBox::UNMOVED_MSG);
                         }
                         assert!(self.ref_counts.insert(dest_ptr as usize, 1).is_none());
@@ -1108,16 +1246,6 @@ impl ProtoCr {
     }
 }
 
-pub type TraitData = *mut ();
-const NULL: TraitData = std::ptr::null_mut();
-
-pub type TraitVtable = *mut ();
-
-#[derive(Debug, Default)]
-pub(crate) struct Allocator {
-    allocated: HashMap<TypeInfo, HashSet<usize>>,
-    free: HashMap<TypeInfo, HashSet<usize>>,
-}
 impl Allocator {
     pub fn store(&mut self, x: Box<dyn PortDatum>) -> bool {
         let (data, info) = unsafe { trait_obj_break(x) };
@@ -1181,25 +1309,27 @@ impl Drop for Allocator {
     fn drop(&mut self) {
         //DeBUGGY:println!("ALLOCATOR DROPPING...");
         // drop all owned values
-        for (&vtable, data_vec) in self.allocated.iter() {
-            for &data in data_vec.iter() {
-                drop(unsafe { trait_obj_build(data as TraitData, vtable) })
+        for (type_info, data_vec) in self.allocated.iter() {
+            let type_funcs: &TypeFuncs = self.type_map.get(type_info).expect("UNKNOWN");
+            if let Some(drop_func) = type_funcs.maybe_drop {
+                for ptr in data_vec.iter().map(|&data| data as *mut u8) {
+                    // drop contents
+                    unsafe { drop_func(ptr) }
+                    // free allocation
+                    unsafe  { std::alloc::dealloc(ptr, type_funcs.layout) }
+                }
             }
         }
         // drop all empty boxes
-        let empty_box_vtable = TypeInfo::of::<Box<()>>();
-        for (_, data_vec) in self.free.iter() {
-            for &data in data_vec.iter() {
-                drop(unsafe { trait_obj_build(data as TraitData, empty_box_vtable) });
+        for (type_info, data_vec) in self.free.iter() {
+            let type_funcs: &TypeFuncs = self.type_map.get(type_info).expect("UNKNOWN");
+            for ptr in data_vec.iter().map(|&data| data as *mut u8) {
+                // free allocation
+                unsafe  { std::alloc::dealloc(ptr, type_funcs.layout) }
             }
         }
         //DeBUGGY:println!("ALLOCATOR DROPPING DONE");
     }
-}
-
-#[derive(Debug, Default)]
-struct MoveFlags {
-    move_flags: AtomicU8,
 }
 impl MoveFlags {
     const FLAG_VISITED: u8 = 0b01;
@@ -1219,19 +1349,6 @@ impl MoveFlags {
     }
 }
 
-#[derive(DebugStub)]
-pub struct Rendesvous {
-    countdown: AtomicUsize,
-    move_flags: MoveFlags,
-    #[debug_stub = "<Semaphore>"]
-    mover_sema: Semaphore,
-}
-#[derive(Debug)]
-pub struct PutterSpace {
-    ptr: AtomicPtr<()>,
-    type_info: TypeInfo,
-    rendesvous: Rendesvous,
-}
 impl PutterSpace {
     fn new(ptr: TraitData, type_info: TypeInfo) -> Self {
         PutterSpace {
@@ -1246,34 +1363,6 @@ impl PutterSpace {
     }
 }
 
-// putters by default retain their da
-#[derive(Debug)]
-pub struct Rule {
-    bit_guard: BitStatePredicate,
-    ins: SmallVec<[Instruction<LocId, CallHandle>; 4]>, // dummy
-    /// COMMITMENTS BELOW HERE
-    output: SmallVec<[Movement; 4]>,
-    // .ready is always identical to bit_guard.ready. use that instead
-    bit_assign: BitStatePredicate,
-}
-
-#[derive(Debug)]
-struct BitStatePredicate {
-    ready: BitSet,
-    full_mem: BitSet,
-    empty_mem: BitSet,
-}
-
-#[derive(Debug)]
-pub struct Movement {
-    putter: LocId,
-    me_ge: Vec<LocId>,
-    po_ge: Vec<LocId>,
-    putter_retains: bool,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct LocId(usize);
 impl fmt::Debug for LocId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LocId({})", self.0)
@@ -1330,10 +1419,9 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
     }
 }
 
+/*
+
 /////////////
-trait MaybeCopy {
-    const IS_COPY: bool;
-}
 impl<T> MaybeCopy for T {
     default const IS_COPY: bool = false;
 }
@@ -1341,9 +1429,6 @@ impl<T: Copy> MaybeCopy for T {
     const IS_COPY: bool = true;
 }
 /////////////
-trait MaybeClone {
-    fn maybe_clone(&self, _: TraitData);
-}
 impl<T> MaybeClone for T {
     default fn maybe_clone(&self, _: TraitData) {
         panic!("This type cannot clone!")
@@ -1356,9 +1441,6 @@ impl<T: Clone> MaybeClone for T {
     }
 }
 /////////////
-trait MaybePartialEq {
-    fn maybe_partial_eq(&self, _: TraitData) -> bool;
-}
 impl<T> MaybePartialEq for T {
     default fn maybe_partial_eq(&self, _: TraitData) -> bool {
         panic!("This type cannot check partial equality!")
@@ -1371,6 +1453,9 @@ impl<T: PartialEq> MaybePartialEq for T {
     }
 }
 /////////
+// safe. moving the TypeInfo around is fine. vtables are send and sync
+unsafe impl Send for TypeInfo {}
+unsafe impl Sync for TypeInfo {}
 
 /* This is a trait that can be derived for any 'static type.
    it is used for our dynamic dispatch system; we need all types to
@@ -1379,12 +1464,6 @@ impl<T: PartialEq> MaybePartialEq for T {
    is to rely on the specialization feature to place PANIC calls with helpeful
    error messages if my_clone is invoked on a type that does not implement Clone etc.
 */
-unsafe trait PortDatum: Send + Sync + 'static {
-    // DO NOT REORDER
-    fn my_clone(&self, other: TraitData);
-    fn my_eq(&self, other: TraitData) -> bool;
-    fn is_copy(&self) -> bool;
-}
 unsafe impl<T: Send + Sync + 'static + Sized> PortDatum for T {
     fn my_clone(&self, other: TraitData) {
         <Self as MaybeClone>::maybe_clone(self, other)
@@ -1396,3 +1475,6 @@ unsafe impl<T: Send + Sync + 'static + Sized> PortDatum for T {
         <Self as MaybeCopy>::IS_COPY
     }
 }
+
+
+*/

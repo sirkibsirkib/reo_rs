@@ -8,25 +8,11 @@ pub trait FromStrExpect: FromStr {
         }
     }
 }
-impl<T: FromStr> FromStrExpect for T {}
 
 #[repr(C)]
 #[derive(Default)]
 pub struct MemInitial {
     strg: HashMap<Name, Box<dyn PortDatum>>,
-}
-impl MemInitial {
-    #[inline]
-    pub fn with<T: 'static + Send + Sync + Sized>(mut self, name: Name, init: T) -> Self {
-        let dy: Box<dyn PortDatum> = Box::new(init);
-        let i1 = TypeInfo::of::<T>();
-        // TODO for some reason Rustc makes two trait objects?
-        // Anyway we exclusively use those returned by TypeInfo
-        let (d, _i2) = unsafe { trait_obj_break(dy) };
-        let dy = unsafe { trait_obj_build(d, i1) };
-        self.strg.insert(name, dy);
-        self
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,8 +44,6 @@ pub struct RuleDef {
     pub ins: Vec<Instruction<Name, Name>>,
     pub output: HashMap<Name, (bool, HashSet<Name>)>,
 }
-/////////////////////////////////////
-
 #[derive(Debug)]
 pub enum ProtoBuildError {
     PutWithoutFullCertainty { name: Name },
@@ -83,6 +67,22 @@ pub enum ProtoBuildError {
     MovementTypeMismatch { getter: Name, putter: Name },
     InstructionCannotOverwrite { name: Name }, // todo get more sophisticated
     CanOnlySwapMemory { name: Name },
+}
+/////////////////////////////////////
+impl<T: FromStr> FromStrExpect for T {}
+
+impl MemInitial {
+    #[inline]
+    pub fn with<T: 'static + Send + Sync + Sized>(mut self, name: Name, init: T) -> Self {
+        let dy: Box<dyn PortDatum> = Box::new(init);
+        let i1 = TypeInfo::of::<T>();
+        // TODO for some reason Rustc makes two trait objects?
+        // Anyway we exclusively use those returned by TypeInfo
+        let (d, _i2) = unsafe { trait_obj_break(dy) };
+        let dy = unsafe { trait_obj_build(d, i1) };
+        self.strg.insert(name, dy);
+        self
+    }
 }
 
 fn resolve_fully(
@@ -199,6 +199,7 @@ pub fn build_proto(
     let mut spaces = vec![];
     let mut name_mapping = BidirMap::<Name, LocId>::new();
     let mut unclaimed: HashSet<LocId> = hashset! {};
+    // locid -> (is_putter, type_info)
     let mut port_info: HashMap<LocId, (bool, TypeInfo)> = hashmap! {};
     let mut allocator = Allocator::default();
 

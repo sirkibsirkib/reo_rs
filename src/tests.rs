@@ -301,6 +301,7 @@ pub fn allocator_fresh_alloc() {
     assert_eq!(*m.lock(), 2);
 }
 
+/*
 #[test]
 fn call_handle_nullary() {
     let f: fn(Outputter<String>) -> OutputToken<String> = |o| o.output(String::from("HI"));
@@ -341,7 +342,7 @@ fn call_handle_binary() {
     unsafe { ch.exec(dest, &arg_ref[..]) };
     assert_eq!(o, 21);
 }
-
+*/
 lazy_static::lazy_static! {
     static ref SYNC_U32: ProtoDef = ProtoDef {
         name_defs: hashmap! {
