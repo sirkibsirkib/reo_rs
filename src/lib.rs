@@ -1,7 +1,7 @@
 
 use core::marker::PhantomData;
 use bidir_map::BidirMap;
-use core::{ops::Range, str::FromStr, sync::atomic::AtomicBool};
+use core::{ops::Range, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
@@ -26,9 +26,9 @@ mod type_info;
 
 mod bit_set;
 use bit_set::{BitSet, SetExt};
-// #[cfg(test)]
 // mod tests;
 
+#[cfg(test)]
 mod new_tests;
 
 // mod ffi;
@@ -138,7 +138,7 @@ pub enum FillMemError {
     NameNotForMemCell,
     UnknownName,
     MemoryNonempty,
-    ExpectedType(TypeKey),
+    TypeCheckFailed(TypeKey),
 }
 
 #[derive(Debug)]
@@ -329,8 +329,6 @@ impl PartialEq for ProtoHandle {
 }
 
 impl PortCommon {
-
-
     fn claim_common(
         name: Name,
         want_putter: bool,
@@ -380,9 +378,6 @@ impl PortCommon {
         Self::claim_common(name, want_putter, p, |_| true)
     }
 }
-
-
-
 
 impl<T: 'static> TypedGetter<T> {
     pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
@@ -445,11 +440,6 @@ impl Putter {
         }
     }
 
-    /// datum_ptr must point to initialized data
-    /// returns `true` if the value was consumed, in which case the caller
-    ///     is reponsible for forgetting it.
-    /// otherwise, returns `false` if the value was not consumed, and should
-    ///     still be considered owned and valid.
     pub unsafe fn put_raw(&mut self, src: *mut u8) -> bool {
         // exposed for the sake of C API
         self.put_inner(DatumPtr::from_raw(src))
@@ -578,7 +568,7 @@ impl Getter {
     }
 
     pub unsafe fn get_raw(&mut self, dest: Option<*mut u8>) {
-        assert!(self.get_inner( dest.map(DatumPtr::from_raw)));
+        assert!(self.get_inner(dest.map(DatumPtr::from_raw)));
     }
 }
 
@@ -586,42 +576,39 @@ impl TypeProtected<ProtoHandle> {
     pub fn fill_memory<T: 'static>(&self, name: Name, datum: T) -> Result<(), FillMemError> {
         let type_key = TypeKey::from_type_id::<T>();
         let mut datum = MaybeUninit::new(datum);
-        unsafe { self.0.fill_memory_raw(name, type_key, &mut datum).map_err(|e| {
+        unsafe { self.0.fill_memory_common(name, datum.as_mut_ptr() as *mut u8, |t| t == type_key).map_err(|e| {
             datum.assume_init();
             e
         }) }
     }
 }
 impl ProtoHandle {
-    pub unsafe fn fill_memory_raw<T>(&self, name: Name, type_key: TypeKey, datum: &mut MaybeUninit<T>) -> Result<(), FillMemError> {
+    unsafe fn fill_memory_common(&self, name: Name, src: *mut u8, type_check: impl FnOnce(TypeKey)->bool) -> Result<(), FillMemError> {
         let Proto { r, cr } = self.0.as_ref();
-        let type_info = r.type_map.get_type_info(&type_key);
         let space_idx = r.name_mapping.get_by_first(&name).ok_or(FillMemError::UnknownName)?;
         if let Space::Memo { ps } = &r.spaces[space_idx.0] {
-            if ps.type_key != type_key {
-                return Err(FillMemError::ExpectedType(ps.type_key));
+            if !type_check(ps.type_key) {
+                return Err(FillMemError::TypeCheckFailed(ps.type_key));
             }
             let mut lock = cr.lock();
             if lock.mem.contains(space_idx) {
                 return Err(FillMemError::MemoryNonempty);
             }
             // success guaranteed!
-            let datum_ptr = lock.allocator.occupy_allocation(type_key);
+            let datum_ptr = lock.allocator.occupy_allocation(ps.type_key);
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             lock.mem.insert(*space_idx);
             // println!("SWAP A");
             assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
-             (type_info.raw_move)(datum_ptr.into_raw(), datum.as_ptr() as *const u8) ;
+            let type_info = r.type_map.get_type_info(&ps.type_key);
+            (type_info.raw_move)(datum_ptr.into_raw(), src);
             Ok(())
         } else {
             Err(FillMemError::NameNotForMemCell)
         }
     }
-    unsafe fn fill_memory<T>(& self, name: Name, type_key: TypeKey, datum: T) -> Result<(), (T, FillMemError)> {
-        let mut datum = MaybeUninit::new(datum);
-         self.fill_memory_raw(name, type_key, &mut datum).map_err(|e| {
-            (datum.assume_init(), e)
-        })
+    pub unsafe fn fill_memory_raw(&self, name: Name, src: *mut u8) -> Result<(), FillMemError> {
+        self.fill_memory_common(name, src, |_| true)
     }
 }
 
@@ -637,8 +624,7 @@ impl ProtoR {
         let capabilities: Vec<Cap> = self
             .spaces
             .iter()
-            .enumerate()
-            .map(|(id, x)| match x {
+            .map(|x| match x {
                 Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_key },
                 Space::PoGe { type_key, .. } => Cap {
                     put: false,

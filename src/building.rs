@@ -1,14 +1,5 @@
 use super::*;
 
-pub trait FromStrExpect: FromStr {
-    fn from_str_expect(s: &str) -> Self {
-        match Self::from_str(s) {
-            Ok(x) => x,
-            Err(_) => panic!("{:?} could not be used to instantiate a value of the given type!", s),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum NameDef {
     Port { is_putter: bool, type_key: TypeKey },
@@ -70,7 +61,6 @@ enum LocKind {
     Memo,
 }
 /////////////////////////////////////
-impl<T: FromStr> FromStrExpect for T {}
 
 fn resolve_fully(
     temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,

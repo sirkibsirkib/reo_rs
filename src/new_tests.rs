@@ -4,7 +4,7 @@ use std::thread;
 use maplit::{hashmap, hashset};
 
 #[test]
-fn main() {
+fn unsafe_main() {
 	let type_map = Arc::new(TypeMap {
 		type_infos: hashmap! {
 			TypeKey(0) => TypeInfo::new_clone_eq::<bool>()
@@ -55,7 +55,7 @@ fn main() {
 		],
 	};
 	let p = building::build_proto(&proto_def, type_map).unwrap();
-	unsafe { p.fill_memory("B", TypeKey(0), true) }.unwrap();
+	unsafe { p.fill_memory_raw("B", (&mut true) as *mut bool as *mut u8).unwrap() };
 
     let (mut a, mut c, mut d): (Putter, Getter, Getter) = unsafe {
         (
