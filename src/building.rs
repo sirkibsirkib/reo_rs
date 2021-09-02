@@ -11,8 +11,8 @@ pub trait FromStrExpect: FromStr {
 
 #[derive(Debug, Clone)]
 pub enum NameDef {
-    Port { is_putter: bool, type_info: TypeInfo },
-    Mem { type_info: TypeInfo },
+    Port { is_putter: bool, type_key: TypeKey },
+    Mem { type_key: TypeKey },
     Func(CallHandle),
 }
 
@@ -67,10 +67,10 @@ pub enum ProtoBuildError {
 impl<T: FromStr> FromStrExpect for T {}
 
 fn resolve_fully(
-    temp_names: &HashMap<Name, (LocId, TypeInfo)>,
-    name_mapping: &BidirMap<Name, LocId>,
+    temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,
+    name_mapping: &BidirMap<Name, SpaceIndex>,
     name: Name,
-) -> Result<LocId, ProtoBuildError> {
+) -> Result<SpaceIndex, ProtoBuildError> {
     use ProtoBuildError::*;
     temp_names
         .get(&name)
@@ -82,10 +82,10 @@ fn resolve_fully(
 fn term_eval_tid(
     type_map: &TypeMap,
     spaces: &Vec<Space>,
-    temp_names: &HashMap<Name, (LocId, TypeInfo)>,
-    name_mapping: &BidirMap<Name, LocId>,
+    temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,
+    name_mapping: &BidirMap<Name, SpaceIndex>,
     term: &Term<Name, Name>,
-) -> Result<TypeInfo, ProtoBuildError> {
+) -> Result<TypeKey, ProtoBuildError> {
     use ProtoBuildError::*;
     use Term::*;
     Ok(match term {
@@ -93,7 +93,7 @@ fn term_eval_tid(
             spaces[resolve_fully(temp_names, name_mapping, name)?.0]
                 .get_putter_space()
                 .ok_or(TermNameIsNotPutter { name })?
-                .type_info
+                .type_key
         }
         _ => type_map.bool_type_key,
     })
@@ -102,12 +102,12 @@ fn term_eval_tid(
 fn term_convert(
     type_map: &TypeMap,
     spaces: &Vec<Space>,
-    temp_names: &HashMap<Name, (LocId, TypeInfo)>,
-    name_mapping: &BidirMap<Name, LocId>,
+    temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,
+    name_mapping: &BidirMap<Name, SpaceIndex>,
     call_handles: &HashMap<Name, CallHandle>,
     known_state: &HashMap<Name, bool>,
     term: &Term<Name, Name>,
-) -> Result<Term<LocId, CallHandle>, ProtoBuildError> {
+) -> Result<Term<SpaceIndex, CallHandle>, ProtoBuildError> {
     use ProtoBuildError::*;
     use Term::*;
     let clos = |fs: &Vec<Term<Name, Name>>| {
@@ -177,36 +177,35 @@ impl ProtoDef {
         use ProtoBuildError::*;
 
         let mut spaces = vec![];
-        let mut name_mapping = BidirMap::<Name, LocId>::new();
-        let mut unclaimed: HashSet<LocId> = hashset! {};
-        // locid -> (is_putter, type_info)
+        let mut name_mapping = BidirMap::<Name, SpaceIndex>::new();
+        let mut unclaimed: HashSet<SpaceIndex> = hashset! {};
+        // locid -> (is_putter, type_key)
 
-        let mut port_info: HashMap<LocId, (bool, TypeInfo)> = hashmap! {};
+        let mut port_type_key: HashMap<SpaceIndex, (bool, TypeKey)> = hashmap! {};
 
         let mut persistent_loc_kinds = vec![];
 
         // consume all name defs, creating spaces. retain call_handles to be treated later
         let mut ready = BitSet::default();
         let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
-        let mut ref_counts = hashmap! {};
         for (name, def) in self.name_defs.iter() {
-            let id = LocId(spaces.len());
+            let id = SpaceIndex(spaces.len());
             name_mapping.insert(name, id);
             let (space, kind) = match def {
-                NameDef::Port { is_putter, type_info } => {
+                NameDef::Port { is_putter, type_key } => {
                     unclaimed.insert(id);
-                    port_info.insert(id, (*is_putter, *type_info));
+                    port_type_key.insert(id, (*is_putter, *type_key));
                     let mb = MsgBox::default();
                     if *is_putter {
-                        let ps = PutterSpace::new( *type_info);
+                        let ps = PutterSpace::new( *type_key);
                         (Space::PoPu { ps, mb }, LocKind::PoPu)
                     } else {
-                        (Space::PoGe { mb }, LocKind::PoGe)
+                        (Space::PoGe { mb, type_key: *type_key }, LocKind::PoGe)
                     }
                 }
-                NameDef::Mem { type_info } => {
+                NameDef::Mem { type_key } => {
                     ready.insert(id);
-                    (Space::Memo { ps: PutterSpace::new( *type_info) }, LocKind::Memo)
+                    (Space::Memo { ps: PutterSpace::new( *type_key) }, LocKind::Memo)
                 }
                 NameDef::Func(call_handle) => {
                     call_handles.insert(name, call_handle.clone());
@@ -225,7 +224,7 @@ impl ProtoDef {
             |name: Name| Some(persistent_loc_kinds[name_mapping.get_by_first(&name)?.0]);
 
         // temp vars
-        let mut temp_names: HashMap<Name, (LocId, TypeInfo)> = hashmap! {};
+        let mut temp_names: HashMap<Name, (SpaceIndex, TypeKey)> = hashmap! {};
         let mut puts: HashSet<Name> = hashset! {};
         let mut gets: HashSet<Name> = hashset! {};
         let mut known_state: HashMap<Name, bool> = hashmap! {};
@@ -233,7 +232,7 @@ impl ProtoDef {
         // keeps track of PERM memory position for the purpose of matching the MOVEMENT to it (for changing assign bits)
         // key is location of mem (corresponding to the MOVEMENT PUTTER ultimately)
         // value is the permanent memcell where it started
-        let mut whose_mem_is_this: HashMap<LocId, LocId> = hashmap! {};
+        let mut whose_mem_is_this: HashMap<SpaceIndex, SpaceIndex> = hashmap! {};
 
         let mut rule_f = |rule: &RuleDef| {
             puts.clear();
@@ -318,18 +317,18 @@ impl ProtoDef {
                         )?)
                     }
                     CreateFromFormula { dest, term } => {
-                        let type_info = term_eval_tid(
+                        let type_key = term_eval_tid(
                             &type_map,&spaces, &temp_names, &name_mapping, &term)?;
-                        if type_info != bool_type_key {
+                        if type_key != bool_type_key {
                             return Err(CreatingNonBoolFromFormula);
                         }
                         if resolve_fully(&temp_names, &name_mapping, dest).is_ok() {
                             return Err(InstructionCannotOverwrite { name: dest });
                         }
-                        let ps = PutterSpace::new( type_info);
+                        let ps = PutterSpace::new( type_key);
                         spaces.push(Space::Memo { ps });
-                        let temp_id = LocId(spaces.len() - 1);
-                        if temp_names.insert(dest, (temp_id, type_info)).is_some() {
+                        let temp_id = SpaceIndex(spaces.len() - 1);
+                        if temp_names.insert(dest, (temp_id, type_key)).is_some() {
                             return Err(InstructionShadowsName { name: dest });
                         }
                         let term = term_convert(
@@ -344,7 +343,7 @@ impl ProtoDef {
                         known_state.insert(dest, true); // must be a fresh name
                         CreateFromFormula { dest: temp_id, term }
                     }
-                    CreateFromCall { info, dest, func, args } => {
+                    CreateFromCall { type_key, dest, func, args } => {
                         let ch =
                             call_handles.get(func).ok_or(UndefinedFuncName { name: func })?.clone();
                         let args = args
@@ -361,14 +360,14 @@ impl ProtoDef {
                                 )
                             })
                             .collect::<Result<Vec<_>, ProtoBuildError>>()?;
-                        let temp_id = LocId(spaces.len());
-                        let ps = PutterSpace::new(*info);
+                        let temp_id = SpaceIndex(spaces.len());
+                        let ps = PutterSpace::new(*type_key);
                         spaces.push(Space::Memo { ps });
-                        if temp_names.insert(dest, (temp_id, *info)).is_some() {
+                        if temp_names.insert(dest, (temp_id, *type_key)).is_some() {
                             return Err(InstructionShadowsName { name: dest });
                         }
                         known_state.insert(dest, true); // must be a fresh name
-                        CreateFromCall { info: *info, dest: temp_id, func: ch.clone(), args }
+                        CreateFromCall { type_key: *type_key, dest: temp_id, func: ch.clone(), args }
                     }
                     MemSwap(a, b) => {
                         let aid = resolve_fully(&temp_names, &name_mapping, a);
@@ -382,11 +381,11 @@ impl ProtoDef {
                             let (new_name, ex_name, ex_id) =
                                 if aid.is_err() { (a, b, bid.unwrap()) } else { (b, a, aid.unwrap()) };
                             if let Space::Memo { ps } = &spaces[ex_id.0] {
-                                let info = ps.type_info;
-                                let temp_id = LocId(spaces.len());
-                                temp_names.insert(new_name, (temp_id, info)); // cannot fail
+                                let type_key = ps.type_key;
+                                let temp_id = SpaceIndex(spaces.len());
+                                temp_names.insert(new_name, (temp_id, type_key)); // cannot fail
                                 spaces.push(Space::Memo {
-                                    ps: PutterSpace::new( info),
+                                    ps: PutterSpace::new( type_key),
                                 });
                                 if let Some(x) = known_state.remove(ex_name) {
                                     known_state.insert(new_name, x);
@@ -437,10 +436,10 @@ impl ProtoDef {
                     if known_state.get(putter).copied() != Some(true) {
                         return Err(PutWithoutFullCertainty { name: putter });
                     }
-                    let putter_id: LocId = resolve_fully(&temp_names, &name_mapping, putter)?;
+                    let putter_id: SpaceIndex = resolve_fully(&temp_names, &name_mapping, putter)?;
                     puts.insert(putter); // no overwrite possible
-                    let putter_type_info =
-                        spaces[putter_id.0].get_putter_space().expect("CCC").type_info;
+                    let putter_type_key =
+                        spaces[putter_id.0].get_putter_space().expect("CCC").type_key;
                     if !putter_retains {
                         if let Some(x) = whose_mem_is_this.remove(&putter_id) {
                             bit_assign.empty_mem.insert(x);
@@ -459,14 +458,14 @@ impl ProtoDef {
                                 if !gets.insert(name) {
                                     return Err(GetterHasMultiplePutters { name });
                                 }
-                                if port_info.get(gid).expect("EE").1 != putter_type_info {
+                                if port_type_key.get(gid).expect("EE").1 != putter_type_key {
                                     return Err(MovementTypeMismatch { putter, getter: name });
                                 }
                                 &mut po_ge
                             }
                             LocKind::Memo => {
-                                if spaces[gid.0].get_putter_space().expect("FFF").type_info
-                                    != putter_type_info
+                                if spaces[gid.0].get_putter_space().expect("FFF").type_key
+                                    != putter_type_key
                                 {
                                     return Err(MovementTypeMismatch { putter, getter: name });
                                 }
@@ -510,11 +509,11 @@ impl ProtoDef {
             .enumerate()
             .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
             .collect::<Result<_, (_, ProtoBuildError)>>()?;
-            
+
         let allocator =  Allocator::new(type_map.clone());
-        let r = ProtoR { type_map, rules, spaces, name_mapping, port_info, perm_space_rng };
+        let r = ProtoR { type_map, rules, spaces, name_mapping, perm_space_rng };
         //DeBUGGY:println!("PROTO R {:#?}", &r);
-        let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts };
+        let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts: hashmap!{} };
         r.sanity_check(&cr); // DEBUG
         Ok(ProtoHandle(Arc::new(Proto { r, cr: Mutex::new(cr) })))
     }

@@ -23,100 +23,6 @@ pub mod building;
 
 mod bit_set;
 use bit_set::{BitSet, SetExt};
-
-
-type N = u8;
-
-#[derive(Clone, DebugStub)]
-pub struct TypeFuncs {
-    // essentially a Vtable
-    pub layout: Layout,
-     #[debug_stub = "write from read"]
-    pub raw_move: unsafe fn( *mut N, *const N),
-    #[debug_stub = "optional clone function pointer"]
-    pub maybe_clone: Option<unsafe fn(*mut N, *const N)>,
-     #[debug_stub = "optional eq function pointer"]
-    pub maybe_eq: Option<unsafe fn(*const N, *const N) -> bool>,
-     #[debug_stub = "optional drop function pointer"]
-    pub maybe_drop: Option<unsafe fn(*mut N)>,
-}
-
-impl TypeFuncs {
-    #[inline]
-    pub fn new_raw_move_ptr<T>() -> unsafe fn( *mut N, *const N) {
-        |dest, src| unsafe { (dest as *mut T).write((src as *const T).read()) }
-    }
-    #[inline]
-    pub fn new_clone_ptr<T: Clone>() -> unsafe fn(*mut N, *const N) {
-        |dest, src| unsafe {*(dest as *mut T) = (&*(src as *const T)).clone() }
-    }
-    #[inline]
-    pub fn new_eq_ptr<T: Eq>() -> unsafe fn(*const N, *const N) -> bool {
-        |a, b| unsafe { (&*(a as *const T)).eq(&*(b as *const T)) }
-    }
-    #[inline]
-    pub fn new_maybe_drop_ptr<T>() -> Option<unsafe fn(*mut N)> {
-        if std::mem::needs_drop::<T>() {
-            Some( |ptr| unsafe { drop((ptr as *const T).read()) })
-        } else {
-            None
-        }
-    }
-    pub fn new_clone_eq<T: Clone + Eq>() -> Self  {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: Some(Self::new_clone_ptr::<T>()),
-            maybe_eq: Some(Self::new_eq_ptr::<T>()),
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-    pub fn new_clone_no_eq<T: Clone>() -> Self {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: Some(Self::new_clone_ptr::<T>()),
-            maybe_eq: None,
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-    pub fn new_no_clone_eq<T: Eq>() -> Self  {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: None,
-            maybe_eq: Some(Self::new_eq_ptr::<T>()),
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-    pub fn new_no_clone_no_eq<T>() -> Self {
-        Self {
-            layout: Layout::new::<T>(),
-            raw_move: Self::new_raw_move_ptr::<T>(),
-            maybe_clone: None,
-            maybe_eq: None,
-            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
-        }
-    }
-}
-
-impl TypeFuncs {
-    fn is_copy(&self) -> bool {
-        self.maybe_drop.is_none()
-    }
-    unsafe fn try_drop_data(&self, data: DatumPtr) {
-        if let Some(drop_func) = self.maybe_drop {
-            drop_func(data.into_raw())
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct TypeKey(usize);
-impl TypeKey {
-    pub const BOOL_TYPE_KEY: Self = TypeKey(0);
-}
-
 // #[cfg(test)]
 // mod tests;
 
@@ -125,8 +31,25 @@ mod new_tests;
 // mod ffi;
 // pub use ffi::*;
 
-type TypeInfo = TypeKey;
+//////////////////////////////////////////////////////////////////
 
+
+#[derive(Clone, DebugStub)]
+pub struct TypeInfo {
+    // essentially a Vtable
+    pub layout: Layout,
+     #[debug_stub = "write from read"]
+    pub raw_move: unsafe fn( *mut u8, *const u8),
+    #[debug_stub = "optional clone function pointer"]
+    pub maybe_clone: Option<unsafe fn(*mut u8, *const u8)>,
+     #[debug_stub = "optional eq function pointer"]
+    pub maybe_eq: Option<unsafe fn(*const u8, *const u8) -> bool>,
+     #[debug_stub = "optional drop function pointer"]
+    pub maybe_drop: Option<unsafe fn(*mut u8)>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct TypeKey(usize);
 
 
 trait PortDatum {}
@@ -136,26 +59,15 @@ pub type Name = &'static str;
 pub struct CallHandle {
     #[debug_stub = "FuncPtr"]
     func: unsafe fn(), // dummy type
-    ret: TypeInfo,
-    args: Vec<TypeInfo>,
-}
-impl CallHandle {
-    unsafe fn exec(&self, dest: DatumPtr, args: &[DatumPtr]) {
-        todo!()
-    }
+    ret: TypeKey,
+    args: Vec<TypeKey>,
 }
 
 #[derive(Debug)]
 pub struct TypeMap {
-    pub funcs: HashMap<TypeKey, TypeFuncs>,
+    pub type_infos: HashMap<TypeKey, TypeInfo>,
     pub bool_type_key: TypeKey,
 }
-impl TypeMap {
-    fn get_funcs(&self, type_key: &TypeKey) -> &TypeFuncs {
-        self.funcs.get(&type_key).expect("unknown key!")
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Term<I, F> {
     True,                                        // returns bool
@@ -164,66 +76,57 @@ pub enum Term<I, F> {
     And(Vec<Self>),                              // returns bool
     Or(Vec<Self>),                               // returns bool
     BoolCall { func: F, args: Vec<Term<I, F>> }, // returns bool
-    IsEq(TypeInfo, Box<[Self; 2]>),              // returns bool
+    IsEq(TypeKey, Box<[Self; 2]>),              // returns bool
     Named(I),                                    // type of I
 }
 
 #[derive(Debug, Clone)]
 pub enum Instruction<I, F> {
     CreateFromFormula { dest: I, term: Term<I, F> },
-    CreateFromCall { info: TypeInfo, dest: I, func: F, args: Vec<Term<I, F>> },
+    CreateFromCall { type_key: TypeKey, dest: I, func: F, args: Vec<Term<I, F>> },
     Check(Term<I, F>),
     MemSwap(I, I),
 }
 #[derive(Debug)]
 pub enum Space {
     PoPu { ps: PutterSpace, mb: MsgBox },
-    PoGe { mb: MsgBox },
+    PoGe { mb: MsgBox, type_key: TypeKey },
     Memo { ps: PutterSpace },
 }
 
 #[derive(Debug)]
-pub struct Msg {
-    // TODO
-}
-
-#[derive(Debug)]
 pub struct MsgBox {
+    // usize packs two kinds of messages, distinguished by context:
+    // 1. identity of the putter (index of putterspace as a usize)
+    // 2. whether the putter whether their datum was moved (Msg::MOVED_MSG ^ Msg::UNMOVED_MSG)
     s: crossbeam_channel::Sender<usize>,
     r: crossbeam_channel::Receiver<usize>,
 }
 #[derive(Debug)]
 pub enum ClaimError {
     WrongPortDirection,
-    TypeMismatch(TypeInfo),
+    NameRefersToMemoryCell,
+    TypeMismatch(TypeKey),
     UnknownName,
     AlreadyClaimed,
+}
+#[derive(Debug)]
+pub enum FillMemError {
+    NameNotForMemCell,
+    UnknownName,
+    MemoryNonempty,
+    ExpectedType(TypeKey),
 }
 
 #[derive(Debug)]
 struct PortCommon {
-    id: LocId,
-    type_info: TypeInfo,
+    id: SpaceIndex,
+    type_key: TypeKey,
     p: ProtoHandle,
 }
 
-
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 struct DatumPtr(usize);
-
-impl DatumPtr {
-    const NULL: Self = Self(0);
-
-    fn from_maybe_uninit<T>(m: &mut MaybeUninit<T>) -> Self {
-        Self::from_raw(m.as_mut_ptr() as *mut u8)
-    }
-    fn into_raw(self) -> *mut u8 {
-        self.0 as _
-    }
-    fn from_raw(raw: *mut u8) -> Self {
-        Self(raw as _)
-    }
-}
 
 #[derive(Debug)]
 pub struct Proto {
@@ -243,8 +146,8 @@ pub struct ProtoR {
     rules: Vec<Rule>,
     spaces: Vec<Space>,
     perm_space_rng: Range<usize>,
-    name_mapping: BidirMap<Name, LocId>,
-    port_info: HashMap<LocId, (IsPutter, TypeInfo)>,
+    name_mapping: BidirMap<Name, SpaceIndex>,
+    // port_type_key: HashMap<SpaceIndex, (IsPutter, TypeKey)>,
     type_map: Arc<TypeMap>,
 }
 
@@ -252,7 +155,7 @@ type IsPutter = bool;
 
 #[derive(Debug)]
 pub struct ProtoCr {
-    unclaimed: HashSet<LocId>,
+    unclaimed: HashSet<SpaceIndex>,
     ready: BitSet,
     mem: BitSet, // presence means FULL
     allocator: Allocator,
@@ -265,10 +168,6 @@ enum FinalizeHow {
     Forget, // was moved out maybe
     Retain,
 }
-// pub type TraitData = *mut ();
-// const NULL: TraitData = std::ptr::null_mut();
-
-// pub type TraitVtable = *mut ();
 
 #[derive(Debug)]
 pub(crate) struct Allocator {
@@ -279,18 +178,7 @@ pub(crate) struct Allocator {
 
 #[derive(Debug, Default)]
 pub(crate) struct TypedAllocations {
-    map: HashMap<TypeInfo, HashSet<DatumPtr>>,
-}
-impl TypedAllocations {
-    fn insert(&mut self, type_info: TypeInfo, datum_ptr: DatumPtr) -> bool {
-        self.map.entry(type_info).or_insert_with(Default::default).insert(datum_ptr)
-    }
-    fn remove(&mut self, type_info: TypeInfo, datum_ptr: DatumPtr) -> bool {
-        self.map.get_mut(&type_info).map(|set| set.remove(&datum_ptr)).unwrap_or(false)
-    }
-    fn contains(&self, type_info: TypeInfo, datum_ptr: DatumPtr) -> bool {
-        self.map.get(&type_info).map(|set| set.contains(&datum_ptr)).unwrap_or(false)
-    }
+    map: HashMap<TypeKey, HashSet<DatumPtr>>,
 }
 
 #[derive(Debug, Default)]
@@ -307,7 +195,7 @@ pub struct Rendesvous {
 #[derive(Debug)]
 pub struct PutterSpace {
     atomic_datum_ptr: AtomicDatumPtr,
-    type_info: TypeInfo,
+    type_key: TypeKey,
     rendesvous: Rendesvous,
 }
 #[derive(Debug, Default)]
@@ -329,7 +217,7 @@ impl AtomicDatumPtr {
 #[derive(Debug)]
 pub struct Rule {
     bit_guard: BitStatePredicate,
-    ins: SmallVec<[Instruction<LocId, CallHandle>; 4]>, // dummy
+    ins: SmallVec<[Instruction<SpaceIndex, CallHandle>; 4]>, // dummy
     /// COMMITMENTS BELOW HERE
     output: SmallVec<[Movement; 4]>,
     // .ready is always identical to bit_guard.ready. use that instead
@@ -345,17 +233,49 @@ struct BitStatePredicate {
 
 #[derive(Debug)]
 pub struct Movement {
-    putter: LocId,
-    me_ge: Vec<LocId>,
-    po_ge: Vec<LocId>,
+    putter: SpaceIndex,
+    me_ge: Vec<SpaceIndex>,
+    po_ge: Vec<SpaceIndex>,
     putter_retains: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct LocId(usize);
+pub struct SpaceIndex(usize);
 
 /////////////////////////////////////////
 
+impl DatumPtr {
+    const NULL: Self = Self(0);
+
+    fn from_maybe_uninit<T>(m: &mut MaybeUninit<T>) -> Self {
+        Self::from_raw(m.as_mut_ptr() as *mut u8)
+    }
+    fn into_raw(self) -> *mut u8 {
+        self.0 as _
+    }
+    fn from_raw(raw: *mut u8) -> Self {
+        Self(raw as _)
+    }
+}
+impl CallHandle {
+    unsafe fn exec(&self, dest: DatumPtr, args: &[DatumPtr]) {
+        todo!()
+    }
+}
+impl TypeMap {
+    fn get_type_info(&self, type_key: &TypeKey) -> &TypeInfo {
+        self.type_infos.get(&type_key).expect("unknown key!")
+    }
+}
+
+impl TypedAllocations {
+    fn insert(&mut self, type_key: TypeKey, datum_ptr: DatumPtr) -> bool {
+        self.map.entry(type_key).or_insert_with(Default::default).insert(datum_ptr)
+    }
+    fn remove(&mut self, type_key: TypeKey, datum_ptr: DatumPtr) -> bool {
+        self.map.get_mut(&type_key).map(|set| set.remove(&datum_ptr)).unwrap_or(false)
+    }
+}
 impl Space {
     fn get_putter_space(&self) -> Option<&PutterSpace> {
         match self {
@@ -367,7 +287,7 @@ impl Space {
     fn get_msg_box(&self) -> Option<&MsgBox> {
         match self {
             Space::PoPu { mb, .. } => Some(mb),
-            Space::PoGe { mb } => Some(mb),
+            Space::PoGe { mb, .. } => Some(mb),
             Space::Memo { .. } => None,
         }
     }
@@ -418,20 +338,24 @@ impl PortCommon {
     unsafe fn claim(
         name: Name,
         want_putter: bool,
-        want_type_info: TypeInfo,
+        want_type_key: TypeKey,
         p: &ProtoHandle,
     ) -> Result<Self, ClaimError> {
         use ClaimError::*;
         if let Some(id) = p.0.r.name_mapping.get_by_first(&name) {
-            let (is_putter, type_info) = *p.0.r.port_info.get(id).expect("IDK");
+            let (is_putter, type_key) = match &p.0.r.spaces[id.0] {
+                Space::PoGe { type_key, .. } => (false, *type_key),
+                Space::PoPu { ps, .. } => (true, ps.type_key),
+                Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
+            };
             if want_putter != is_putter {
                 return Err(WrongPortDirection);
-            } else if want_type_info != type_info {
-                return Err(TypeMismatch(type_info));
+            } else if want_type_key != type_key {
+                return Err(TypeMismatch(type_key));
             }
             let mut x = p.0.cr.lock();
             if x.unclaimed.remove(id) {
-                let q = Ok(Self { id: *id, type_info, p: p.clone() });
+                let q = Ok(Self { id: *id, type_key, p: p.clone() });
                 //DeBUGGY:println!("{:?}", q);
                 q
             } else {
@@ -444,11 +368,11 @@ impl PortCommon {
 }
 
 impl<T: 'static + Send + Sync + Sized> Putter<T> {
-    pub unsafe fn claim(p: &ProtoHandle, name: Name, type_info: TypeInfo) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim(name, true, type_info, p)?, Default::default()))
+    pub unsafe fn claim(p: &ProtoHandle, name: Name, type_key: TypeKey) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim(name, true, type_key, p)?, Default::default()))
     }
 
-    // This is the
+    // This is the real workhorse function
     fn put_inner(&mut self, datum_ptr: DatumPtr) -> bool {
         let Proto { r, cr } = self.0.p.0.as_ref();
         let space = &r.spaces[self.0.id.0];
@@ -459,7 +383,7 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
                 assert!(x.ready.insert(self.0.id));
                 x.coordinate(r);
             }
-            // println!("waitinig,...");
+            // println!("waiting,...");
             let msg = mb.recv();
             // println!("...got!");
             //DeBUGGY:println!("MSG 0x{:X}", msg);
@@ -507,21 +431,21 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
 fn get_data<F: FnOnce(FinalizeHow)>(
     r: &ProtoR,
     ps: &PutterSpace,
-    maybe_dest: Option<*mut N>,
+    maybe_dest: Option<*mut u8>,
     finalize: F,
 ) {
     // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
     // println!("GET DATA");
-    let type_funcs = r.type_map.get_funcs(&ps.type_info);
+    let type_info = r.type_map.get_type_info(&ps.type_key);
     let src_ptr = ps.atomic_datum_ptr.load();
     assert!(src_ptr != DatumPtr::NULL);
 
     const LAST: usize = 1;
 
-    if type_funcs.is_copy() {
+    if type_info.is_copy() {
         // irrelevant how many copy
         if let Some(dest_ptr) = maybe_dest {
-            unsafe { (type_funcs.raw_move)(dest_ptr, src_ptr.into_raw()) };
+            unsafe { (type_info.raw_move)(dest_ptr, src_ptr.into_raw()) };
             ps.rendesvous.move_flags.visit();
         }
         let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
@@ -541,13 +465,13 @@ fn get_data<F: FnOnce(FinalizeHow)>(
                 if was != LAST {
                     ps.rendesvous.mover_sema.acquire();
                 }
-                unsafe { (type_funcs.raw_move)(dest_ptr, src_ptr.into_raw()) };
+                unsafe { (type_info.raw_move)(dest_ptr, src_ptr.into_raw()) };
                 finalize(FinalizeHow::Forget);
             // println!("/A");
             } else {
                 // println!("B");
 
-                    unsafe { (type_funcs.maybe_clone.expect("NEED CLONE"))(dest_ptr, src_ptr.into_raw()) };
+                    unsafe { (type_info.maybe_clone.expect("NEED CLONE"))(dest_ptr, src_ptr.into_raw()) };
                 // do_clone(dest);
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                 // println!("was (B) {}, retains {}", was, retains);
@@ -579,15 +503,15 @@ fn get_data<F: FnOnce(FinalizeHow)>(
     // println!("GET COMPLETE");
 }
 impl<T: 'static + Send + Sync + Sized> Getter<T> {
-    pub unsafe fn claim(p: &ProtoHandle, name: Name, type_info: TypeInfo) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim(name, false, type_info, p)?, Default::default()))
+    pub unsafe fn claim(p: &ProtoHandle, name: Name, type_key: TypeKey) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim(name, false, type_key, p)?, Default::default()))
     }
     // unsafe fn untyped_claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
     //     Ok(Self(PortCommon::untyped_claim(name, false, p)?, Default::default()))
     // }
 
-    fn dest_type_forget(dest: Option<&mut MaybeUninit<T>>) -> Option<*mut N> {
-        dest.map(|x| x as *mut MaybeUninit<T> as *mut N)
+    fn dest_type_forget(dest: Option<&mut MaybeUninit<T>>) -> Option<*mut u8> {
+        dest.map(|x| x as *mut MaybeUninit<T> as *mut u8)
     } 
 
     // returns false if it doesn't participate in a rule
@@ -598,7 +522,7 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
     ) -> bool {
         let Proto { r, cr } = self.0.p.0.as_ref();
         let space = &r.spaces[self.0.id.0];
-        if let Space::PoGe { mb } = space {
+        if let Space::PoGe { mb, .. } = space {
             {
                 let mut x = cr.lock();
                 assert!(x.ready.insert(self.0.id));
@@ -606,7 +530,7 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
             }
             let putter_id = match self.0.msg_recv(mb, maybe_timeout) {
                 None => return false,
-                Some(msg) => LocId(msg),
+                Some(msg) => SpaceIndex(msg),
             };
             // println!("My putter has id {:?}", putter_id);
             match &r.spaces[putter_id.0] {
@@ -660,6 +584,39 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
     }
 }
 
+impl ProtoHandle {
+    unsafe fn fill_memory_raw<T>(& self, name: Name, type_key: TypeKey, datum: &mut MaybeUninit<T>) -> Result<(), FillMemError> {
+        let Proto { r, cr } = self.0.as_ref();
+        let type_info = r.type_map.get_type_info(&type_key);
+        let space_idx = r.name_mapping.get_by_first(&name).ok_or(FillMemError::UnknownName)?;
+        if let Space::Memo { ps } = &r.spaces[space_idx.0] {
+            if ps.type_key != type_key {
+                return Err(FillMemError::ExpectedType(ps.type_key));
+            }
+            let mut lock = cr.lock();
+            if lock.mem.contains(space_idx) {
+                return Err(FillMemError::MemoryNonempty);
+            }
+            // success guaranteed!
+            let datum_ptr = lock.allocator.occupy_allocation(type_key);
+            assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
+            lock.mem.insert(*space_idx);
+            println!("SWAP A");
+            assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
+             (type_info.raw_move)(datum_ptr.into_raw(), datum.as_ptr() as *const u8) ;
+            Ok(())
+        } else {
+            Err(FillMemError::NameNotForMemCell)
+        }
+    }
+    unsafe fn fill_memory<T>(& self, name: Name, type_key: TypeKey, datum: T) -> Result<(), (T, FillMemError)> {
+        let mut datum = MaybeUninit::new(datum);
+         self.fill_memory_raw(name, type_key, &mut datum).map_err(|e| {
+            (datum.assume_init(), e)
+        })
+    }
+}
+
 impl ProtoR {
     pub fn sanity_check(&self, cr: &ProtoCr) {
         let chunks = cr.ready.data.len();
@@ -667,28 +624,28 @@ impl ProtoR {
         struct Cap {
             put: bool,
             mem: bool,
-            ty: TypeInfo,
+            ty: TypeKey,
         }
         let capabilities: Vec<Cap> = self
             .spaces
             .iter()
             .enumerate()
             .map(|(id, x)| match x {
-                Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_info },
-                Space::PoGe { .. } => Cap {
+                Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_key },
+                Space::PoGe { type_key, .. } => Cap {
                     put: false,
                     mem: false,
-                    ty: self.port_info.get(&LocId(id)).expect("BADCAP").1,
+                    ty: *type_key,
                 },
-                Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_info },
+                Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_key },
             })
             .collect();
-        for (k, (putter, tinfo)) in self.port_info.iter() {
-            let cap = &capabilities[k.0];
-            assert!(!cap.mem);
-            assert_eq!(cap.put, *putter);
-            assert_eq!(cap.ty, *tinfo);
-        }
+        // for (k, (putter, ttype_key)) in self.port_type_key.iter() {
+        //     let cap = &capabilities[k.0];
+        //     assert!(!cap.mem);
+        //     assert_eq!(cap.put, *putter);
+        //     assert_eq!(cap.ty, *ttype_key);
+        // }
         for rule in self.rules.iter() {
             assert!(rule.bit_assign.ready.is_subset(&rule.bit_guard.ready));
             assert!(rule.bit_guard.full_mem.is_subset(&rule.bit_guard.ready));
@@ -720,9 +677,9 @@ impl ProtoR {
             fn check_and_ret_type(
                 r: &ProtoR,
                 capabilities: &Vec<Cap>,
-                known_filled: &HashMap<LocId, bool>,
-                term: &Term<LocId, CallHandle>,
-            ) -> TypeInfo {
+                known_filled: &HashMap<SpaceIndex, bool>,
+                term: &Term<SpaceIndex, CallHandle>,
+            ) -> TypeKey {
                 // TODO do I really need to recurse here??
 
                 use Term::*;
@@ -767,10 +724,10 @@ impl ProtoR {
                         self.type_map.bool_type_key,
                         check_and_ret_type(self, &capabilities, &known_filled, term)
                     ),
-                    Instruction::CreateFromCall { info, dest, func, args } => {
+                    Instruction::CreateFromCall { type_key, dest, func, args } => {
                         let cap = &capabilities[dest.0];
                         assert!(known_filled.insert(*dest, true).is_none());
-                        assert_eq!(*info, cap.ty);
+                        assert_eq!(*type_key, cap.ty);
                         assert_eq!(func.ret, cap.ty);
                         assert_eq!(func.args.len(), args.len());
                         for (&t0, term) in func.args.iter().zip(args.iter()) {
@@ -837,7 +794,7 @@ impl ProtoR {
 }
 
 impl ProtoCr {
-    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: LocId, how: FinalizeHow) {
+    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: SpaceIndex, how: FinalizeHow) {
         // println!("FINALIZING how={:?}", how);
         if how != FinalizeHow::Retain {
             let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
@@ -848,11 +805,12 @@ impl ProtoCr {
             *ref_count -= 1;
             if *ref_count == 0 {
                 self.ref_counts.remove(&datum_ptr);
-                let type_info = r.type_map.get_funcs(&putter_space.type_info);
+                let type_key = r.type_map.get_type_info(&putter_space.type_key);
                 if let FinalizeHow::DropInside = how {
-                    unsafe { type_info.try_drop_data(datum_ptr) };
+                    unsafe { type_key.try_drop_data(datum_ptr) };
                 }
-                self.allocator.swap_allocation_to(putter_space.type_info, datum_ptr, false);
+                println!("SWAP B");
+                self.allocator.swap_allocation_to(putter_space.type_key, datum_ptr, false);
             }
         }
         if r.perm_space_rng.contains(&this_mem_id.0) {
@@ -866,7 +824,7 @@ impl ProtoCr {
             // involving this thread's port.
         }
     }
-    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: LocId, b: LocId) {
+    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: SpaceIndex, b: SpaceIndex) {
         let pa = r.spaces[a.0].get_putter_space().expect("Pa");
         let pb = r.spaces[b.0].get_putter_space().expect("Pb");
         let olda = pa.atomic_datum_ptr.load();
@@ -896,6 +854,7 @@ impl ProtoCr {
                     //DeBUGGY:println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
                 }
+                println!("DOING A RULE!");
                 //DeBUGGY:println!("SUCCESS");
                 // //DeBUGGY:println!("going to eval ins for rule {:?}", rule);
                 for (i_id, i) in rule.ins.iter().enumerate() {
@@ -906,7 +865,7 @@ impl ProtoCr {
                             let tbool = r.type_map.bool_type_key;
                             let value = eval_bool(term, r);
                             let dest_ptr = unsafe {
-                                let dest_ptr = self.allocator.get_a_vacant(tbool);
+                                let dest_ptr = self.allocator.occupy_allocation(tbool);
                                 let q: *mut bool = transmute(dest_ptr);
                                 q.write(value);
                                 dest_ptr
@@ -920,8 +879,8 @@ impl ProtoCr {
                             let was = self.ref_counts.insert(dest_ptr, 1);
                             assert!(was.is_none());
                         }
-                        CreateFromCall { info, dest, func, args } => {
-                            let dest_ptr = self.allocator.get_a_vacant(*info);
+                        CreateFromCall { type_key, dest, func, args } => {
+                            let dest_ptr = self.allocator.occupy_allocation(*type_key);
                             // TODO MAKE LESS CLUNKY
                             let arg_stack =
                                 args.iter().map(|arg| eval_ptr(arg, r)).collect::<Vec<_>>();
@@ -961,6 +920,7 @@ impl ProtoCr {
                     }
                 }
                 // made it past the instructions! time to commit!
+
                 // println!("FIRING RULE {:?}", rule);
                 self.ready.set_sub(&rule.bit_assign.ready);
                 self.mem.set_sub(&rule.bit_assign.empty_mem);
@@ -981,7 +941,7 @@ impl ProtoCr {
     fn do_movement(&mut self, r: &ProtoR, movement: &Movement) {
         let mut me_ge_iter = movement.me_ge.iter().copied();
         let mut putter_retains = movement.putter_retains;
-        let mut putter: LocId = movement.putter;
+        let mut putter: SpaceIndex = movement.putter;
 
         // PHASE 1: "take care of mem getters"
         let ps: &PutterSpace = loop {
@@ -989,7 +949,7 @@ impl ProtoCr {
             match &r.spaces[putter.0] {
                 Space::PoGe { .. } => panic!("CANNOT BE!"),
                 Space::PoPu { ps, mb } => {
-                    let type_funcs: &TypeFuncs = r.type_map.get_funcs(&ps.type_info);
+                    let type_info = r.type_map.get_type_info(&ps.type_key);
                     //DeBUGGY:println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
                     if let Some(mem_0) = me_ge_iter.next() {
@@ -999,22 +959,22 @@ impl ProtoCr {
                         // 2. data movement MUST follow all data clones (or undefined behavior)
                         // 3. we don't yet know if any port-getters want to MOVE (they may want signals)
                         let dest_space = r.spaces[mem_0.0].get_putter_space().expect("dest");
-                        // assert_eq!(dest_space.type_info, ps.type_info);
-                        let dest_ptr = self.allocator.get_a_vacant(ps.type_info);
+                        // assert_eq!(dest_space.type_key, ps.type_key);
+                        let dest_ptr = self.allocator.occupy_allocation(ps.type_key);
                         //DeBUGGY:println!("ALLOCATED {:p}", dest_ptr);
                         // do the movement, then release the putter with a message
                         if !putter_retains {
                             let src_ptr = ps.atomic_datum_ptr.swap(DatumPtr::NULL);
                             assert!(src_ptr != DatumPtr::NULL);
-                            unsafe { (type_funcs.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
-                            // unsafe { ps.type_info.copy(src_ptr, dest_ptr) };
+                            unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
+                            // unsafe { ps.type_key.copy(src_ptr, dest_ptr) };
                             mb.send(MsgBox::MOVED_MSG);
                         } else {
                             let src_ptr = ps.atomic_datum_ptr.load();
                             assert!(src_ptr != DatumPtr::NULL);
 
-                            unsafe { (type_funcs.maybe_clone.expect("NO CLONE"))(dest_ptr.into_raw(), src_ptr.into_raw()) };
-                            // unsafe { ps.type_info.clone(src_ptr, dest_ptr) };
+                            unsafe { (type_info.maybe_clone.expect("NO CLONE"))(dest_ptr.into_raw(), src_ptr.into_raw()) };
+                            // unsafe { ps.type_key.clone(src_ptr, dest_ptr) };
                             mb.send(MsgBox::UNMOVED_MSG);
                         }
                         assert!(self.ref_counts.insert(dest_ptr , 1).is_none());
@@ -1038,7 +998,7 @@ impl ProtoCr {
                     //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
                     // FINAL LOOP
                     // alias the memory in all memory getters. datum itself does not move.
-                    let type_funcs: &TypeFuncs = r.type_map.get_funcs(&ps.type_info);
+                    let type_info = r.type_map.get_type_info(&ps.type_key);
                     let src = ps.atomic_datum_ptr.load();
                     assert!(src != DatumPtr::NULL);
                     let ref_count: &mut usize =
@@ -1057,8 +1017,9 @@ impl ProtoCr {
                             if *ref_count == 0 {
                                 // I was the last reference! drop datum IN CIRCUIT
                                 self.ref_counts.remove(&src);
-                                unsafe { type_funcs.try_drop_data(src) }
-                                self.allocator.swap_allocation_to(ps.type_info, src, false);
+                                unsafe { type_info.try_drop_data(src) }
+                println!("SWAP C");
+                                self.allocator.swap_allocation_to(ps.type_key, src, false);
                             }
                         }
                     }
@@ -1088,31 +1049,45 @@ impl Allocator {
             vacant: Default::default(),
         }
     }
-    pub fn get_a_vacant(&mut self, type_info: TypeInfo) -> DatumPtr {
-        let Self { vacant, type_map, .. } = self;
-        let set = vacant.map.entry(type_info).or_insert_with(Default::default);
-        set.iter().copied().next().unwrap_or_else(|| {
-            let layout = type_map.get_funcs(&type_info).layout;
+    pub fn occupy_allocation(&mut self, type_key: TypeKey) -> DatumPtr {
+        let Self { vacant, type_map, occupied } = self;
+        let set = vacant.map.entry(type_key).or_insert_with(Default::default);
+        let datum_ptr = set.iter().copied().next().unwrap_or_else(|| {
+            let layout = type_map.get_type_info(&type_key).layout;
             let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
             set.insert(datum_ptr);
             datum_ptr
-        })
+        });
+        occupied.insert(type_key, datum_ptr);
+        datum_ptr
     }
-    pub fn swap_allocation_to(&mut self, type_info: TypeInfo, datum_ptr: DatumPtr, occupied: bool) {
-        let [dest, src] = match occupied {
+    // pub fn get_a_vacant(&mut self, type_key: TypeKey) -> DatumPtr {
+    //     let Self { vacant, type_map, .. } = self;
+    //     let set = vacant.map.entry(type_key).or_insert_with(Default::default);
+    //     set.iter().copied().next().unwrap_or_else(|| {
+    //         let layout = type_map.get_type_info(&type_key).layout;
+    //         let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
+    //         set.insert(datum_ptr);
+    //         datum_ptr
+    //     })
+    // }
+    pub fn swap_allocation_to(&mut self, type_key: TypeKey, datum_ptr: DatumPtr, to_occupied: bool) {
+        println!("to_occupied {} before: {:#?}", to_occupied, self);
+        let [dest, src] = match to_occupied {
             true => [&mut self.occupied, &mut self.vacant],
             false => [&mut self.vacant, &mut self.occupied],
         };
-        assert!(!src.remove(type_info, datum_ptr));
-        dest.insert(type_info, datum_ptr);
+        let removed = src.remove(type_key, datum_ptr);
+        assert!(removed);
+        dest.insert(type_key, datum_ptr);
     }
 }
 impl Drop for Allocator {
     fn drop(&mut self) {
         // drop all occupied contents
-        for (type_info, datum_boxes) in self.occupied.map.iter() {
-            let type_funcs  = self.type_map.get_funcs(type_info);
-            if let Some(drop_func) = type_funcs.maybe_drop {
+        for (type_key, datum_boxes) in self.occupied.map.iter() {
+            let type_info  = self.type_map.get_type_info(type_key);
+            if let Some(drop_func) = type_info.maybe_drop {
                 for datum_box in datum_boxes.iter() {
                     unsafe { drop_func(datum_box.into_raw()) }
                 }
@@ -1120,10 +1095,10 @@ impl Drop for Allocator {
         }
 
         // drop all allocations
-        for (type_info, datum_boxes) in self.occupied.map.iter().chain(self.vacant.map.iter()) {
-            let type_funcs = self.type_map.get_funcs(type_info);
+        for (type_key, datum_boxes) in self.occupied.map.iter().chain(self.vacant.map.iter()) {
+            let type_info = self.type_map.get_type_info(type_key);
             for datum_box in datum_boxes.iter() {
-                unsafe  { std::alloc::dealloc(datum_box.into_raw(), type_funcs.layout) }
+                unsafe  { std::alloc::dealloc(datum_box.into_raw(), type_info.layout) }
             }
         }
         //DeBUGGY:println!("ALLOCATOR DROPPING DONE");
@@ -1148,10 +1123,10 @@ impl MoveFlags {
 }
 
 impl PutterSpace {
-    fn new(type_info: TypeInfo) -> Self {
+    fn new(type_key: TypeKey) -> Self {
         PutterSpace {
             atomic_datum_ptr: AtomicDatumPtr::default(),
-            type_info,
+            type_key,
             rendesvous: Rendesvous {
                 countdown: 0.into(),
                 move_flags: MoveFlags::default(),
@@ -1161,9 +1136,9 @@ impl PutterSpace {
     }
 }
 
-impl fmt::Debug for LocId {
+impl fmt::Debug for SpaceIndex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "LocId({})", self.0)
+        write!(f, "SpaceIndex({})", self.0)
     }
 }
 
@@ -1172,7 +1147,7 @@ fn bool_to_ptr(x: bool) -> DatumPtr {
     DatumPtr::from_raw(unsafe { transmute(if x { &true } else { &false }) })
 }
 
-fn eval_ptr(term: &Term<LocId, CallHandle>, r: &ProtoR) -> DatumPtr {
+fn eval_ptr(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> DatumPtr {
     use Term::*;
     match term {
         Named(i) => r.spaces[i.0].get_putter_space().expect("k").atomic_datum_ptr.load(),
@@ -1185,7 +1160,7 @@ fn ptr_to_bool(x: DatumPtr) -> bool {
     unsafe { *x }
 }
 
-fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
+fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
     use Term::*;
     match term {
         // PTR points to BOOL
@@ -1207,11 +1182,81 @@ fn eval_bool(term: &Term<LocId, CallHandle>, r: &ProtoR) -> bool {
         Not(t) => !eval_bool(t, r),
         And(ts) => ts.iter().all(|t| eval_bool(t, r)),
         Or(ts) => ts.iter().any(|t| eval_bool(t, r)),
-        IsEq(info, terms) => {
+        IsEq(type_key, terms) => {
             let ptr0 = eval_ptr(&terms[0], r);
             let ptr1 = eval_ptr(&terms[1], r);
-            let type_info = r.type_map.get_funcs(&r.type_map.bool_type_key);
-                unsafe{ (type_info.maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw()) }
+            let type_info = r.type_map.get_type_info(type_key);
+            unsafe { (type_info.maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw()) }
+        }
+    }
+}
+
+impl TypeInfo {
+    #[inline]
+    pub fn new_raw_move_ptr<T>() -> unsafe fn( *mut u8, *const u8) {
+        |dest, src| unsafe { (dest as *mut T).write((src as *const T).read()) }
+    }
+    #[inline]
+    pub fn new_clone_ptr<T: Clone>() -> unsafe fn(*mut u8, *const u8) {
+        |dest, src| unsafe {*(dest as *mut T) = (&*(src as *const T)).clone() }
+    }
+    #[inline]
+    pub fn new_eq_ptr<T: Eq>() -> unsafe fn(*const u8, *const u8) -> bool {
+        |a, b| unsafe { (&*(a as *const T)).eq(&*(b as *const T)) }
+    }
+    #[inline]
+    pub fn new_maybe_drop_ptr<T>() -> Option<unsafe fn(*mut u8)> {
+        if std::mem::needs_drop::<T>() {
+            Some( |ptr| unsafe { drop((ptr as *const T).read()) })
+        } else {
+            None
+        }
+    }
+    pub fn new_clone_eq<T: Clone + Eq>() -> Self  {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: Some(Self::new_clone_ptr::<T>()),
+            maybe_eq: Some(Self::new_eq_ptr::<T>()),
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+    pub fn new_clone_no_eq<T: Clone>() -> Self {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: Some(Self::new_clone_ptr::<T>()),
+            maybe_eq: None,
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+    pub fn new_no_clone_eq<T: Eq>() -> Self  {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: None,
+            maybe_eq: Some(Self::new_eq_ptr::<T>()),
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+    pub fn new_no_clone_no_eq<T>() -> Self {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: None,
+            maybe_eq: None,
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+}
+
+impl TypeInfo {
+    fn is_copy(&self) -> bool {
+        self.maybe_drop.is_none()
+    }
+    unsafe fn try_drop_data(&self, data: DatumPtr) {
+        if let Some(drop_func) = self.maybe_drop {
+            drop_func(data.into_raw())
         }
     }
 }

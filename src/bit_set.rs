@@ -4,7 +4,7 @@ pub trait SetExt {
     fn set_sub(&mut self, other: &Self);
     fn set_add(&mut self, other: &Self);
 }
-impl SetExt for HashSet<LocId> {
+impl SetExt for HashSet<SpaceIndex> {
     fn set_sub(&mut self, other: &Self) {
         for q in other.iter() {
             self.remove(q);
@@ -37,8 +37,8 @@ impl SetExt for BitSet {
         }
     }
 }
-impl std::iter::FromIterator<LocId> for BitSet {
-    fn from_iter<I: IntoIterator<Item = LocId>>(iter: I) -> Self {
+impl std::iter::FromIterator<SpaceIndex> for BitSet {
+    fn from_iter<I: IntoIterator<Item = SpaceIndex>>(iter: I) -> Self {
         let mut x = Self::default();
         for i in iter {
             x.insert(i);
@@ -49,11 +49,11 @@ impl std::iter::FromIterator<LocId> for BitSet {
 pub struct BitIter<'a> {
     // counts from n down to 0
     // n is the element we just checked
-    n: LocId,
+    n: SpaceIndex,
     b: &'a BitSet,
 }
 impl<'a> Iterator for BitIter<'a> {
-    type Item = LocId;
+    type Item = SpaceIndex;
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.n.0 == 0 {
@@ -77,8 +77,8 @@ impl BitSet {
         me
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = LocId> + '_ {
-        let n = LocId(self.data.len() * Self::BITS_PER_CHUNK + 1);
+    pub fn iter(&self) -> impl Iterator<Item = SpaceIndex> + '_ {
+        let n = SpaceIndex(self.data.len() * Self::BITS_PER_CHUNK + 1);
         BitIter { n, b: self }
     }
     pub fn is_disjoint(&self, other: &Self) -> bool {
@@ -104,7 +104,7 @@ impl BitSet {
         }
     }
 
-    pub fn insert(&mut self, val: LocId) -> bool {
+    pub fn insert(&mut self, val: SpaceIndex) -> bool {
         let mask = 1 << (val.0 % Self::BITS_PER_CHUNK);
         let chunk_idx = val.0 / Self::BITS_PER_CHUNK;
         let chunk: &mut usize = match self.data.get_mut(chunk_idx) {
@@ -120,7 +120,7 @@ impl BitSet {
         *chunk |= mask;
         wasnt_set
     }
-    pub fn remove(&mut self, val: &LocId) -> bool {
+    pub fn remove(&mut self, val: &SpaceIndex) -> bool {
         let mask = 1 << (val.0 % Self::BITS_PER_CHUNK);
         let chunk_idx = val.0 / Self::BITS_PER_CHUNK;
         let chunk = match self.data.get_mut(chunk_idx) {
@@ -131,7 +131,7 @@ impl BitSet {
         *chunk &= !mask;
         was_set
     }
-    pub fn contains(&self, idx: &LocId) -> bool {
+    pub fn contains(&self, idx: &SpaceIndex) -> bool {
         let mask = 1 << (idx.0 % Self::BITS_PER_CHUNK);
         let chunk_idx = idx.0 / Self::BITS_PER_CHUNK;
         match self.data.get(chunk_idx) {
