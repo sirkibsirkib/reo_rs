@@ -12,7 +12,7 @@ pub trait FromStrExpect: FromStr {
 #[derive(Debug, Clone)]
 pub enum NameDef {
     Port { is_putter: bool, type_info: TypeInfo },
-    Mem(TypeInfo),
+    Mem { type_info: TypeInfo },
     Func(CallHandle),
 }
 
@@ -182,7 +182,6 @@ impl ProtoDef {
         // locid -> (is_putter, type_info)
 
         let mut port_info: HashMap<LocId, (bool, TypeInfo)> = hashmap! {};
-        let mut allocator = Allocator::new(type_map.clone());
 
         let mut persistent_loc_kinds = vec![];
 
@@ -205,7 +204,7 @@ impl ProtoDef {
                         (Space::PoGe { mb }, LocKind::PoGe)
                     }
                 }
-                NameDef::Mem(type_info) => {
+                NameDef::Mem { type_info } => {
                     ready.insert(id);
                     (Space::Memo { ps: PutterSpace::new( *type_info) }, LocKind::Memo)
                 }
@@ -218,8 +217,7 @@ impl ProtoDef {
             persistent_loc_kinds.push(kind);
         }
         let perm_space_rng = 0..spaces.len();
-        let mut mem = BitSet::default(); 
-        mem.pad_to_cap(perm_space_rng.end);
+        let mem = BitSet::padded_to_cap(perm_space_rng.end);
         ready.pad_to_cap(perm_space_rng.end);
 
         // NO MORE PERSISTENT THINGS
@@ -512,6 +510,8 @@ impl ProtoDef {
             .enumerate()
             .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
             .collect::<Result<_, (_, ProtoBuildError)>>()?;
+            
+        let allocator =  Allocator::new(type_map.clone());
         let r = ProtoR { type_map, rules, spaces, name_mapping, port_info, perm_space_rng };
         //DeBUGGY:println!("PROTO R {:#?}", &r);
         let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts };

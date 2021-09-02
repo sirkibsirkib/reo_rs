@@ -71,6 +71,12 @@ impl BitSet {
     const BYTES_PER_CHUNK: usize = std::mem::size_of::<usize>();
     const BITS_PER_CHUNK: usize = Self::BYTES_PER_CHUNK * 8;
 
+    pub fn padded_to_cap(cap: usize) -> Self {
+        let mut me = Self::default();
+        me.pad_to_cap(cap);
+        me
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = LocId> + '_ {
         let n = LocId(self.data.len() * Self::BITS_PER_CHUNK + 1);
         BitIter { n, b: self }
