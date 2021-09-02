@@ -41,20 +41,64 @@ pub struct TypeFuncs {
     pub maybe_drop: Option<unsafe fn(*mut N)>,
 }
 
-pub static BOOL_TYPE_FUNCS: TypeFuncs = {
-    let raw_move = |dest, src| unsafe {
-        *(dest as *mut bool) = *(src as *const bool)
-    };
-    TypeFuncs {
-        layout: Layout::new::<bool>(),
-        raw_move,
-        maybe_clone: Some(raw_move),
-        maybe_eq: Some(|a, b| unsafe {
-            &*(a as *const bool) == &*(b as *const bool)
-        }),
-        maybe_drop: None,
+impl TypeFuncs {
+    #[inline]
+    pub fn new_raw_move_ptr<T>() -> unsafe fn( *mut N, *const N) {
+        |dest, src| unsafe { (dest as *mut T).write((src as *const T).read()) }
     }
-};
+    #[inline]
+    pub fn new_clone_ptr<T: Clone>() -> unsafe fn(*mut N, *const N) {
+        |dest, src| unsafe {*(dest as *mut T) = (&*(src as *const T)).clone() }
+    }
+    #[inline]
+    pub fn new_eq_ptr<T: Eq>() -> unsafe fn(*const N, *const N) -> bool {
+        |a, b| unsafe { (&*(a as *const T)).eq(&*(b as *const T)) }
+    }
+    #[inline]
+    pub fn new_maybe_drop_ptr<T>() -> Option<unsafe fn(*mut N)> {
+        if std::mem::needs_drop::<T>() {
+            Some( |ptr| unsafe { drop((ptr as *const T).read()) })
+        } else {
+            None
+        }
+    }
+    pub fn new_clone_eq<T: Clone + Eq>() -> Self  {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: Some(Self::new_clone_ptr::<T>()),
+            maybe_eq: Some(Self::new_eq_ptr::<T>()),
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+    pub fn new_clone_no_eq<T: Clone>() -> Self {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: Some(Self::new_clone_ptr::<T>()),
+            maybe_eq: None,
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+    pub fn new_no_clone_eq<T: Eq>() -> Self  {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: None,
+            maybe_eq: Some(Self::new_eq_ptr::<T>()),
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+    pub fn new_no_clone_no_eq<T>() -> Self {
+        Self {
+            layout: Layout::new::<T>(),
+            raw_move: Self::new_raw_move_ptr::<T>(),
+            maybe_clone: None,
+            maybe_eq: None,
+            maybe_drop: Self::new_maybe_drop_ptr::<T>(),
+        }
+    }
+}
 
 impl TypeFuncs {
     fn is_copy(&self) -> bool {
