@@ -57,18 +57,18 @@ fn main() {
 	let p = proto_def.build(type_map).unwrap();
 	unsafe { p.fill_memory("B", TypeKey(0), true) }.unwrap();
 
-    let (mut a, mut c, mut d): (Putter<bool>, Getter<bool>, Getter<bool>) = unsafe {
+    let (mut a, mut c, mut d): (Putter, Getter, Getter) = unsafe {
         (
-        	Putter::claim(&p, "A", TypeKey(0)).unwrap(),
-        	Getter::claim(&p, "C", TypeKey(0)).unwrap(),
-        	Getter::claim(&p, "D", TypeKey(0)).unwrap()
+        	Putter::claim_raw(&p, "A").unwrap(),
+        	Getter::claim_raw(&p, "C").unwrap(),
+        	Getter::claim_raw(&p, "D").unwrap()
         )
     };
 
 	let handles = [
-		thread::spawn(move || for _ in 0..3 {a.put(true);}),
-		thread::spawn(move || for _ in 0..2 {println!("C {:?}", c.get());}),
-		thread::spawn(move || for _ in 0..2 {println!("D {:?}", d.get());}),
+		thread::spawn(move || for _ in 0..3 { unsafe { a.put_raw((&mut true) as *mut bool as *mut u8);} }),
+		thread::spawn(move || for _ in 0..2 { unsafe { println!("C {:?}", c.get_raw(None));} }),
+		thread::spawn(move || for _ in 0..2 { unsafe { println!("D {:?}", d.get_raw(None));} }),
 	];
 	for h in handles {
 		h.join().unwrap();

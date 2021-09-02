@@ -9,7 +9,6 @@ use std::{
     alloc::Layout,
     collections::{HashMap, HashSet},
     fmt,
-    marker::PhantomData,
     mem::{transmute, MaybeUninit},
     sync::{
         atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst},
@@ -35,7 +34,6 @@ mod new_tests;
 // pub use ffi::*;
 
 //////////////////////////////////////////////////////////////////
-
 
 #[derive(Clone, DebugStub)]
 pub struct TypeInfo {
@@ -108,7 +106,6 @@ pub struct MsgBox {
 pub enum ClaimError {
     WrongPortDirection,
     NameRefersToMemoryCell,
-    TypeMismatch(TypeKey),
     UnknownName,
     AlreadyClaimed,
 }
@@ -122,8 +119,7 @@ pub enum FillMemError {
 
 #[derive(Debug)]
 struct PortCommon {
-    id: SpaceIndex,
-    type_key: TypeKey,
+    space_idx: SpaceIndex,
     p: ProtoHandle,
 }
 
@@ -139,9 +135,9 @@ pub struct Proto {
 #[derive(Debug, Clone)]
 pub struct ProtoHandle(pub(crate) Arc<Proto>);
 
-pub struct Putter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+pub struct Putter(PortCommon);
 
-pub struct Getter<T: 'static + Send + Sync + Sized>(PortCommon, PhantomData<T>);
+pub struct Getter(PortCommon);
 
 #[derive(Debug)]
 pub struct ProtoR {
@@ -309,40 +305,25 @@ impl PartialEq for ProtoHandle {
 }
 
 impl PortCommon {
-    fn msg_recv(&self, mb: &MsgBox, maybe_timeout: Option<Duration>) -> Option<usize> {
-        if let Some(timeout) = maybe_timeout {
-            if let Some(msg) = mb.recv_timeout(timeout) {
-                return Some(msg);
-            } else {
-                if self.p.0.cr.lock().ready.remove(&self.id) {
-                    return None;
-                }
-            }
-        }
-        Some(mb.recv())
-    }
 
-    unsafe fn claim(
+    unsafe fn claim_raw(
         name: Name,
         want_putter: bool,
-        want_type_key: TypeKey,
         p: &ProtoHandle,
     ) -> Result<Self, ClaimError> {
         use ClaimError::*;
-        if let Some(id) = p.0.r.name_mapping.get_by_first(&name) {
-            let (is_putter, type_key) = match &p.0.r.spaces[id.0] {
-                Space::PoGe { type_key, .. } => (false, *type_key),
-                Space::PoPu { ps, .. } => (true, ps.type_key),
+        if let Some(space_idx) = p.0.r.name_mapping.get_by_first(&name) {
+            let is_putter = match &p.0.r.spaces[space_idx.0] {
+                Space::PoGe { .. } => false,
+                Space::PoPu { .. } => true,
                 Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
             };
             if want_putter != is_putter {
                 return Err(WrongPortDirection);
-            } else if want_type_key != type_key {
-                return Err(TypeMismatch(type_key));
-            }
+            } 
             let mut x = p.0.cr.lock();
-            if x.unclaimed.remove(id) {
-                let q = Ok(Self { id: *id, type_key, p: p.clone() });
+            if x.unclaimed.remove(space_idx) {
+                let q = Ok(Self { space_idx: *space_idx, p: p.clone() });
                 //DeBUGGY:println!("{:?}", q);
                 q
             } else {
@@ -354,20 +335,20 @@ impl PortCommon {
     }
 }
 
-impl<T: 'static + Send + Sync + Sized> Putter<T> {
-    pub unsafe fn claim(p: &ProtoHandle, name: Name, type_key: TypeKey) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim(name, true, type_key, p)?, Default::default()))
+impl Putter {
+    pub unsafe fn claim_raw(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim_raw(name, true, p)?))
     }
 
     // This is the real workhorse function
     fn put_inner(&mut self, datum_ptr: DatumPtr) -> bool {
         let Proto { r, cr } = self.0.p.0.as_ref();
-        let space = &r.spaces[self.0.id.0];
+        let space = &r.spaces[self.0.space_idx.0];
         if let Space::PoPu { ps, mb } = space {
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             {
                 let mut x = cr.lock();
-                assert!(x.ready.insert(self.0.id));
+                assert!(x.ready.insert(self.0.space_idx));
                 x.coordinate(r);
             }
             // println!("waiting,...");
@@ -390,27 +371,9 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
     ///     is reponsible for forgetting it.
     /// otherwise, returns `false` if the value was not consumed, and should
     ///     still be considered owned and valid.
-    pub unsafe fn put_raw(&mut self, src: &mut MaybeUninit<T>) -> bool {
+    pub unsafe fn put_raw(&mut self, src: *mut u8) -> bool {
         // exposed for the sake of C API
-        self.put_inner(DatumPtr::from_maybe_uninit(src))
-    }
-
-    pub fn put(&mut self,  datum: T) -> Option<T> {
-        let mut datum = MaybeUninit::new(datum);
-        let consumed = unsafe { self.put_raw(&mut datum) };
-        match consumed {
-            true => None,
-            false => Some(unsafe { datum.assume_init() }),
-        }
-    }
-    /// returns true if it was consumed
-    pub fn put_lossy(&mut self, datum: T) -> bool {
-        let mut datum =  MaybeUninit::new(datum) ;
-        let consumed = unsafe { self.put_raw(&mut datum) };
-        if !consumed {
-            drop(unsafe { datum.assume_init() })
-        }
-        consumed
+        self.put_inner(DatumPtr::from_raw(src))
     }
 }
 
@@ -418,7 +381,7 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
 fn get_data<F: FnOnce(FinalizeHow)>(
     r: &ProtoR,
     ps: &PutterSpace,
-    maybe_dest: Option<*mut u8>,
+    maybe_dest: Option<DatumPtr>,
     finalize: F,
 ) {
     // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
@@ -432,7 +395,7 @@ fn get_data<F: FnOnce(FinalizeHow)>(
     if type_info.is_copy() {
         // irrelevant how many copy
         if let Some(dest_ptr) = maybe_dest {
-            unsafe { (type_info.raw_move)(dest_ptr, src_ptr.into_raw()) };
+            unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
             ps.rendesvous.move_flags.visit();
         }
         let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
@@ -452,13 +415,13 @@ fn get_data<F: FnOnce(FinalizeHow)>(
                 if was != LAST {
                     ps.rendesvous.mover_sema.acquire();
                 }
-                unsafe { (type_info.raw_move)(dest_ptr, src_ptr.into_raw()) };
+                unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
                 finalize(FinalizeHow::Forget);
             // println!("/A");
             } else {
                 // println!("B");
 
-                    unsafe { (type_info.maybe_clone.expect("NEED CLONE"))(dest_ptr, src_ptr.into_raw()) };
+                    unsafe { (type_info.maybe_clone.expect("NEED CLONE"))(dest_ptr.into_raw(), src_ptr.into_raw()) };
                 // do_clone(dest);
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
                 // println!("was (B) {}, retains {}", was, retains);
@@ -489,39 +452,29 @@ fn get_data<F: FnOnce(FinalizeHow)>(
     }
     // println!("GET COMPLETE");
 }
-impl<T: 'static + Send + Sync + Sized> Getter<T> {
-    pub unsafe fn claim(p: &ProtoHandle, name: Name, type_key: TypeKey) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim(name, false, type_key, p)?, Default::default()))
+impl Getter {
+    pub unsafe fn claim_raw(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim_raw(name, false, p)?))
     }
-    // unsafe fn untyped_claim(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
-    //     Ok(Self(PortCommon::untyped_claim(name, false, p)?, Default::default()))
-    // }
-
-    fn dest_type_forget(dest: Option<&mut MaybeUninit<T>>) -> Option<*mut u8> {
-        dest.map(|x| x as *mut MaybeUninit<T> as *mut u8)
-    } 
 
     // returns false if it doesn't participate in a rule
-    fn get_entirely(
+    unsafe fn get_inner(
         &mut self,
-        maybe_timeout: Option<Duration>,
-        maybe_dest: Option<&mut MaybeUninit<T>>,
+        maybe_dest: Option<DatumPtr>,
     ) -> bool {
         let Proto { r, cr } = self.0.p.0.as_ref();
-        let space = &r.spaces[self.0.id.0];
+        let space = &r.spaces[self.0.space_idx.0];
         if let Space::PoGe { mb, .. } = space {
             {
                 let mut x = cr.lock();
-                assert!(x.ready.insert(self.0.id));
+                assert!(x.ready.insert(self.0.space_idx));
                 x.coordinate(r);
+                // TODO check if we can time out
             }
-            let putter_id = match self.0.msg_recv(mb, maybe_timeout) {
-                None => return false,
-                Some(msg) => SpaceIndex(msg),
-            };
+            let putter_id = SpaceIndex(mb.recv());
             // println!("My putter has id {:?}", putter_id);
             match &r.spaces[putter_id.0] {
-                Space::PoPu { ps, mb } => get_data(r, ps, Self::dest_type_forget(maybe_dest), move |how| {
+                Space::PoPu { ps, mb } => get_data(r, ps, maybe_dest, move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
@@ -530,7 +483,7 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
                     })
                     // println!("FINALZIING DONE");
                 }),
-                Space::Memo { ps } => get_data(r, ps, Self::dest_type_forget(maybe_dest), |how| {
+                Space::Memo { ps } => get_data(r, ps, maybe_dest, |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
@@ -545,29 +498,8 @@ impl<T: 'static + Send + Sync + Sized> Getter<T> {
         true
     }
 
-    pub unsafe fn get_raw(&mut self, dest: &mut MaybeUninit<T>) {
-        assert!(self.get_entirely(None, Some(dest)));
-    }
-
-    pub fn get(&mut self) -> T {
-        // println!("get...");
-        let mut ret = MaybeUninit::uninit();
-        assert!(self.get_entirely(None, Some(&mut ret)));
-        unsafe { ret.assume_init() }
-    }
-    pub fn get_timeout(&mut self, timeout: Duration) -> Option<T> {
-        let mut ret = MaybeUninit::uninit();
-        if self.get_entirely(Some(timeout), Some(&mut ret)) {
-            Some(unsafe { ret.assume_init() })
-        } else {
-            None
-        }
-    }
-    pub fn get_signal(&mut self) {
-        assert!(self.get_entirely(None, None));
-    }
-    pub fn get_signal_timeout(&mut self, timeout: Duration) -> bool {
-        self.get_entirely(Some(timeout), None)
+    pub unsafe fn get_raw(&mut self, dest: Option<*mut u8>) {
+        assert!(self.get_inner( dest.map(DatumPtr::from_raw)));
     }
 }
 
@@ -588,7 +520,7 @@ impl ProtoHandle {
             let datum_ptr = lock.allocator.occupy_allocation(type_key);
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             lock.mem.insert(*space_idx);
-            println!("SWAP A");
+            // println!("SWAP A");
             assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
              (type_info.raw_move)(datum_ptr.into_raw(), datum.as_ptr() as *const u8) ;
             Ok(())
@@ -790,7 +722,7 @@ impl ProtoCr {
                 if let FinalizeHow::DropInside = how {
                     unsafe { type_key.try_drop_data(datum_ptr) };
                 }
-                println!("SWAP B");
+                // println!("SWAP B");
                 self.allocator.swap_allocation_to(putter_space.type_key, datum_ptr, false);
             }
         }
@@ -835,7 +767,7 @@ impl ProtoCr {
                     //DeBUGGY:println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
                 }
-                println!("DOING A RULE!");
+                // println!("DOING A RULE!");
                 //DeBUGGY:println!("SUCCESS");
                 // //DeBUGGY:println!("going to eval ins for rule {:?}", rule);
                 for (i_id, i) in rule.ins.iter().enumerate() {
@@ -999,7 +931,7 @@ impl ProtoCr {
                                 // I was the last reference! drop datum IN CIRCUIT
                                 self.ref_counts.remove(&src);
                                 unsafe { type_info.try_drop_data(src) }
-                println!("SWAP C");
+                // println!("SWAP C");
                                 self.allocator.swap_allocation_to(ps.type_key, src, false);
                             }
                         }

@@ -31,7 +31,7 @@ impl Allocator {
     //     })
     // }
     pub fn swap_allocation_to(&mut self, type_key: TypeKey, datum_ptr: DatumPtr, to_occupied: bool) {
-        println!("to_occupied {} before: {:#?}", to_occupied, self);
+        // println!("to_occupied {} before: {:#?}", to_occupied, self);
         let [dest, src] = match to_occupied {
             true => [&mut self.occupied, &mut self.vacant],
             false => [&mut self.vacant, &mut self.occupied],
