@@ -134,7 +134,7 @@ fn safe_main() {
     ;
 
 	let handles = [
-		thread::spawn(move || for _ in 0..3 { a.put(true).unwrap(); }),
+		thread::spawn(move || for _ in 0..3 { a.put_lossy(true); }),
 		thread::spawn(move || for _ in 0..2 { println!("C {:?}", c.get());}),
 		thread::spawn(move || for _ in 0..2 { println!("D {:?}", d.get());}),
 	];
