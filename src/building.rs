@@ -9,12 +9,6 @@ pub trait FromStrExpect: FromStr {
     }
 }
 
-#[repr(C)]
-#[derive(Default)]
-pub struct MemInitial {
-    strg: HashMap<Name, Box<dyn PortDatum>>,
-}
-
 #[derive(Debug, Clone)]
 pub enum NameDef {
     Port { is_putter: bool, type_info: TypeInfo },
@@ -73,20 +67,6 @@ pub enum ProtoBuildError {
 /////////////////////////////////////
 impl<T: FromStr> FromStrExpect for T {}
 
-impl MemInitial {
-    #[inline]
-    pub fn with<T: 'static + Send + Sync + Sized>(mut self, name: Name, init: T) -> Self {
-        let dy: Box<dyn PortDatum> = Box::new(init);
-        let i1 = TypeInfo::of::<T>();
-        // TODO for some reason Rustc makes two trait objects?
-        // Anyway we exclusively use those returned by TypeInfo
-        let (d, _i2) = unsafe { trait_obj_break(dy) };
-        let dy = unsafe { trait_obj_build(d, i1) };
-        self.strg.insert(name, dy);
-        self
-    }
-}
-
 fn resolve_fully(
     temp_names: &HashMap<Name, (LocId, TypeInfo)>,
     name_mapping: &BidirMap<Name, LocId>,
@@ -101,6 +81,7 @@ fn resolve_fully(
 }
 
 fn term_eval_tid(
+    type_map: &TypeMap,
     spaces: &Vec<Space>,
     temp_names: &HashMap<Name, (LocId, TypeInfo)>,
     name_mapping: &BidirMap<Name, LocId>,
@@ -115,11 +96,12 @@ fn term_eval_tid(
                 .ok_or(TermNameIsNotPutter { name })?
                 .type_info
         }
-        _ => TypeInfo::of::<bool>(),
+        _ => type_map.bool_type_key,
     })
 }
 
 fn term_convert(
+    type_map: &TypeMap,
     spaces: &Vec<Space>,
     temp_names: &HashMap<Name, (LocId, TypeInfo)>,
     name_mapping: &BidirMap<Name, LocId>,
@@ -132,7 +114,8 @@ fn term_convert(
     let clos = |fs: &Vec<Term<Name, Name>>| {
         fs.iter()
             .map(|t: &Term<Name, Name>| {
-                term_convert(spaces, temp_names, name_mapping, call_handles, known_state, t)
+                term_convert(
+                        type_map,spaces, temp_names, name_mapping, call_handles, known_state, t)
             })
             .collect::<Result<_, ProtoBuildError>>()
     };
@@ -140,6 +123,7 @@ fn term_convert(
         True => True,
         False => False,
         Not(f) => Not(Box::new(term_convert(
+                        type_map,
             spaces,
             temp_names,
             name_mapping,
@@ -156,8 +140,8 @@ fn term_convert(
         IsEq(tid, boxed) => {
             let [lhs, rhs] = [&boxed[0], &boxed[1]];
             let [t0, t1] = [
-                term_eval_tid(spaces, temp_names, name_mapping, &lhs)?,
-                term_eval_tid(spaces, temp_names, name_mapping, &rhs)?,
+                term_eval_tid(type_map, spaces, temp_names, name_mapping, &lhs)?,
+                term_eval_tid(type_map,spaces, temp_names, name_mapping, &rhs)?,
             ];
             if t0 != t1 || t0 != *tid {
                 return Err(EqForDifferentTypes);
@@ -165,8 +149,8 @@ fn term_convert(
             IsEq(
                 *tid,
                 Box::new([
-                    term_convert(spaces, temp_names, name_mapping, call_handles, known_state, lhs)?,
-                    term_convert(spaces, temp_names, name_mapping, call_handles, known_state, rhs)?,
+                    term_convert(type_map,spaces, temp_names, name_mapping, call_handles, known_state, lhs)?,
+                    term_convert(type_map,spaces, temp_names, name_mapping, call_handles, known_state, rhs)?,
                 ]),
             )
         }
@@ -187,14 +171,10 @@ enum LocKind {
 }
 
 impl ProtoDef {
-    pub fn build(&self, init: MemInitial) -> Result<ProtoHandle, (Option<usize>, ProtoBuildError)> {
-        build_proto(self, init)
-    }
-}
 
 pub fn build_proto(
-    p: &ProtoDef,
-    mut init: MemInitial,
+    &self
+    , type_map: Arc<TypeMap>,
 ) -> Result<ProtoHandle, (Option<usize>, ProtoBuildError)> {
     use ProtoBuildError::*;
 
@@ -202,17 +182,17 @@ pub fn build_proto(
     let mut name_mapping = BidirMap::<Name, LocId>::new();
     let mut unclaimed: HashSet<LocId> = hashset! {};
     // locid -> (is_putter, type_info)
+
     let mut port_info: HashMap<LocId, (bool, TypeInfo)> = hashmap! {};
-    let mut allocator = Allocator::default();
+    let mut allocator = Allocator::new(type_map.clone());
 
     let mut persistent_loc_kinds = vec![];
 
     // consume all name defs, creating spaces. retain call_handles to be treated later
-    let mut mem: BitSet = Default::default();
-    let mut ready = mem.clone();
+    let mut ready = BitSet::default();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
     let mut ref_counts = hashmap! {};
-    for (name, def) in p.name_defs.iter() {
+    for (name, def) in self.name_defs.iter() {
         let id = LocId(spaces.len());
         name_mapping.insert(name, id);
         let (space, kind) = match def {
@@ -221,7 +201,7 @@ pub fn build_proto(
                 port_info.insert(id, (*is_putter, *type_info));
                 let mb = MsgBox::default();
                 if *is_putter {
-                    let ps = PutterSpace::new(std::ptr::null_mut(), *type_info);
+                    let ps = PutterSpace::new( *type_info);
                     (Space::PoPu { ps, mb }, LocKind::PoPu)
                 } else {
                     (Space::PoGe { mb }, LocKind::PoGe)
@@ -229,21 +209,7 @@ pub fn build_proto(
             }
             NameDef::Mem(type_info) => {
                 ready.insert(id);
-                let ptr = if let Some(bx) = init.strg.remove(name) {
-                    let bx: Box<dyn PortDatum> = bx; // for readability
-                    let (data, info) = trait_obj_read(&bx);
-                    if info != *type_info {
-                        return Err((None, InitialTypeMismatch { name }));
-                    }
-                    assert!(allocator.store(bx));
-                    ref_counts.insert(data as usize, 1usize);
-                    mem.insert(id);
-                    data
-                } else {
-                    std::ptr::null_mut()
-                };
-                // putter space gets a copy too, not owned
-                (Space::Memo { ps: PutterSpace::new(ptr, *type_info) }, LocKind::Memo)
+                (Space::Memo { ps: PutterSpace::new( *type_info) }, LocKind::Memo)
             }
             NameDef::Func(call_handle) => {
                 call_handles.insert(name, call_handle.clone());
@@ -253,10 +219,8 @@ pub fn build_proto(
         spaces.push(space);
         persistent_loc_kinds.push(kind);
     }
-    for (name, _) in init.strg {
-        return Err((None, UnknownInitial { name }));
-    }
     let perm_space_rng = 0..spaces.len();
+    let mut mem = BitSet::default(); 
     mem.pad_to_cap(perm_space_rng.end);
     ready.pad_to_cap(perm_space_rng.end);
 
@@ -337,16 +301,18 @@ pub fn build_proto(
             .extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|id| (id, id)));
 
         let mut ins = SmallVec::new();
+        let bool_type_key = type_map.bool_type_key;
         'instructions: for i in rule.ins.iter() {
             use Instruction::*;
             let instruction = match i {
                 Check(term) => {
-                    if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?
-                        != TypeInfo::of::<bool>()
+                    if term_eval_tid(&type_map,&spaces, &temp_names, &name_mapping, &term)?
+                        != bool_type_key
                     {
                         return Err(CheckingNonBoolType);
                     }
                     Instruction::Check(term_convert(
+                        &type_map,
                         &spaces,
                         &temp_names,
                         &name_mapping,
@@ -356,20 +322,22 @@ pub fn build_proto(
                     )?)
                 }
                 CreateFromFormula { dest, term } => {
-                    let type_info = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
-                    if type_info != TypeInfo::of::<bool>() {
+                    let type_info = term_eval_tid(
+                        &type_map,&spaces, &temp_names, &name_mapping, &term)?;
+                    if type_info != bool_type_key {
                         return Err(CreatingNonBoolFromFormula);
                     }
                     if resolve_fully(&temp_names, &name_mapping, dest).is_ok() {
                         return Err(InstructionCannotOverwrite { name: dest });
                     }
-                    let ps = PutterSpace::new(std::ptr::null_mut(), type_info);
+                    let ps = PutterSpace::new( type_info);
                     spaces.push(Space::Memo { ps });
                     let temp_id = LocId(spaces.len() - 1);
                     if temp_names.insert(dest, (temp_id, type_info)).is_some() {
                         return Err(InstructionShadowsName { name: dest });
                     }
                     let term = term_convert(
+                        &type_map,
                         &spaces,
                         &temp_names,
                         &name_mapping,
@@ -387,6 +355,7 @@ pub fn build_proto(
                         .into_iter()
                         .map(|arg| {
                             term_convert(
+                        &type_map,
                                 &spaces,
                                 &temp_names,
                                 &name_mapping,
@@ -397,7 +366,7 @@ pub fn build_proto(
                         })
                         .collect::<Result<Vec<_>, ProtoBuildError>>()?;
                     let temp_id = LocId(spaces.len());
-                    let ps = PutterSpace::new(std::ptr::null_mut(), *info);
+                    let ps = PutterSpace::new(*info);
                     spaces.push(Space::Memo { ps });
                     if temp_names.insert(dest, (temp_id, *info)).is_some() {
                         return Err(InstructionShadowsName { name: dest });
@@ -421,7 +390,7 @@ pub fn build_proto(
                             let temp_id = LocId(spaces.len());
                             temp_names.insert(new_name, (temp_id, info)); // cannot fail
                             spaces.push(Space::Memo {
-                                ps: PutterSpace::new(std::ptr::null_mut(), info),
+                                ps: PutterSpace::new( info),
                             });
                             if let Some(x) = known_state.remove(ex_name) {
                                 known_state.insert(new_name, x);
@@ -539,15 +508,17 @@ pub fn build_proto(
         Ok(Rule { bit_guard, ins, output, bit_assign })
     };
 
-    let rules = p
+    let rules = self
         .rules
         .iter()
         .enumerate()
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
-    let r = ProtoR { rules, spaces, name_mapping, port_info, perm_space_rng };
+    let r = ProtoR { type_map, rules, spaces, name_mapping, port_info, perm_space_rng };
     //DeBUGGY:println!("PROTO R {:#?}", &r);
     let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts };
     r.sanity_check(&cr); // DEBUG
     Ok(ProtoHandle(Arc::new(Proto { r, cr: Mutex::new(cr) })))
+}
+
 }

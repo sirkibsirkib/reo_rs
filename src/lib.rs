@@ -28,21 +28,36 @@ use bit_set::{BitSet, SetExt};
 type N = u8;
 
 #[derive(Clone, DebugStub)]
-struct TypeFuncs {
+pub struct TypeFuncs {
     // essentially a Vtable
-    layout: Layout,
+    pub layout: Layout,
      #[debug_stub = "write from read"]
-    raw_move: fn(*mut N, *const N),
+    pub raw_move: unsafe fn( *mut N, *const N),
     #[debug_stub = "optional clone function pointer"]
-    maybe_clone: Option<fn(*mut N, *const N)>,
+    pub maybe_clone: Option<unsafe fn(*mut N, *const N)>,
      #[debug_stub = "optional eq function pointer"]
-    maybe_eq: Option<fn(*const N, *const N) -> bool>,
+    pub maybe_eq: Option<unsafe fn(*const N, *const N) -> bool>,
      #[debug_stub = "optional drop function pointer"]
-    maybe_drop: Option<fn(*mut N)>,
+    pub maybe_drop: Option<unsafe fn(*mut N)>,
 }
 
+pub static BOOL_TYPE_FUNCS: TypeFuncs = {
+    let raw_move = |dest, src| unsafe {
+        *(dest as *mut bool) = *(src as *const bool)
+    };
+    TypeFuncs {
+        layout: Layout::new::<bool>(),
+        raw_move,
+        maybe_clone: Some(raw_move),
+        maybe_eq: Some(|a, b| unsafe {
+            &*(a as *const bool) == &*(b as *const bool)
+        }),
+        maybe_drop: None,
+    }
+};
+
 impl TypeFuncs {
-    const fn is_copy(&self) -> bool {
+    fn is_copy(&self) -> bool {
         self.maybe_drop.is_none()
     }
     unsafe fn try_drop_data(&self, data: DatumPtr) {
@@ -53,13 +68,15 @@ impl TypeFuncs {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct TypeKey(usize);
+pub struct TypeKey(usize);
 impl TypeKey {
     pub const BOOL_TYPE_KEY: Self = TypeKey(0);
 }
 
 // #[cfg(test)]
 // mod tests;
+
+mod new_tests;
 
 // mod ffi;
 // pub use ffi::*;
@@ -71,11 +88,21 @@ type TypeInfo = TypeKey;
 trait PortDatum {}
 pub type Name = &'static str;
 
-#[derive(Debug)]
-struct CallHandle;
+#[derive(DebugStub, Clone)]
+pub struct CallHandle {
+    #[debug_stub = "FuncPtr"]
+    func: unsafe fn(), // dummy type
+    ret: TypeInfo,
+    args: Vec<TypeInfo>,
+}
+impl CallHandle {
+    unsafe fn exec(&self, dest: DatumPtr, args: &[DatumPtr]) {
+        todo!()
+    }
+}
 
 #[derive(Debug)]
-struct TypeMap {
+pub struct TypeMap {
     pub funcs: HashMap<TypeKey, TypeFuncs>,
     pub bool_type_key: TypeKey,
 }
@@ -154,27 +181,12 @@ impl DatumPtr {
     }
 }
 
-
-// unsafe trait PortDatum: Send + Sync + 'static {
-//     // DO NOT REORDER
-//     fn my_clone(&self, other: TraitData);
-//     fn my_eq(&self, other: TraitData) -> bool;
-//     fn is_copy(&self) -> bool;
-// }
-// trait MaybeCopy {
-//     const IS_COPY: bool;
-// }
-// trait MaybeClone {
-//     fn maybe_clone(&self, _: TraitData);
-// }
-// trait MaybePartialEq {
-//     fn maybe_partial_eq(&self, _: TraitData) -> bool;
-// }
 #[derive(Debug)]
 pub struct Proto {
     cr: Mutex<ProtoCr>,
     r: ProtoR,
 }
+
 #[derive(Debug, Clone)]
 pub struct ProtoHandle(pub(crate) Arc<Proto>);
 
@@ -391,10 +403,11 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
     pub unsafe fn claim(p: &ProtoHandle, name: Name, type_info: TypeInfo) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(name, true, type_info, p)?, Default::default()))
     }
-    // returns whether the value was CONSUMED
-    pub fn put_entirely(&mut self, datum_ptr: DatumPtr) -> bool {
+
+    // This is the
+    fn put_inner(&mut self, datum_ptr: DatumPtr) -> bool {
         let Proto { r, cr } = self.0.p.0.as_ref();
-        let space = r.spaces[self.0.id.0];
+        let space = &r.spaces[self.0.id.0];
         if let Space::PoPu { ps, mb } = space {
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             {
@@ -423,27 +436,24 @@ impl<T: 'static + Send + Sync + Sized> Putter<T> {
     /// otherwise, returns `false` if the value was not consumed, and should
     ///     still be considered owned and valid.
     pub unsafe fn put_raw(&mut self, src: &mut MaybeUninit<T>) -> bool {
-        if self.put_entirely(DatumPtr::from_maybe_uninit(src)) {
-            true
-        } else {
-            false
-        }
+        // exposed for the sake of C API
+        self.put_inner(DatumPtr::from_maybe_uninit(src))
     }
 
     pub fn put(&mut self,  datum: T) -> Option<T> {
         let mut datum = MaybeUninit::new(datum);
-        let consumed = self.put_raw(&mut datum);
+        let consumed = unsafe { self.put_raw(&mut datum) };
         match consumed {
             true => None,
-            false => Some(datum.assume_init()),
+            false => Some(unsafe { datum.assume_init() }),
         }
     }
     /// returns true if it was consumed
-    pub fn put_lossy(&mut self, mut datum: T) -> bool {
-        let mut datum = MaybeUninit::new(datum);
-        let consumed = self.put_raw(&mut datum);
+    pub fn put_lossy(&mut self, datum: T) -> bool {
+        let mut datum =  MaybeUninit::new(datum) ;
+        let consumed = unsafe { self.put_raw(&mut datum) };
         if !consumed {
-            drop(datum.assume_init())
+            drop(unsafe { datum.assume_init() })
         }
         consumed
     }
@@ -1003,7 +1013,7 @@ impl ProtoCr {
                             if *ref_count == 0 {
                                 // I was the last reference! drop datum IN CIRCUIT
                                 self.ref_counts.remove(&src);
-                                type_funcs.try_drop_data(src);
+                                unsafe { type_funcs.try_drop_data(src) }
                                 self.allocator.swap_allocation_to(ps.type_info, src, false);
                             }
                         }
@@ -1027,11 +1037,19 @@ impl ProtoCr {
 }
 
 impl Allocator {
+    pub fn new(type_map: Arc<TypeMap>) -> Self {
+        Self {
+            type_map,
+            occupied: Default::default(),
+            vacant: Default::default(),
+        }
+    }
     pub fn get_a_vacant(&mut self, type_info: TypeInfo) -> DatumPtr {
-        let set = self.vacant.map.entry(type_info).or_insert_with(Default::default);
+        let Self { vacant, type_map, .. } = self;
+        let set = vacant.map.entry(type_info).or_insert_with(Default::default);
         set.iter().copied().next().unwrap_or_else(|| {
-            let layout = self.type_map.get_funcs(&type_info).layout;
-            let datum_ptr = DatumPtr::from_raw(std::alloc::alloc(layout));
+            let layout = type_map.get_funcs(&type_info).layout;
+            let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
             set.insert(datum_ptr);
             datum_ptr
         })
@@ -1086,9 +1104,9 @@ impl MoveFlags {
 }
 
 impl PutterSpace {
-    fn new(datum_ptr: DatumPtr, type_info: TypeInfo) -> Self {
+    fn new(type_info: TypeInfo) -> Self {
         PutterSpace {
-            atomic_datum_ptr: AtomicDatumPtr { raw: AtomicPtr::from(datum_ptr.into_raw())},
+            atomic_datum_ptr: AtomicDatumPtr::default(),
             type_info,
             rendesvous: Rendesvous {
                 countdown: 0.into(),
