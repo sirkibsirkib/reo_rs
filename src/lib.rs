@@ -1,6 +1,5 @@
-
-use core::marker::PhantomData;
 use bidir_map::BidirMap;
+use core::marker::PhantomData;
 use core::{ops::Range, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
@@ -22,8 +21,8 @@ use std_semaphore::Semaphore;
 pub mod building;
 
 mod allocator;
-mod type_info;
 mod ports;
+mod type_info;
 
 mod bit_set;
 use bit_set::{BitSet, SetExt};
@@ -40,11 +39,11 @@ mod new_tests;
 // invariant: all TypeKey elements in inner TypeMaps correspond 1-to-1 with std::any::TypeId
 pub struct TypeProtected<T>(T);
 
-pub struct TypedPutter<T> { 
+pub struct TypedPutter<T> {
     putter: Putter,
     _phantom: PhantomData<T>,
 }
-pub struct TypedGetter<T> { 
+pub struct TypedGetter<T> {
     getter: Getter,
     _phantom: PhantomData<T>,
 }
@@ -53,28 +52,36 @@ pub struct TypedGetter<T> {
 pub struct TypeInfo {
     // essentially a Vtable
     pub layout: Layout,
-     #[debug_stub = "write from read"]
-    pub raw_move: unsafe fn( *mut u8, *const u8),
+    #[debug_stub = "write from read"]
+    pub raw_move: unsafe fn(*mut u8, *const u8),
     #[debug_stub = "optional clone function pointer"]
     pub maybe_clone: Option<unsafe fn(*mut u8, *const u8)>,
-     #[debug_stub = "optional eq function pointer"]
+    #[debug_stub = "optional eq function pointer"]
     pub maybe_eq: Option<unsafe fn(*const u8, *const u8) -> bool>,
-     #[debug_stub = "optional drop function pointer"]
+    #[debug_stub = "optional drop function pointer"]
     pub maybe_drop: Option<unsafe fn(*mut u8)>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct TypeKey(u64);
 
-
 pub type Name = &'static str;
 
 #[derive(DebugStub, Clone)]
 pub struct CallHandle {
     #[debug_stub = "FuncPtr"]
-    func: unsafe fn(), // dummy type
+    func: unsafe fn(*mut u8, *const u8), // dummy type
     ret: TypeKey,
     args: Vec<TypeKey>,
+}
+impl CallHandle {
+    pub unsafe fn new_raw(
+        func: unsafe fn(*mut u8, *const u8), // dummy type
+        ret: TypeKey,
+        args: Vec<TypeKey>,
+    ) -> Self {
+        Self { func, ret, args }
+    }
 }
 
 #[derive(Debug)]
@@ -90,7 +97,7 @@ pub enum Term<I, F> {
     And(Vec<Self>),                              // returns bool
     Or(Vec<Self>),                               // returns bool
     BoolCall { func: F, args: Vec<Term<I, F>> }, // returns bool
-    IsEq(TypeKey, Box<[Self; 2]>),              // returns bool
+    IsEq(TypeKey, Box<[Self; 2]>),               // returns bool
     Named(I),                                    // type of I
 }
 
@@ -257,10 +264,6 @@ impl AtomicDatumPtr {
 }
 impl DatumPtr {
     const NULL: Self = Self(0);
-
-    fn from_maybe_uninit<T>(m: &mut MaybeUninit<T>) -> Self {
-        Self::from_raw(m.as_mut_ptr() as *mut u8)
-    }
     fn into_raw(self) -> *mut u8 {
         self.0 as _
     }
@@ -270,7 +273,8 @@ impl DatumPtr {
 }
 impl CallHandle {
     unsafe fn exec(&self, dest: DatumPtr, args: &[DatumPtr]) {
-        todo!()
+        assert_eq!(self.args.len(), args.len());
+        (self.func)(dest.into_raw(), transmute(args.as_ptr()))
     }
 }
 
@@ -311,14 +315,12 @@ impl MsgBox {
     }
 }
 
-
 impl Eq for ProtoHandle {}
 impl PartialEq for ProtoHandle {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 }
-
 
 impl ProtoR {
     pub fn sanity_check(&self, cr: &ProtoCr) {
@@ -334,11 +336,7 @@ impl ProtoR {
             .iter()
             .map(|x| match x {
                 Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_key },
-                Space::PoGe { type_key, .. } => Cap {
-                    put: false,
-                    mem: false,
-                    ty: *type_key,
-                },
+                Space::PoGe { type_key, .. } => Cap { put: false, mem: false, ty: *type_key },
                 Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_key },
             })
             .collect();
@@ -408,8 +406,14 @@ impl ProtoR {
                         tbool
                     }
                     IsEq(tid, terms) => {
-                        assert_eq!(check_and_ret_type(r, capabilities, known_filled, &terms[0]), *tid);
-                        assert_eq!(check_and_ret_type(r, capabilities, known_filled, &terms[1]), *tid);
+                        assert_eq!(
+                            check_and_ret_type(r, capabilities, known_filled, &terms[0]),
+                            *tid
+                        );
+                        assert_eq!(
+                            check_and_ret_type(r, capabilities, known_filled, &terms[1]),
+                            *tid
+                        );
                         tbool
                     }
                 }
@@ -434,7 +438,10 @@ impl ProtoR {
                     Instruction::CreateFromFormula { dest, term } => {
                         assert!(known_filled.insert(*dest, true).is_none());
                         let cap = &capabilities[dest.0];
-                        assert_eq!(cap.ty, check_and_ret_type(self, &capabilities, &known_filled, term))
+                        assert_eq!(
+                            cap.ty,
+                            check_and_ret_type(self, &capabilities, &known_filled, term)
+                        )
                     }
                     Instruction::MemSwap(a, b) => {
                         let a_knowledge = known_filled.remove(a);
@@ -587,7 +594,7 @@ impl ProtoCr {
                                 .atomic_datum_ptr
                                 .swap(dest_ptr);
                             assert_eq!(old, DatumPtr::NULL);
-                            let was = self.ref_counts.insert(dest_ptr , 1);
+                            let was = self.ref_counts.insert(dest_ptr, 1);
                             assert!(was.is_none());
                         }
                         Check(term) => {
@@ -662,18 +669,25 @@ impl ProtoCr {
                         if !putter_retains {
                             let src_ptr = ps.atomic_datum_ptr.swap(DatumPtr::NULL);
                             assert!(src_ptr != DatumPtr::NULL);
-                            unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
+                            unsafe {
+                                (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw())
+                            };
                             // unsafe { ps.type_key.copy(src_ptr, dest_ptr) };
                             mb.send(MsgBox::MOVED_MSG);
                         } else {
                             let src_ptr = ps.atomic_datum_ptr.load();
                             assert!(src_ptr != DatumPtr::NULL);
 
-                            unsafe { (type_info.maybe_clone.expect("NO CLONE"))(dest_ptr.into_raw(), src_ptr.into_raw()) };
+                            unsafe {
+                                (type_info.maybe_clone.expect("NO CLONE"))(
+                                    dest_ptr.into_raw(),
+                                    src_ptr.into_raw(),
+                                )
+                            };
                             // unsafe { ps.type_key.clone(src_ptr, dest_ptr) };
                             mb.send(MsgBox::UNMOVED_MSG);
                         }
-                        assert!(self.ref_counts.insert(dest_ptr , 1).is_none());
+                        assert!(self.ref_counts.insert(dest_ptr, 1).is_none());
                         assert_eq!(DatumPtr::NULL, dest_space.atomic_datum_ptr.swap(dest_ptr));
 
                         // mem_0 becomes the putter, and retains the value
@@ -697,8 +711,7 @@ impl ProtoCr {
                     let type_info = r.type_map.get_type_info(&ps.type_key);
                     let src = ps.atomic_datum_ptr.load();
                     assert!(src != DatumPtr::NULL);
-                    let ref_count: &mut usize =
-                        self.ref_counts.get_mut(&src).expect("eub");
+                    let ref_count: &mut usize = self.ref_counts.get_mut(&src).expect("eub");
                     for m in me_ge_iter {
                         *ref_count += 1;
                         let getter_space = r.spaces[m.0].get_putter_space().expect("e8h8");
@@ -714,7 +727,7 @@ impl ProtoCr {
                                 // I was the last reference! drop datum IN CIRCUIT
                                 self.ref_counts.remove(&src);
                                 unsafe { type_info.try_drop_data(src) }
-                // println!("SWAP C");
+                                // println!("SWAP C");
                                 self.allocator.swap_allocation_to(ps.type_key, src, false);
                             }
                         }

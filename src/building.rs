@@ -110,7 +110,14 @@ fn term_convert(
         fs.iter()
             .map(|t: &Term<Name, Name>| {
                 term_convert(
-                        type_map,spaces, temp_names, name_mapping, call_handles, known_state, t)
+                    type_map,
+                    spaces,
+                    temp_names,
+                    name_mapping,
+                    call_handles,
+                    known_state,
+                    t,
+                )
             })
             .collect::<Result<_, ProtoBuildError>>()
     };
@@ -118,7 +125,7 @@ fn term_convert(
         True => True,
         False => False,
         Not(f) => Not(Box::new(term_convert(
-                        type_map,
+            type_map,
             spaces,
             temp_names,
             name_mapping,
@@ -136,7 +143,7 @@ fn term_convert(
             let [lhs, rhs] = [&boxed[0], &boxed[1]];
             let [t0, t1] = [
                 term_eval_tid(type_map, spaces, temp_names, name_mapping, &lhs)?,
-                term_eval_tid(type_map,spaces, temp_names, name_mapping, &rhs)?,
+                term_eval_tid(type_map, spaces, temp_names, name_mapping, &rhs)?,
             ];
             if t0 != t1 || t0 != *tid {
                 return Err(EqForDifferentTypes);
@@ -144,8 +151,24 @@ fn term_convert(
             IsEq(
                 *tid,
                 Box::new([
-                    term_convert(type_map,spaces, temp_names, name_mapping, call_handles, known_state, lhs)?,
-                    term_convert(type_map,spaces, temp_names, name_mapping, call_handles, known_state, rhs)?,
+                    term_convert(
+                        type_map,
+                        spaces,
+                        temp_names,
+                        name_mapping,
+                        call_handles,
+                        known_state,
+                        lhs,
+                    )?,
+                    term_convert(
+                        type_map,
+                        spaces,
+                        temp_names,
+                        name_mapping,
+                        call_handles,
+                        known_state,
+                        rhs,
+                    )?,
                 ]),
             )
         }
@@ -158,12 +181,17 @@ fn term_convert(
     })
 }
 
-pub fn build_proto_protected(proto_def: &ProtoDef, type_map: TypeProtected<TypeMap>) -> Result<TypeProtected<ProtoHandle>, (Option<usize>, ProtoBuildError)> {
+pub fn build_proto_protected(
+    proto_def: &ProtoDef,
+    type_map: TypeProtected<TypeMap>,
+) -> Result<TypeProtected<ProtoHandle>, (Option<usize>, ProtoBuildError)> {
     build_proto(proto_def, Arc::new(type_map.0)).map(TypeProtected)
 }
 
-
-pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<ProtoHandle, (Option<usize>, ProtoBuildError)> {
+pub fn build_proto(
+    proto_def: &ProtoDef,
+    type_map: Arc<TypeMap>,
+) -> Result<ProtoHandle, (Option<usize>, ProtoBuildError)> {
     use ProtoBuildError::*;
 
     let mut spaces = vec![];
@@ -187,7 +215,7 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
                 port_type_key.insert(id, (*is_putter, *type_key));
                 let mb = MsgBox::default();
                 if *is_putter {
-                    let ps = PutterSpace::new( *type_key);
+                    let ps = PutterSpace::new(*type_key);
                     (Space::PoPu { ps, mb }, LocKind::PoPu)
                 } else {
                     (Space::PoGe { mb, type_key: *type_key }, LocKind::PoGe)
@@ -195,7 +223,7 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
             }
             NameDef::Mem { type_key } => {
                 ready.insert(id);
-                (Space::Memo { ps: PutterSpace::new( *type_key) }, LocKind::Memo)
+                (Space::Memo { ps: PutterSpace::new(*type_key) }, LocKind::Memo)
             }
             NameDef::Func(call_handle) => {
                 call_handles.insert(name, call_handle.clone());
@@ -291,7 +319,7 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
             use Instruction::*;
             let instruction = match i {
                 Check(term) => {
-                    if term_eval_tid(&type_map,&spaces, &temp_names, &name_mapping, &term)?
+                    if term_eval_tid(&type_map, &spaces, &temp_names, &name_mapping, &term)?
                         != bool_type_key
                     {
                         return Err(CheckingNonBoolType);
@@ -307,15 +335,15 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
                     )?)
                 }
                 CreateFromFormula { dest, term } => {
-                    let type_key = term_eval_tid(
-                        &type_map,&spaces, &temp_names, &name_mapping, &term)?;
+                    let type_key =
+                        term_eval_tid(&type_map, &spaces, &temp_names, &name_mapping, &term)?;
                     if type_key != bool_type_key {
                         return Err(CreatingNonBoolFromFormula);
                     }
                     if resolve_fully(&temp_names, &name_mapping, dest).is_ok() {
                         return Err(InstructionCannotOverwrite { name: dest });
                     }
-                    let ps = PutterSpace::new( type_key);
+                    let ps = PutterSpace::new(type_key);
                     spaces.push(Space::Memo { ps });
                     let temp_id = SpaceIndex(spaces.len() - 1);
                     if temp_names.insert(dest, (temp_id, type_key)).is_some() {
@@ -340,7 +368,7 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
                         .into_iter()
                         .map(|arg| {
                             term_convert(
-                        &type_map,
+                                &type_map,
                                 &spaces,
                                 &temp_names,
                                 &name_mapping,
@@ -374,9 +402,7 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
                             let type_key = ps.type_key;
                             let temp_id = SpaceIndex(spaces.len());
                             temp_names.insert(new_name, (temp_id, type_key)); // cannot fail
-                            spaces.push(Space::Memo {
-                                ps: PutterSpace::new( type_key),
-                            });
+                            spaces.push(Space::Memo { ps: PutterSpace::new(type_key) });
                             if let Some(x) = known_state.remove(ex_name) {
                                 known_state.insert(new_name, x);
                             }
@@ -428,8 +454,7 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
                 }
                 let putter_id: SpaceIndex = resolve_fully(&temp_names, &name_mapping, putter)?;
                 puts.insert(putter); // no overwrite possible
-                let putter_type_key =
-                    spaces[putter_id.0].get_putter_space().expect("CCC").type_key;
+                let putter_type_key = spaces[putter_id.0].get_putter_space().expect("CCC").type_key;
                 if !putter_retains {
                     if let Some(x) = whose_mem_is_this.remove(&putter_id) {
                         bit_assign.empty_mem.insert(x);
@@ -500,10 +525,10 @@ pub fn build_proto(proto_def: &ProtoDef, type_map: Arc<TypeMap>) -> Result<Proto
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
 
-    let allocator =  Allocator::new(type_map.clone());
+    let allocator = Allocator::new(type_map.clone());
     let r = ProtoR { type_map, rules, spaces, name_mapping, perm_space_rng };
     //DeBUGGY:println!("PROTO R {:#?}", &r);
-    let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts: hashmap!{} };
+    let cr = ProtoCr { unclaimed, allocator, mem, ready, ref_counts: hashmap! {} };
     r.sanity_check(&cr); // DEBUG
     Ok(ProtoHandle(Arc::new(Proto { r, cr: Mutex::new(cr) })))
 }
