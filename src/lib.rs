@@ -1,6 +1,5 @@
 use bidir_map::BidirMap;
-use core::marker::PhantomData;
-use core::{ops::Range, sync::atomic::AtomicBool};
+use core::{marker::PhantomData, ops::Range, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
@@ -14,7 +13,6 @@ use std::{
         atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst},
         Arc,
     },
-    time::Duration,
 };
 use std_semaphore::Semaphore;
 
@@ -63,25 +61,19 @@ pub struct TypeInfo {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[repr(transparent)]
 pub struct TypeKey(u64);
 
+// TODO should this just be an integer?
 pub type Name = &'static str;
 
 #[derive(DebugStub, Clone)]
+#[repr(C)]
 pub struct CallHandle {
     #[debug_stub = "FuncPtr"]
     func: unsafe fn(*mut u8, *const u8), // dummy type
     ret: TypeKey,
     args: Vec<TypeKey>,
-}
-impl CallHandle {
-    pub unsafe fn new_raw(
-        func: unsafe fn(*mut u8, *const u8), // dummy type
-        ret: TypeKey,
-        args: Vec<TypeKey>,
-    ) -> Self {
-        Self { func, ret, args }
-    }
 }
 
 #[derive(Debug)]
@@ -109,14 +101,14 @@ pub enum Instruction<I, F> {
     MemSwap(I, I),
 }
 #[derive(Debug)]
-pub enum Space {
+enum Space {
     PoPu { ps: PutterSpace, mb: MsgBox },
     PoGe { mb: MsgBox, type_key: TypeKey },
     Memo { ps: PutterSpace },
 }
 
 #[derive(Debug)]
-pub struct MsgBox {
+struct MsgBox {
     // usize packs two kinds of messages, distinguished by context:
     // 1. identity of the putter (index of putterspace as a usize)
     // 2. whether the putter whether their datum was moved (Msg::MOVED_MSG ^ Msg::UNMOVED_MSG)
@@ -211,7 +203,7 @@ pub struct Rendesvous {
     mover_sema: Semaphore,
 }
 #[derive(Debug)]
-pub struct PutterSpace {
+struct PutterSpace {
     atomic_datum_ptr: AtomicDatumPtr,
     type_key: TypeKey,
     rendesvous: Rendesvous,
@@ -239,7 +231,7 @@ struct BitStatePredicate {
 }
 
 #[derive(Debug)]
-pub struct Movement {
+struct Movement {
     putter: SpaceIndex,
     me_ge: Vec<SpaceIndex>,
     po_ge: Vec<SpaceIndex>,
@@ -247,7 +239,7 @@ pub struct Movement {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct SpaceIndex(usize);
+struct SpaceIndex(usize);
 
 /////////////////////////////////////////
 
@@ -310,9 +302,9 @@ impl MsgBox {
         let msg = self.r.recv().expect("RECV BAD");
         msg
     }
-    pub fn recv_timeout(&self, timeout: Duration) -> Option<usize> {
-        self.r.recv_timeout(timeout).ok()
-    }
+    // pub fn recv_timeout(&self, timeout: Duration) -> Option<usize> {
+    //     self.r.recv_timeout(timeout).ok()
+    // }
 }
 
 impl Eq for ProtoHandle {}
@@ -834,5 +826,15 @@ fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
             let type_info = r.type_map.get_type_info(type_key);
             unsafe { (type_info.maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw()) }
         }
+    }
+}
+
+impl CallHandle {
+    pub unsafe fn new_raw(
+        func: unsafe fn(*mut u8, *const u8), // dummy type
+        ret: TypeKey,
+        args: Vec<TypeKey>,
+    ) -> Self {
+        Self { func, ret, args }
     }
 }

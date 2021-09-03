@@ -1,6 +1,6 @@
 use super::*;
 
-pub trait SetExt {
+pub(crate) trait SetExt {
     fn set_sub(&mut self, other: &Self);
     fn set_add(&mut self, other: &Self);
 }
@@ -18,7 +18,7 @@ impl SetExt for HashSet<SpaceIndex> {
 }
 
 #[derive(Default, Clone)]
-pub struct BitSet {
+pub(crate) struct BitSet {
     pub(crate) data: SmallVec<[usize; 4]>,
 }
 impl SetExt for BitSet {
@@ -46,7 +46,7 @@ impl std::iter::FromIterator<SpaceIndex> for BitSet {
         x
     }
 }
-pub struct BitIter<'a> {
+struct BitIter<'a> {
     // counts from n down to 0
     // n is the element we just checked
     n: SpaceIndex,
