@@ -4,12 +4,12 @@ impl PortCommon {
     fn claim_common(
         name: Name,
         want_putter: bool,
-        p: &ProtoHandle,
+        p: &Arc<Proto>,
         type_check: impl FnOnce(TypeKey) -> bool,
     ) -> Result<Self, ClaimError> {
         use ClaimError::*;
-        if let Some(space_idx) = p.0.r.name_mapping.get_by_first(&name) {
-            let (is_putter, type_key) = match &p.0.r.spaces[space_idx.0] {
+        if let Some(space_idx) = p.r.name_mapping.get_by_first(&name) {
+            let (is_putter, type_key) = match &p.r.spaces[space_idx.0] {
                 Space::PoGe { type_key, .. } => (false, *type_key),
                 Space::PoPu { ps, .. } => (true, ps.type_key),
                 Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
@@ -20,10 +20,9 @@ impl PortCommon {
             if want_putter != is_putter {
                 return Err(WrongPortDirection);
             }
-            let mut x = p.0.cr.lock();
+            let mut x = p.cr.lock();
             if x.unclaimed.remove(space_idx) {
                 let q = Ok(Self { space_idx: *space_idx, p: p.clone() });
-                //DeBUGGY:println!("{:?}", q);
                 q
             } else {
                 Err(AlreadyClaimed)
@@ -35,69 +34,65 @@ impl PortCommon {
     fn claim(
         name: Name,
         want_putter: bool,
-        p: &ProtoHandle,
+        p: &Arc<Proto>,
         type_key: TypeKey,
     ) -> Result<Self, ClaimError> {
         Self::claim_common(name, want_putter, p, |k| k == type_key)
     }
 
-    unsafe fn claim_raw(
-        name: Name,
-        want_putter: bool,
-        p: &ProtoHandle,
-    ) -> Result<Self, ClaimError> {
+    unsafe fn claim_raw(name: Name, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
         Self::claim_common(name, want_putter, p, |_| true)
     }
 }
 
-impl<T: 'static> TypedGetter<T> {
-    pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
-        let getter =
-            Getter(PortCommon::claim(name, false, p.get_inner(), TypeKey::from_type_id::<T>())?);
-        Ok(Self { getter, _phantom: Default::default() })
-    }
+// impl<T: 'static> TypedGetter<T> {
+//     pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
+//         let getter =
+//             Getter(PortCommon::claim(name, false, p.get_inner(), TypeKey::from_type_id::<T>())?);
+//         Ok(Self { getter, _phantom: Default::default() })
+//     }
 
-    pub fn get(&mut self) -> T {
-        let mut datum = MaybeUninit::uninit();
-        unsafe { self.getter.get_raw(Some(datum.as_mut_ptr() as *mut u8)) };
-        unsafe { datum.assume_init() }
-    }
-    pub fn get_signal(&mut self) {
-        unsafe { self.getter.get_raw(None) };
-    }
-}
-impl<T: 'static> TypedPutter<T> {
-    pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
-        let putter =
-            Putter(PortCommon::claim(name, true, p.get_inner(), TypeKey::from_type_id::<T>())?);
-        Ok(Self { putter, _phantom: Default::default() })
-    }
+//     pub fn get(&mut self) -> T {
+//         let mut datum = MaybeUninit::uninit();
+//         unsafe { self.getter.get_raw(Some(datum.as_mut_ptr() as *mut u8)) };
+//         unsafe { datum.assume_init() }
+//     }
+//     pub fn get_signal(&mut self) {
+//         unsafe { self.getter.get_raw(None) };
+//     }
+// }
+// impl<T: 'static> TypedPutter<T> {
+//     pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
+//         let putter =
+//             Putter(PortCommon::claim(name, true, p.get_inner(), TypeKey::from_type_id::<T>())?);
+//         Ok(Self { putter, _phantom: Default::default() })
+//     }
 
-    pub fn put_lossy(&mut self, datum: T) -> bool {
-        let mut datum = MaybeUninit::new(datum);
-        let ret = unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) };
-        if !ret {
-            unsafe { datum.assume_init() };
-        }
-        ret
-    }
-    pub fn try_put(&mut self, datum: T) -> Option<T> {
-        let mut datum = MaybeUninit::new(datum);
-        if unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) } {
-            None
-        } else {
-            Some(unsafe { datum.assume_init() })
-        }
-    }
-}
+//     pub fn put_lossy(&mut self, datum: T) -> bool {
+//         let mut datum = MaybeUninit::new(datum);
+//         let ret = unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) };
+//         if !ret {
+//             unsafe { datum.assume_init() };
+//         }
+//         ret
+//     }
+//     pub fn try_put(&mut self, datum: T) -> Option<T> {
+//         let mut datum = MaybeUninit::new(datum);
+//         if unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) } {
+//             None
+//         } else {
+//             Some(unsafe { datum.assume_init() })
+//         }
+//     }
+// }
 impl Putter {
-    pub unsafe fn claim_raw(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+    pub unsafe fn claim_raw(p: &Arc<Proto>, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim_raw(name, true, p)?))
     }
 
     // This is the real workhorse function
     fn put_inner(&mut self, datum_ptr: DatumPtr) -> bool {
-        let Proto { r, cr } = self.0.p.0.as_ref();
+        let Proto { r, cr } = self.0.p.as_ref();
         let space = &r.spaces[self.0.space_idx.0];
         if let Space::PoPu { ps, mb, .. } = space {
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
@@ -135,7 +130,7 @@ fn get_data<F: FnOnce(FinalizeHow)>(
 ) {
     // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
     // println!("GET DATA");
-    let type_info = r.type_map.get_type_info(&ps.type_key);
+    let type_info = ps.type_key.get_info();
     let src_ptr = ps.atomic_datum_ptr.load();
     assert!(src_ptr != DatumPtr::NULL);
 
@@ -206,13 +201,13 @@ fn get_data<F: FnOnce(FinalizeHow)>(
     // println!("GET COMPLETE");
 }
 impl Getter {
-    pub unsafe fn claim_raw(p: &ProtoHandle, name: Name) -> Result<Self, ClaimError> {
+    pub unsafe fn claim_raw(p: &Arc<Proto>, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim_raw(name, false, p)?))
     }
 
     // returns false if it doesn't participate in a rule
     unsafe fn get_inner(&mut self, maybe_dest: Option<DatumPtr>) -> bool {
-        let Proto { r, cr } = self.0.p.0.as_ref();
+        let Proto { r, cr } = self.0.p.as_ref();
         let space = &r.spaces[self.0.space_idx.0];
         if let Space::PoGe { mb, .. } = space {
             {
@@ -237,7 +232,7 @@ impl Getter {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
-                    self.0.p.0.cr.lock().finalize_memo(r, putter_id, how);
+                    self.0.p.cr.lock().finalize_memo(r, putter_id, how);
                     // println!("FINALZIING DONE");
                 }),
                 Space::PoGe { .. } => panic!("CANNOT"),
@@ -253,28 +248,28 @@ impl Getter {
     }
 }
 
-impl TypeProtected<ProtoHandle> {
-    pub fn fill_memory<T: 'static>(&self, name: Name, datum: T) -> Result<(), FillMemError> {
-        let type_key = TypeKey::from_type_id::<T>();
-        let mut datum = MaybeUninit::new(datum);
-        unsafe {
-            self.0
-                .fill_memory_common(name, datum.as_mut_ptr() as *mut u8, |t| t == type_key)
-                .map_err(|e| {
-                    datum.assume_init();
-                    e
-                })
-        }
-    }
-}
-impl ProtoHandle {
+// impl TypeProtected<ProtoHandle> {
+//     pub fn fill_memory<T: 'static>(&self, name: Name, datum: T) -> Result<(), FillMemError> {
+//         let type_key = TypeKey::from_type_id::<T>();
+//         let mut datum = MaybeUninit::new(datum);
+//         unsafe {
+//             self.0
+//                 .fill_memory_common(name, datum.as_mut_ptr() as *mut u8, |t| t == type_key)
+//                 .map_err(|e| {
+//                     datum.assume_init();
+//                     e
+//                 })
+//         }
+//     }
+// }
+impl Proto {
     unsafe fn fill_memory_common(
         &self,
         name: Name,
         src: *mut u8,
         type_check: impl FnOnce(TypeKey) -> bool,
     ) -> Result<(), FillMemError> {
-        let Proto { r, cr } = self.0.as_ref();
+        let Proto { r, cr } = self;
         let space_idx = r.name_mapping.get_by_first(&name).ok_or(FillMemError::UnknownName)?;
         if let Space::Memo { ps, .. } = &r.spaces[space_idx.0] {
             if !type_check(ps.type_key) {
@@ -290,8 +285,7 @@ impl ProtoHandle {
             lock.mem.insert(*space_idx);
             // println!("SWAP A");
             assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
-            let type_info = r.type_map.get_type_info(&ps.type_key);
-            (type_info.raw_move)(datum_ptr.into_raw(), src);
+            (ps.type_key.get_info().raw_move)(datum_ptr.into_raw(), src);
             Ok(())
         } else {
             Err(FillMemError::NameNotForMemCell)

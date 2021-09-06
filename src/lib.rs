@@ -8,7 +8,7 @@ use std::{
     alloc::Layout,
     collections::{HashMap, HashSet},
     fmt,
-    mem::{transmute, MaybeUninit},
+    mem::transmute,
     sync::{
         atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst},
         Arc,
@@ -29,10 +29,23 @@ use bit_set::{BitSet, SetExt};
 #[cfg(test)]
 mod new_tests;
 
-// mod ffi;
-// pub use ffi::*;
+mod ffi;
+pub use ffi::*;
 
 //////////////////////////////////////////////////////////////////
+
+pub static BOOL_TYPE_INFO: TypeInfo = TypeInfo {
+    layout: Layout::new::<bool>(),
+    raw_move: |dest: *mut u8, src: *const u8| {
+        let dest = dest as *mut bool;
+        let src = src as *const bool;
+        unsafe { *dest = *src }
+    },
+    maybe_clone: None,
+    maybe_eq: None,
+    maybe_drop: None,
+};
+pub static BOOL_TYPE_KEY: TypeKey = TypeKey(&BOOL_TYPE_INFO);
 
 // invariant: all TypeKey elements in inner TypeMaps correspond 1-to-1 with std::any::TypeId
 pub struct TypeProtected<T>(T);
@@ -60,12 +73,11 @@ pub struct TypeInfo {
     pub maybe_drop: Option<unsafe fn(*mut u8)>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone)]
 #[repr(transparent)]
-pub struct TypeKey(u64);
+pub struct TypeKey(pub &'static TypeInfo);
 
-// TODO should this just be an integer?
-pub type Name = &'static str;
+pub type Name = u32;
 
 #[derive(DebugStub, Clone)]
 #[repr(C)]
@@ -76,11 +88,11 @@ pub struct CallHandle {
     args: Vec<TypeKey>,
 }
 
-#[derive(Debug)]
-pub struct TypeMap {
-    pub type_infos: HashMap<TypeKey, TypeInfo>,
-    pub bool_type_key: TypeKey,
-}
+// #[derive(Debug)]
+// pub struct TypeMap {
+//     pub type_infos: HashMap<TypeKey, TypeInfo>,
+//     pub bool_type_key: TypeKey,
+// }
 #[derive(Debug, Clone)]
 pub enum Term<I, F> {
     True,                                        // returns bool
@@ -134,7 +146,7 @@ pub enum FillMemError {
 #[derive(Debug)]
 struct PortCommon {
     space_idx: SpaceIndex,
-    p: ProtoHandle,
+    p: Arc<Proto>,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -146,8 +158,9 @@ pub struct Proto {
     r: ProtoR,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProtoHandle(pub(crate) Arc<Proto>);
+// #[repr(C)]
+// #[derive(Debug, Clone)]
+// pub struct ProtoHandle(pub(crate) Arc<Proto>);
 
 pub struct Putter(PortCommon);
 
@@ -160,7 +173,7 @@ pub struct ProtoR {
     perm_space_rng: Range<usize>,
     name_mapping: BidirMap<Name, SpaceIndex>,
     // port_type_key: HashMap<SpaceIndex, (IsPutter, TypeKey)>,
-    type_map: Arc<TypeMap>,
+    // type_map: Arc<TypeMap>,
 }
 
 #[derive(Debug)]
@@ -179,11 +192,11 @@ enum FinalizeHow {
     Retain,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Allocator {
     occupied: TypedAllocations,
     vacant: TypedAllocations,
-    type_map: Arc<TypeMap>,
+    // type_map: Arc<TypeMap>,
 }
 
 #[derive(Debug, Default)]
@@ -307,12 +320,12 @@ impl MsgBox {
     // }
 }
 
-impl Eq for ProtoHandle {}
-impl PartialEq for ProtoHandle {
-    fn eq(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.0, &other.0)
-    }
-}
+// impl Eq for ProtoHandle {}
+// impl PartialEq for ProtoHandle {
+//     fn eq(&self, other: &Self) -> bool {
+//         std::sync::Arc::ptr_eq(&self.0, &other.0)
+//     }
+// }
 
 impl ProtoR {
     pub fn sanity_check(&self, cr: &ProtoCr) {
@@ -369,7 +382,6 @@ impl ProtoR {
                 // TODO do I really need to recurse here??
 
                 use Term::*;
-                let tbool = r.type_map.bool_type_key;
                 match term {
                     Named(i) => {
                         let cap = &capabilities[i.0];
@@ -377,25 +389,31 @@ impl ProtoR {
                         cap.ty
                     }
                     // MUST BE BOOL
-                    True | False => tbool,
+                    True | False => BOOL_TYPE_KEY,
                     Not(t) => {
-                        assert_eq!(check_and_ret_type(r, capabilities, known_filled, t), tbool);
-                        tbool
+                        assert_eq!(
+                            check_and_ret_type(r, capabilities, known_filled, t),
+                            BOOL_TYPE_KEY
+                        );
+                        BOOL_TYPE_KEY
                     }
                     BoolCall { func, args } => {
-                        assert_eq!(func.ret, tbool);
+                        assert_eq!(func.ret, BOOL_TYPE_KEY);
                         assert_eq!(func.args.len(), args.len());
                         for (&t0, term) in func.args.iter().zip(args.iter()) {
                             let t1 = check_and_ret_type(r, &capabilities, &known_filled, term);
                             assert_eq!(t0, t1);
                         }
-                        tbool
+                        BOOL_TYPE_KEY
                     }
                     And(ts) | Or(ts) => {
                         for t in ts.iter() {
-                            assert_eq!(check_and_ret_type(r, capabilities, known_filled, t), tbool);
+                            assert_eq!(
+                                check_and_ret_type(r, capabilities, known_filled, t),
+                                BOOL_TYPE_KEY
+                            );
                         }
-                        tbool
+                        BOOL_TYPE_KEY
                     }
                     IsEq(tid, terms) => {
                         assert_eq!(
@@ -406,14 +424,14 @@ impl ProtoR {
                             check_and_ret_type(r, capabilities, known_filled, &terms[1]),
                             *tid
                         );
-                        tbool
+                        BOOL_TYPE_KEY
                     }
                 }
             }
             for i in rule.ins.iter() {
                 match &i {
                     Instruction::Check(term) => assert_eq!(
-                        self.type_map.bool_type_key,
+                        BOOL_TYPE_KEY,
                         check_and_ret_type(self, &capabilities, &known_filled, term)
                     ),
                     Instruction::CreateFromCall { type_key, dest, func, args } => {
@@ -500,9 +518,8 @@ impl ProtoCr {
             *ref_count -= 1;
             if *ref_count == 0 {
                 self.ref_counts.remove(&datum_ptr);
-                let type_key = r.type_map.get_type_info(&putter_space.type_key);
                 if let FinalizeHow::DropInside = how {
-                    unsafe { type_key.try_drop_data(datum_ptr) };
+                    unsafe { putter_space.type_key.get_info().try_drop_data(datum_ptr) };
                 }
                 // println!("SWAP B");
                 self.allocator.swap_allocation_to(putter_space.type_key, datum_ptr, false);
@@ -557,10 +574,9 @@ impl ProtoCr {
                     match &i {
                         CreateFromFormula { dest, term } => {
                             // MUST BE BOOL. creation ensures it
-                            let tbool = r.type_map.bool_type_key;
                             let value = eval_bool(term, r);
                             let dest_ptr = unsafe {
-                                let dest_ptr = self.allocator.occupy_allocation(tbool);
+                                let dest_ptr = self.allocator.occupy_allocation(BOOL_TYPE_KEY);
                                 let q: *mut bool = transmute(dest_ptr);
                                 q.write(value);
                                 dest_ptr
@@ -644,7 +660,7 @@ impl ProtoCr {
             match &r.spaces[putter.0] {
                 Space::PoGe { .. } => panic!("CANNOT BE!"),
                 Space::PoPu { ps, mb } => {
-                    let type_info = r.type_map.get_type_info(&ps.type_key);
+                    let type_info = ps.type_key.get_info();
                     //DeBUGGY:println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
                     if let Some(mem_0) = me_ge_iter.next() {
@@ -700,7 +716,7 @@ impl ProtoCr {
                     //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
                     // FINAL LOOP
                     // alias the memory in all memory getters. datum itself does not move.
-                    let type_info = r.type_map.get_type_info(&ps.type_key);
+                    let type_info = ps.type_key.get_info();
                     let src = ps.atomic_datum_ptr.load();
                     assert!(src != DatumPtr::NULL);
                     let ref_count: &mut usize = self.ref_counts.get_mut(&src).expect("eub");
@@ -823,8 +839,9 @@ fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
         IsEq(type_key, terms) => {
             let ptr0 = eval_ptr(&terms[0], r);
             let ptr1 = eval_ptr(&terms[1], r);
-            let type_info = r.type_map.get_type_info(type_key);
-            unsafe { (type_info.maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw()) }
+            unsafe {
+                (type_key.get_info().maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw())
+            }
         }
     }
 }
