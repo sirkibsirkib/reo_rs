@@ -26,7 +26,7 @@ pub struct StatePredicate {
 #[derive(Debug, Clone)]
 pub struct RuleDef {
     // precondition for firing
-    pub state_guard: StatePredicate,
+    // pub state_guard: StatePredicate,
     pub ins: Vec<Instruction<Name, Name>>,
     pub output: HashMap<Name, (bool, HashSet<Name>)>,
 }
@@ -154,16 +154,135 @@ fn term_convert(
     })
 }
 
-// pub fn build_proto_protected(
-//     proto_def: &ProtoDef,
-// ) -> Result<TypeProtected<ProtoHandle>, (Option<usize>, ProtoBuildError)> {
-//     build_proto(proto_def, Arc::new(type_map.0)).map(TypeProtected)
-// }
-
 impl ProtoDef {
     pub fn build(&self) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
         build_proto(self)
     }
+}
+
+fn rule_guard(proto_def: &ProtoDef, r: &RuleDef) -> Result<StatePredicate, Name> {
+    println!("rule {:#?}", r);
+    #[derive(Debug)]
+    enum State {
+        Full,
+        Empty,
+    }
+    fn full_terms<'a>(
+        b: &mut HashMap<Name, State>,
+        ts: impl IntoIterator<Item = &'a Term<Name, Name>>,
+    ) -> Result<(), Name> {
+        for t in ts {
+            full_term(b, t)?;
+        }
+        Ok(())
+    }
+    fn full_term(b: &mut HashMap<Name, State>, t: &Term<Name, Name>) -> Result<(), Name> {
+        match t {
+            Term::True | Term::False => Ok(()),
+            Term::Not(t) => full_term(b, t),
+            Term::And(ts) | Term::Or(ts) => full_terms(b, ts.iter()),
+            Term::BoolCall { args, .. } => full_terms(b, args.iter()),
+            Term::IsEq(_type_key, ts) => full_terms(b, ts.iter()),
+            Term::Named(name) => {
+                // names are not empty 'after'; names are full 'before'
+                if let Some(State::Empty) = b.insert(*name, State::Full) {
+                    Err(*name)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+    let mut before = HashMap::<Name, State>::default();
+
+    // walk over all parallel movements
+    for (&putter, (_putter_retains, getters)) in r.output.iter() {
+        println!("before {:?}", &before);
+        // known state -> duplication; its full 'before'
+        if let Some(_) = before.insert(putter, State::Full) {
+            return Err(putter);
+        }
+        // known state -> duplication; its empty 'before'
+        for &getter in getters.iter() {
+            if before.insert(getter, State::Empty).is_some() {
+                return Err(getter);
+            }
+        }
+    }
+
+    // walk 'beforeward' over instructions
+    for instruction in r.ins.iter().rev() {
+        println!("before {:?}", &before);
+        match instruction {
+            Instruction::CreateFromFormula { dest, term } => {
+                // forumla term must be full 'before'
+                full_term(&mut before, term)?;
+                // dest is not empty 'after'; dest is empty 'before'
+                if let Some(State::Empty) = before.insert(*dest, State::Empty) {
+                    return Err(*dest);
+                }
+            }
+            Instruction::CreateFromCall { dest, args, .. } => {
+                // dest is not empty 'after'; dest is empty 'before'
+                if let Some(State::Empty) = before.insert(*dest, State::Empty) {
+                    return Err(*dest);
+                }
+                // arg terms must be full 'before'
+                full_terms(&mut before, args.iter())?
+            }
+            Instruction::Check(t) => {
+                // checked term must be full 'before'
+                full_term(&mut before, t)?
+            }
+            Instruction::MemSwap(a, b) => {
+                for name in [a, b] {
+                    // both are not empty 'after'; both are full 'before'
+                    if let Some(State::Empty) = before.insert(*name, State::Full) {
+                        return Err(*name);
+                    }
+                }
+            }
+        }
+    }
+    println!("OK! {:?}", &before);
+
+    // build precondition
+    Ok(StatePredicate {
+        ready_ports: before
+            .iter()
+            .filter_map(|(name, _state)| {
+                if let Some(NameDef::Port { .. }) = proto_def.name_defs.get(name) {
+                    Some(*name)
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        empty_mem: before
+            .iter()
+            .filter_map(|(name, state)| {
+                if let (Some(NameDef::Mem { .. }), State::Empty) =
+                    (proto_def.name_defs.get(name), state)
+                {
+                    Some(*name)
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        full_mem: before
+            .iter()
+            .filter_map(|(name, state)| {
+                if let (Some(NameDef::Mem { .. }), State::Full) =
+                    (proto_def.name_defs.get(name), state)
+                {
+                    Some(*name)
+                } else {
+                    None
+                }
+            })
+            .collect(),
+    })
 }
 
 pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
@@ -208,9 +327,9 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         spaces.push(space);
         persistent_loc_kinds.push(kind);
     }
-    let perm_space_rng = 0..spaces.len();
-    let mem = BitSet::padded_to_cap(perm_space_rng.end);
-    ready.pad_to_cap(perm_space_rng.end);
+    let perm_space_range = 0..spaces.len();
+    let mem = BitSet::padded_to_cap(perm_space_range.end);
+    ready.pad_to_cap(perm_space_range.end);
 
     // NO MORE PERSISTENT THINGS
     let persistent_kind =
@@ -234,7 +353,9 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         known_state.clear();
         whose_mem_is_this.clear();
 
-        let StatePredicate { ready_ports, full_mem, empty_mem } = &rule.state_guard;
+        let rule_guard =
+            rule_guard(&proto_def, rule).map_err(|name| PutWithoutFullCertainty { name })?;
+        let StatePredicate { ready_ports, full_mem, empty_mem } = &rule_guard;
         // 1 ensure no conflicting mem requirements
         if let Some(name) = full_mem.intersection(empty_mem).next() {
             return Err(ConflictingMemPremise { name: *name });
@@ -279,9 +400,9 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
                 full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
                 empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
             };
-            bit_guard.ready.pad_to_cap(perm_space_rng.end);
-            bit_guard.full_mem.pad_to_cap(perm_space_rng.end);
-            bit_guard.empty_mem.pad_to_cap(perm_space_rng.end);
+            bit_guard.ready.pad_to_cap(perm_space_range.end);
+            bit_guard.full_mem.pad_to_cap(perm_space_range.end);
+            bit_guard.empty_mem.pad_to_cap(perm_space_range.end);
             bit_guard
         };
 
@@ -472,7 +593,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
             }
             let id = resolve_fully(&temp_names, &name_mapping, name)?;
             let putter_retains = match spaces[id.0] {
-                Space::Memo { .. } => perm_space_rng.contains(&id.0),
+                Space::Memo { .. } => perm_space_range.contains(&id.0),
                 Space::PoPu { .. } => true,
                 Space::PoGe { .. } => return Err(GetterHasNoPutters { name }),
             };
@@ -483,8 +604,8 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
                 bit_assign.ready.remove(&id);
             }
         }
-        bit_assign.full_mem.pad_to_cap(perm_space_rng.end);
-        bit_assign.empty_mem.pad_to_cap(perm_space_rng.end);
+        bit_assign.full_mem.pad_to_cap(perm_space_range.end);
+        bit_assign.empty_mem.pad_to_cap(perm_space_range.end);
         Ok(Rule { bit_guard, ins, output, bit_assign })
     };
 
@@ -495,7 +616,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
 
-    let r = ProtoR { rules, spaces, name_mapping, perm_space_rng };
+    let r = ProtoR { rules, spaces, name_mapping, perm_space_range };
     //DeBUGGY:println!("PROTO R {:#?}", &r);
     let cr =
         ProtoCr { unclaimed, allocator: Allocator::default(), mem, ready, ref_counts: hashmap! {} };

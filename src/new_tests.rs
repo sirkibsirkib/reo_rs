@@ -20,11 +20,6 @@ fn signal_emitter() {
             M => NameDef::Mem { type_key: TK0, },
         },
         rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {A},
-                full_mem: hashset! {M},
-                empty_mem: hashset! {},
-            },
             ins: vec![],
             output: hashmap! {
                 M => (true, hashset!{A}),
@@ -48,11 +43,6 @@ fn a_to_b_synchronous() {
             B => NameDef::Port { is_putter: false, type_key: TK0, },
         },
         rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {A, B},
-                full_mem: hashset! {},
-                empty_mem: hashset! {},
-            },
             ins: vec![],
             output: hashmap! {
                 A => (false, hashset!{B}),
@@ -100,22 +90,12 @@ fn a_to_b_asynchronous() {
         },
         rules: vec![
             RuleDef {
-                state_guard: StatePredicate {
-                    ready_ports: hashset! {A},
-                    full_mem: hashset! {},
-                    empty_mem: hashset! {M},
-                },
                 ins: vec![],
                 output: hashmap! {
                     A => (false, hashset!{M}),
                 },
             },
             RuleDef {
-                state_guard: StatePredicate {
-                    ready_ports: hashset! {B},
-                    full_mem: hashset! {M},
-                    empty_mem: hashset! {},
-                },
                 ins: vec![],
                 output: hashmap! {
                     M => (false, hashset!{B}),
@@ -166,33 +146,18 @@ fn unsafe_main() {
         },
         rules: vec![
             RuleDef {
-                state_guard: StatePredicate {
-                    ready_ports: hashset! {A},
-                    full_mem: hashset! {},
-                    empty_mem: hashset! {B},
-                },
                 ins: vec![],
                 output: hashmap! {
                     A => (false, hashset!{B}),
                 },
             },
             RuleDef {
-                state_guard: StatePredicate {
-                    ready_ports: hashset! {C},
-                    full_mem: hashset! {B},
-                    empty_mem: hashset! {},
-                },
                 ins: vec![],
                 output: hashmap! {
                     B => (false, hashset!{C}),
                 },
             },
             RuleDef {
-                state_guard: StatePredicate {
-                    ready_ports: hashset! {D},
-                    full_mem: hashset! {B},
-                    empty_mem: hashset! {},
-                },
                 ins: vec![],
                 output: hashmap! {
                     B => (false, hashset!{D}),
@@ -251,11 +216,6 @@ fn unsafe_call() {
             F => NameDef::Func(call_handle_f),
         },
         rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {A, B},
-                full_mem: hashset! {},
-                empty_mem: hashset! {},
-            },
             ins: vec![
                 // ok
                 Instruction::CreateFromCall {

@@ -174,7 +174,7 @@ pub struct Getter(PortCommon);
 pub struct ProtoR {
     rules: Vec<Rule>,
     spaces: Vec<Space>,
-    perm_space_rng: Range<usize>,
+    perm_space_range: Range<usize>,
     name_mapping: BidirMap<Name, SpaceIndex>,
 }
 
@@ -466,7 +466,7 @@ impl ProtoR {
                 assert!(busy_doing.insert(p, true).is_none());
 
                 assert_eq!(
-                    self.perm_space_rng.contains(&p.0) && cap.mem && !movement.putter_retains,
+                    self.perm_space_range.contains(&p.0) && cap.mem && !movement.putter_retains,
                     rule.bit_assign.empty_mem.contains(&p)
                 );
                 for g in movement.me_ge.iter().copied() {
@@ -514,7 +514,7 @@ impl ProtoCr {
                 self.allocator.swap_allocation_to(putter_space.type_key, datum_ptr, false);
             }
         }
-        if r.perm_space_rng.contains(&this_mem_id.0) {
+        if r.perm_space_range.contains(&this_mem_id.0) {
             self.ready.insert(this_mem_id);
             self.coordinate(r);
         } else {

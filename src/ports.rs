@@ -4,9 +4,9 @@ impl PortCommon {
     fn claim_common(name: Name, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
         use ClaimError::*;
         if let Some(space_idx) = p.r.name_mapping.get_by_first(&name) {
-            let (is_putter, type_key) = match &p.r.spaces[space_idx.0] {
-                Space::PoGe { type_key, .. } => (false, *type_key),
-                Space::PoPu { ps, .. } => (true, ps.type_key),
+            let is_putter = match &p.r.spaces[space_idx.0] {
+                Space::PoGe { .. } => false,
+                Space::PoPu { .. } => true,
                 Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
             };
             if want_putter != is_putter {
@@ -111,12 +111,7 @@ impl Putter {
     }
 }
 
-fn get_data<F: FnOnce(FinalizeHow)>(
-    r: &ProtoR,
-    ps: &PutterSpace,
-    maybe_dest: Option<DatumPtr>,
-    finalize: F,
-) {
+fn get_data<F: FnOnce(FinalizeHow)>(ps: &PutterSpace, maybe_dest: Option<DatumPtr>, finalize: F) {
     // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
     // println!("GET DATA");
     let type_info = ps.type_key.get_info();
@@ -208,7 +203,7 @@ impl Getter {
             let putter_id = SpaceIndex(mb.recv());
             // println!("My putter has id {:?}", putter_id);
             match &r.spaces[putter_id.0] {
-                Space::PoPu { ps, mb, .. } => get_data(r, ps, maybe_dest, move |how| {
+                Space::PoPu { ps, mb, .. } => get_data(ps, maybe_dest, move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
@@ -217,7 +212,7 @@ impl Getter {
                     })
                     // println!("FINALZIING DONE");
                 }),
-                Space::Memo { ps, .. } => get_data(r, ps, maybe_dest, |how| {
+                Space::Memo { ps, .. } => get_data(ps, maybe_dest, |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
