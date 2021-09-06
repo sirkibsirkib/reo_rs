@@ -13,6 +13,8 @@ const D: Name = 3;
 const F: Name = 6;
 const M: Name = 13;
 
+const NULL_MUT: *mut u8 = core::ptr::null_mut();
+
 #[test]
 fn unsafe_main() {
     static TK0: TypeKey = BOOL_TYPE_KEY;
@@ -82,14 +84,14 @@ fn unsafe_main() {
         thread::spawn(move || {
             for _ in 0..2 {
                 unsafe {
-                    println!("C {:?}", c.get_raw(None));
+                    println!("C {:?}", c.get_raw(NULL_MUT));
                 }
             }
         }),
         thread::spawn(move || {
             for _ in 0..2 {
                 unsafe {
-                    println!("D {:?}", d.get_raw(None));
+                    println!("D {:?}", d.get_raw(NULL_MUT));
                 }
             }
         }),
@@ -226,7 +228,7 @@ fn unsafe_call() {
         thread::spawn(move || {
             for _ in 0..3 {
                 unsafe {
-                    println!("B {:?}", b.get_raw(None));
+                    println!("B {:?}", b.get_raw(NULL_MUT));
                 }
             }
         }),

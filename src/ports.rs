@@ -243,8 +243,9 @@ impl Getter {
         true
     }
 
-    pub unsafe fn get_raw(&mut self, dest: Option<*mut u8>) {
-        assert!(self.get_inner(dest.map(DatumPtr::from_raw)));
+    /// Null pointer will NOT be written to! Getting a signal rather than a value
+    pub unsafe fn get_raw(&mut self, dest: *mut u8) {
+        assert!(self.get_inner(if dest.is_null() { None } else { Some(DatumPtr::from_raw(dest)) }));
     }
 }
 
