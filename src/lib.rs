@@ -59,9 +59,20 @@ pub struct TypedGetter<T> {
     _phantom: PhantomData<T>,
 }
 
+#[repr(C)]
+#[derive(Clone)]
+pub struct TypeInfoC {
+    // fields constitute a std::alloc::Layout
+    pub size: usize,
+    pub align: usize,
+    pub raw_move: unsafe fn(*mut u8, *const u8), // not nullable
+    pub maybe_clone: *mut u8,                    // nullable
+    pub maybe_eq: *mut u8,                       // nullable
+    pub maybe_drop: *mut u8,                     // nullable
+}
+
 #[derive(Clone, DebugStub)]
 pub struct TypeInfo {
-    // essentially a Vtable
     pub layout: Layout,
     #[debug_stub = "write from read"]
     pub raw_move: unsafe fn(*mut u8, *const u8),
@@ -143,10 +154,11 @@ pub enum FillMemError {
     TypeCheckFailed(TypeKey),
 }
 
+#[repr(C)]
 #[derive(Debug)]
 struct PortCommon {
-    space_idx: SpaceIndex,
     p: Arc<Proto>,
+    space_idx: SpaceIndex,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -162,8 +174,10 @@ pub struct Proto {
 // #[derive(Debug, Clone)]
 // pub struct ProtoHandle(pub(crate) Arc<Proto>);
 
+#[repr(transparent)]
 pub struct Putter(PortCommon);
 
+#[repr(transparent)]
 pub struct Getter(PortCommon);
 
 #[derive(Debug)]
@@ -251,6 +265,7 @@ struct Movement {
     putter_retains: bool,
 }
 
+#[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 struct SpaceIndex(usize);
 

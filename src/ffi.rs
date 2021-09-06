@@ -1,8 +1,7 @@
 use super::*;
-use core::fmt::Debug;
-use core::mem::MaybeUninit;
+use core::{fmt::Debug, mem::MaybeUninit};
 
-use crate::Proto;
+pub type ArcProto = *const Proto;
 
 #[repr(C)]
 #[derive(Default)]
@@ -38,38 +37,10 @@ unsafe fn finalize<R, E: Debug>(
     x
 }
 
-///////////////
+///////// NEW
 
 #[no_mangle]
-pub unsafe extern "C" fn read_err(err_buf: &ErrBuf, len: &mut usize) -> *const u8 {
-    let bytes = err_buf.0.as_str().as_bytes();
-    *len = bytes.len();
-    bytes.as_ptr()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn err_buf_new(out: &mut MaybeUninit<ErrBuf>) {
-    out.as_mut_ptr().write(Default::default());
-}
-#[no_mangle]
-pub unsafe extern "C" fn err_buf_destroy(err_buf: &mut MaybeUninit<ErrBuf>) {
-    std::ptr::drop_in_place(err_buf.as_mut_ptr())
-}
-
-pub type ArcProto = *const Proto;
-
-#[no_mangle]
-pub unsafe extern "C" fn proto_destroy(p: ArcProto) {
-    drop(Arc::from_raw(p))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn proto_clone(p: ArcProto) -> ArcProto {
-    Arc::into_raw(Arc::from_raw(p))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn claim_putter(
+pub unsafe extern "C" fn reors_putter_claim(
     p: ArcProto,
     name: Name,
     out: &mut MaybeUninit<Putter>,
@@ -82,7 +53,7 @@ pub unsafe extern "C" fn claim_putter(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn claim_getter(
+pub unsafe extern "C" fn reors_getter_claim(
     p: ArcProto,
     name: Name,
     out: &mut MaybeUninit<Getter>,
@@ -93,14 +64,46 @@ pub unsafe extern "C" fn claim_getter(
         Arc::into_raw(p);
     })
 }
+#[no_mangle]
+pub unsafe extern "C" fn reors_err_buf_new() -> Box<ErrBuf> {
+    Box::new(Default::default())
+}
+#[no_mangle]
+pub unsafe extern "C" fn reors_proto_clone(p: ArcProto) -> ArcProto {
+    Arc::into_raw(Arc::from_raw(p))
+}
+
+///////// USE
 
 #[no_mangle]
-pub unsafe extern "C" fn put(putter: &mut Putter, msg: *mut u8) -> bool {
+pub unsafe extern "C" fn reors_read_err(err_buf: &ErrBuf, len: &mut usize) -> *const u8 {
+    let bytes = err_buf.0.as_str().as_bytes();
+    *len = bytes.len();
+    bytes.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reors_put(putter: &mut Putter, msg: *mut u8) -> bool {
     putter.put_raw(msg)
 }
 
 #[no_mangle]
 /// NULL msg pointer will not be written to
-pub unsafe extern "C" fn get(putter: &mut Getter, msg: *mut u8) {
+pub unsafe extern "C" fn reors_get(putter: &mut Getter, msg: *mut u8) {
     putter.get_raw(msg)
 }
+
+///////// DESTROY
+#[no_mangle]
+pub unsafe extern "C" fn reors_err_buf_destroy(_: Box<ErrBuf>) {}
+
+#[no_mangle]
+pub unsafe extern "C" fn reors_proto_destroy(p: ArcProto) {
+    drop(Arc::from_raw(p))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn reors_putter_destroy(_: Box<Putter>) {}
+
+#[no_mangle]
+pub unsafe extern "C" fn reors_getter_destroy(_: Box<Getter>) {}
