@@ -1,12 +1,7 @@
 use super::*;
 
 impl PortCommon {
-    fn claim_common(
-        name: Name,
-        want_putter: bool,
-        p: &Arc<Proto>,
-        type_check: impl FnOnce(TypeKey) -> bool,
-    ) -> Result<Self, ClaimError> {
+    fn claim_common(name: Name, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
         use ClaimError::*;
         if let Some(space_idx) = p.r.name_mapping.get_by_first(&name) {
             let (is_putter, type_key) = match &p.r.spaces[space_idx.0] {
@@ -14,9 +9,6 @@ impl PortCommon {
                 Space::PoPu { ps, .. } => (true, ps.type_key),
                 Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
             };
-            if !type_check(type_key) {
-                return Err(TypeCheckFailed(type_key));
-            }
             if want_putter != is_putter {
                 return Err(WrongPortDirection);
             }
@@ -31,17 +23,9 @@ impl PortCommon {
             Err(ClaimError::UnknownName)
         }
     }
-    fn claim(
-        name: Name,
-        want_putter: bool,
-        p: &Arc<Proto>,
-        type_key: TypeKey,
-    ) -> Result<Self, ClaimError> {
-        Self::claim_common(name, want_putter, p, |k| k == type_key)
-    }
 
     unsafe fn claim_raw(name: Name, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
-        Self::claim_common(name, want_putter, p, |_| true)
+        Self::claim_common(name, want_putter, p)
     }
 }
 
@@ -119,6 +103,11 @@ impl Putter {
     pub unsafe fn put_raw(&mut self, src: *mut u8) -> bool {
         // exposed for the sake of C API
         self.put_inner(DatumPtr::from_raw(src))
+    }
+
+    pub unsafe fn put_typed<T>(&mut self, src: &mut MaybeUninit<T>) -> bool {
+        // exposed for the sake of C API
+        self.put_inner(DatumPtr::from_raw(src.as_mut_ptr() as *mut u8))
     }
 }
 
@@ -247,35 +236,23 @@ impl Getter {
     pub unsafe fn get_raw(&mut self, dest: *mut u8) {
         assert!(self.get_inner(if dest.is_null() { None } else { Some(DatumPtr::from_raw(dest)) }));
     }
+
+    pub unsafe fn get_typed<T>(&mut self) -> T {
+        let mut data = MaybeUninit::<T>::uninit();
+        self.get_raw(data.as_mut_ptr() as *mut u8);
+        data.assume_init()
+    }
+
+    pub fn get_signal(&mut self) {
+        unsafe { self.get_raw(core::ptr::null_mut()) }
+    }
 }
 
-// impl TypeProtected<ProtoHandle> {
-//     pub fn fill_memory<T: 'static>(&self, name: Name, datum: T) -> Result<(), FillMemError> {
-//         let type_key = TypeKey::from_type_id::<T>();
-//         let mut datum = MaybeUninit::new(datum);
-//         unsafe {
-//             self.0
-//                 .fill_memory_common(name, datum.as_mut_ptr() as *mut u8, |t| t == type_key)
-//                 .map_err(|e| {
-//                     datum.assume_init();
-//                     e
-//                 })
-//         }
-//     }
-// }
 impl Proto {
-    unsafe fn fill_memory_common(
-        &self,
-        name: Name,
-        src: *mut u8,
-        type_check: impl FnOnce(TypeKey) -> bool,
-    ) -> Result<(), FillMemError> {
+    pub unsafe fn fill_memory_raw(&self, name: Name, src: *mut u8) -> Result<(), FillMemError> {
         let Proto { r, cr } = self;
         let space_idx = r.name_mapping.get_by_first(&name).ok_or(FillMemError::UnknownName)?;
         if let Space::Memo { ps, .. } = &r.spaces[space_idx.0] {
-            if !type_check(ps.type_key) {
-                return Err(FillMemError::TypeCheckFailed(ps.type_key));
-            }
             let mut lock = cr.lock();
             if lock.mem.contains(space_idx) {
                 return Err(FillMemError::MemoryNonempty);
@@ -292,7 +269,13 @@ impl Proto {
             Err(FillMemError::NameNotForMemCell)
         }
     }
-    pub unsafe fn fill_memory_raw(&self, name: Name, src: *mut u8) -> Result<(), FillMemError> {
-        self.fill_memory_common(name, src, |_| true)
+    pub unsafe fn fill_memory_typed<T>(
+        &self,
+        name: Name,
+        data: T,
+    ) -> Result<(), (T, FillMemError)> {
+        let mut data = MaybeUninit::new(data);
+        self.fill_memory_raw(name, data.as_mut_ptr() as *mut u8)
+            .map_err(|e| (data.assume_init(), e))
     }
 }

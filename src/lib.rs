@@ -1,5 +1,5 @@
 use bidir_map::BidirMap;
-use core::{marker::PhantomData, ops::Range, sync::atomic::AtomicBool};
+use core::{marker::PhantomData, mem::MaybeUninit, ops::Range, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
@@ -99,11 +99,6 @@ pub struct CallHandle {
     args: Vec<TypeKey>,
 }
 
-// #[derive(Debug)]
-// pub struct TypeMap {
-//     pub type_infos: HashMap<TypeKey, TypeInfo>,
-//     pub bool_type_key: TypeKey,
-// }
 #[derive(Debug, Clone)]
 pub enum Term<I, F> {
     True,                                        // returns bool
@@ -151,7 +146,6 @@ pub enum FillMemError {
     NameNotForMemCell,
     UnknownName,
     MemoryNonempty,
-    TypeCheckFailed(TypeKey),
 }
 
 #[repr(C)]
@@ -170,10 +164,6 @@ pub struct Proto {
     r: ProtoR,
 }
 
-// #[repr(C)]
-// #[derive(Debug, Clone)]
-// pub struct ProtoHandle(pub(crate) Arc<Proto>);
-
 #[repr(transparent)]
 pub struct Putter(PortCommon);
 
@@ -186,8 +176,6 @@ pub struct ProtoR {
     spaces: Vec<Space>,
     perm_space_rng: Range<usize>,
     name_mapping: BidirMap<Name, SpaceIndex>,
-    // port_type_key: HashMap<SpaceIndex, (IsPutter, TypeKey)>,
-    // type_map: Arc<TypeMap>,
 }
 
 #[derive(Debug)]
@@ -210,7 +198,6 @@ enum FinalizeHow {
 pub(crate) struct Allocator {
     occupied: TypedAllocations,
     vacant: TypedAllocations,
-    // type_map: Arc<TypeMap>,
 }
 
 #[derive(Debug, Default)]
@@ -330,17 +317,7 @@ impl MsgBox {
         let msg = self.r.recv().expect("RECV BAD");
         msg
     }
-    // pub fn recv_timeout(&self, timeout: Duration) -> Option<usize> {
-    //     self.r.recv_timeout(timeout).ok()
-    // }
 }
-
-// impl Eq for ProtoHandle {}
-// impl PartialEq for ProtoHandle {
-//     fn eq(&self, other: &Self) -> bool {
-//         std::sync::Arc::ptr_eq(&self.0, &other.0)
-//     }
-// }
 
 impl ProtoR {
     pub fn sanity_check(&self, cr: &ProtoCr) {
@@ -514,9 +491,6 @@ impl ProtoR {
             for p in rule.bit_assign.ready.iter() {
                 assert!(busy_doing.contains_key(&p));
             }
-            // for p in rule.bit_assign.empty_mem.iter().chain(rule.bit_assign.full_mem.iter()) {
-            //     assert!(busy_doing.contains_key(&p));
-            // }
         }
     }
 }
@@ -557,12 +531,6 @@ impl ProtoCr {
         let olda = pa.atomic_datum_ptr.load();
         let oldb = pb.atomic_datum_ptr.swap(olda);
         pa.atomic_datum_ptr.store(oldb);
-        // if r.perm_space_rng.contains(&a.0) {
-        //     self.ready.insert(a);
-        // }
-        // if r.perm_space_rng.contains(&a.0) {
-        //     self.ready.insert(b);
-        // }
     }
     fn coordinate(&mut self, r: &ProtoR) {
         //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
@@ -862,11 +830,60 @@ fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
 }
 
 impl CallHandle {
-    pub unsafe fn new_raw(
-        func: unsafe fn(*mut u8, *const u8), // dummy type
+    /// Caller promises that `func`...
+    /// 1. writes one value to the first param
+    /// 2. types pointed to in function args match those for given typekeys
+    pub unsafe fn new_raw(func: unsafe fn(*mut u8), ret: TypeKey, args: Vec<TypeKey>) -> Self {
+        Self { func: transmute(func), ret, args: args.iter().copied().collect() }
+    }
+
+    /// Caller promises that `func`...
+    /// 1. writes one value to the first param
+    /// 2. ret typekey matches type first pointed to in func
+    pub unsafe fn new_nullary<R>(
+        func: unsafe fn(*mut R),
         ret: TypeKey,
-        args: Vec<TypeKey>,
+        args: &[TypeKey; 0],
     ) -> Self {
-        Self { func, ret, args }
+        Self::new_raw(transmute(func), ret, args.to_vec())
+    }
+
+    /// Caller promises that `func`...
+    /// 1. writes one value to the first param
+    /// 2. ret typekey matches type first pointed to in func
+    /// 3. sequence of args typekeys match sequence of types pointed to after first in func
+    /// 4. function has no observable effect on *const-pointed values
+    pub unsafe fn new_unary<R, A0>(
+        func: unsafe fn(*mut R, *const A0),
+        ret: TypeKey,
+        args: &[TypeKey; 1],
+    ) -> Self {
+        Self::new_raw(transmute(func), ret, args.to_vec())
+    }
+
+    /// Caller promises that `func`...
+    /// 1. writes one value to the first param
+    /// 2. ret typekey matches type first pointed to in func
+    /// 3. sequence of args typekeys match sequence of types pointed to after first in func
+    /// 4. function has no observable effect on *const-pointed values
+    pub unsafe fn new_binary<R, A0, A1>(
+        func: unsafe fn(*mut R, *const A0, *const A1),
+        ret: TypeKey,
+        args: &[TypeKey; 2],
+    ) -> Self {
+        Self::new_raw(transmute(func), ret, args.to_vec())
+    }
+
+    /// Caller promises that `func`...
+    /// 1. writes one value to the first param
+    /// 2. ret typekey matches type first pointed to in func
+    /// 3. sequence of args typekeys match sequence of types pointed to after first in func
+    /// 4. function has no observable effect on *const-pointed values
+    pub unsafe fn new_ternary<R, A0, A1, A2>(
+        func: unsafe fn(*mut R, *const A0, *const A1, *const A2),
+        ret: TypeKey,
+        args: &[TypeKey; 3],
+    ) -> Self {
+        Self::new_raw(transmute(func), ret, args.to_vec())
     }
 }
