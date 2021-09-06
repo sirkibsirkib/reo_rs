@@ -12,7 +12,35 @@ const M: Name = 13;
 const NULL_MUT: *mut u8 = core::ptr::null_mut();
 
 #[test]
-fn pass_alternating() {
+fn signal_emitter() {
+    static TK0: TypeKey = BOOL_TYPE_KEY;
+    let proto_def = ProtoDef {
+        name_defs: hashmap! {
+            A => NameDef::Port { is_putter: false, type_key: TK0, },
+            M => NameDef::Mem { type_key: TK0, },
+        },
+        rules: vec![RuleDef {
+            state_guard: StatePredicate {
+                ready_ports: hashset! {A},
+                full_mem: hashset! {M},
+                empty_mem: hashset! {},
+            },
+            ins: vec![],
+            output: hashmap! {
+                M => (true, hashset!{A}),
+            },
+        }],
+    };
+    let p = proto_def.build().unwrap();
+    unsafe { p.fill_memory_typed(M, true) }.unwrap();
+    let mut a = unsafe { Getter::claim_raw(&p, A).unwrap() };
+    for _ in 0..5 {
+        a.get_signal();
+    }
+}
+
+#[test]
+fn a_to_b_synchronous() {
     static TK0: TypeKey = BOOL_TYPE_KEY;
     let proto_def = ProtoDef {
         name_defs: hashmap! {
@@ -61,33 +89,69 @@ fn pass_alternating() {
         h.join().unwrap();
     }
 }
-
 #[test]
-fn signal_emitter() {
+fn a_to_b_asynchronous() {
     static TK0: TypeKey = BOOL_TYPE_KEY;
     let proto_def = ProtoDef {
         name_defs: hashmap! {
-            A => NameDef::Port { is_putter: false, type_key: TK0, },
-            M => NameDef::Mem { type_key: TK0, },
+            A => NameDef::Port { is_putter: true, type_key: TK0, },
+            B => NameDef::Port { is_putter: false, type_key: TK0, },
+            M => NameDef::Mem { type_key: TK0 },
         },
-        rules: vec![RuleDef {
-            state_guard: StatePredicate {
-                ready_ports: hashset! {A},
-                full_mem: hashset! {M},
-                empty_mem: hashset! {},
+        rules: vec![
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {A},
+                    full_mem: hashset! {},
+                    empty_mem: hashset! {M},
+                },
+                ins: vec![],
+                output: hashmap! {
+                    A => (false, hashset!{M}),
+                },
             },
-            ins: vec![],
-            output: hashmap! {
-                M => (true, hashset!{A}),
+            RuleDef {
+                state_guard: StatePredicate {
+                    ready_ports: hashset! {B},
+                    full_mem: hashset! {M},
+                    empty_mem: hashset! {},
+                },
+                ins: vec![],
+                output: hashmap! {
+                    M => (false, hashset!{B}),
+                },
             },
-        }],
+        ],
     };
     let p = proto_def.build().unwrap();
-    unsafe { p.fill_memory_typed(M, true) }.unwrap();
-    // let mut a = unsafe { Getter::claim_raw(&p, A).unwrap() };
-    // for _ in 0..5 {
-    //     a.get_signal();
-    // }
+    let (mut a, mut b) =
+        unsafe { (Putter::claim_raw(&p, A).unwrap(), Getter::claim_raw(&p, B).unwrap()) };
+
+    let handles = [
+        thread::spawn(move || {
+            let mut data = MaybeUninit::new(false);
+            for _ in 0..5 {
+                unsafe {
+                    a.put_typed(&mut data);
+                    *(&mut *data.as_mut_ptr()) ^= true;
+                }
+            }
+        }),
+        thread::spawn(move || {
+            let mut expected = false;
+            for _ in 0..5 {
+                unsafe {
+                    let got: bool = b.get_typed();
+                    println!("got {}", got);
+                    assert_eq!(got, expected);
+                    expected = !expected;
+                }
+            }
+        }),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
 }
 
 #[test]
