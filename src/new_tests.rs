@@ -35,6 +35,50 @@ fn signal_emitter() {
 }
 
 #[test]
+fn copying_emitter() {
+    static TK0: TypeKey = BOOL_TYPE_KEY;
+    let proto_def = ProtoDef {
+        name_defs: hashmap! {
+            A => NameDef::Port { is_putter: false, type_key: TK0, },
+            M => NameDef::Mem { type_key: TK0, },
+        },
+        rules: vec![RuleDef {
+            ins: vec![],
+            output: hashmap! {
+                M => (true, hashset!{A}),
+            },
+        }],
+    };
+    let p = proto_def.build().unwrap();
+    unsafe { p.fill_memory_typed(M, true) }.unwrap();
+    let mut a = unsafe { Getter::claim_raw(&p, A).unwrap() };
+    for _ in 0..5 {
+        assert!(unsafe { a.get_typed::<bool>() });
+    }
+}
+
+#[test]
+fn bool_sink() {
+    static TK0: TypeKey = BOOL_TYPE_KEY;
+    let proto_def = ProtoDef {
+        name_defs: hashmap! {
+            A => NameDef::Port { is_putter: true, type_key: TK0, },
+        },
+        rules: vec![RuleDef {
+            ins: vec![],
+            output: hashmap! {
+                A => (true, hashset!{}),
+            },
+        }],
+    };
+    let p = proto_def.build().unwrap();
+    let mut a = unsafe { Putter::claim_raw(&p, A).unwrap() };
+    for _ in 0..5 {
+        unsafe { a.put_typed(&mut MaybeUninit::new(false)) };
+    }
+}
+
+#[test]
 fn a_to_b_synchronous() {
     static TK0: TypeKey = BOOL_TYPE_KEY;
     let proto_def = ProtoDef {

@@ -32,6 +32,10 @@ pub struct RuleDef {
 }
 #[derive(Debug)]
 pub enum ProtoBuildError {
+    UnmovedCreation { name: Name },
+    Overwritten { name: Name },
+    RepeatedlyInMovements { name: Name },
+    // older
     PutWithoutFullCertainty { name: Name },
     GetWithoutEmptyCertainty { name: Name },
     ReadWithoutFullCertainty { name: Name },
@@ -154,29 +158,45 @@ fn term_convert(
     })
 }
 
+// fn build2(proto_def: &ProtoDef) -> Result<Proto, ()> {
+//     let r = ProtoR { name_mapping };
+//     let cr = ProtoCr {};
+//     Ok(Proto { r, cr })
+// }
+
 impl ProtoDef {
     pub fn build(&self) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
         build_proto(self)
     }
 }
 
-fn rule_guard(proto_def: &ProtoDef, r: &RuleDef) -> Result<StatePredicate, Name> {
-    println!("rule {:#?}", r);
+fn rule_guard(proto_def: &ProtoDef, r: &RuleDef) -> Result<StatePredicate, ProtoBuildError> {
+    use ProtoBuildError::*;
+    //////////////////////////////////////////
     #[derive(Debug)]
     enum State {
         Full,
         Empty,
     }
+    type States = HashMap<Name, State>;
+    type NameTerm = Term<Name, Name>;
     fn full_terms<'a>(
-        b: &mut HashMap<Name, State>,
-        ts: impl IntoIterator<Item = &'a Term<Name, Name>>,
-    ) -> Result<(), Name> {
+        b: &mut States,
+        ts: impl IntoIterator<Item = &'a NameTerm>,
+    ) -> Result<(), ProtoBuildError> {
         for t in ts {
             full_term(b, t)?;
         }
         Ok(())
     }
-    fn full_term(b: &mut HashMap<Name, State>, t: &Term<Name, Name>) -> Result<(), Name> {
+    fn create_name(b: &mut States, name: Name) -> Result<(), ProtoBuildError> {
+        match b.insert(name, State::Empty) {
+            None => Err(UnmovedCreation { name }),
+            Some(State::Empty) => Err(Overwritten { name }),
+            Some(State::Full) => Ok(()),
+        }
+    }
+    fn full_term(b: &mut States, t: &NameTerm) -> Result<(), ProtoBuildError> {
         match t {
             Term::True | Term::False => Ok(()),
             Term::Not(t) => full_term(b, t),
@@ -186,105 +206,81 @@ fn rule_guard(proto_def: &ProtoDef, r: &RuleDef) -> Result<StatePredicate, Name>
             Term::Named(name) => {
                 // names are not empty 'after'; names are full 'before'
                 if let Some(State::Empty) = b.insert(*name, State::Full) {
-                    Err(*name)
+                    Err(ProtoBuildError::Overwritten { name: *name })
                 } else {
                     Ok(())
                 }
             }
         }
     }
-    let mut before = HashMap::<Name, State>::default();
+    ////////////////////////////////
+
+    let mut before = States::default();
 
     // walk over all parallel movements
     for (&putter, (_putter_retains, getters)) in r.output.iter() {
-        println!("before {:?}", &before);
+        // println!("before {:?}", &before);
         // known state -> duplication; its full 'before'
         if let Some(_) = before.insert(putter, State::Full) {
-            return Err(putter);
+            return Err(RepeatedlyInMovements { name: putter });
         }
         // known state -> duplication; its empty 'before'
         for &getter in getters.iter() {
             if before.insert(getter, State::Empty).is_some() {
-                return Err(getter);
+                return Err(RepeatedlyInMovements { name: getter });
             }
         }
     }
 
     // walk 'beforeward' over instructions
     for instruction in r.ins.iter().rev() {
-        println!("before {:?}", &before);
+        // println!("before {:?}", &before);
         match instruction {
             Instruction::CreateFromFormula { dest, term } => {
-                // forumla term must be full 'before'
                 full_term(&mut before, term)?;
-                // dest is not empty 'after'; dest is empty 'before'
-                if let Some(State::Empty) = before.insert(*dest, State::Empty) {
-                    return Err(*dest);
-                }
+                create_name(&mut before, *dest)?
             }
             Instruction::CreateFromCall { dest, args, .. } => {
-                // dest is not empty 'after'; dest is empty 'before'
-                if let Some(State::Empty) = before.insert(*dest, State::Empty) {
-                    return Err(*dest);
-                }
-                // arg terms must be full 'before'
-                full_terms(&mut before, args.iter())?
+                full_terms(&mut before, args.iter())?;
+                create_name(&mut before, *dest)?
             }
-            Instruction::Check(t) => {
-                // checked term must be full 'before'
-                full_term(&mut before, t)?
-            }
+            Instruction::Check(t) => full_term(&mut before, t)?,
             Instruction::MemSwap(a, b) => {
-                for name in [a, b] {
+                for &name in [a, b] {
                     // both are not empty 'after'; both are full 'before'
-                    if let Some(State::Empty) = before.insert(*name, State::Full) {
-                        return Err(*name);
+                    if let Some(State::Empty) = before.insert(name, State::Full) {
+                        return Err(Overwritten { name });
                     }
                 }
             }
         }
     }
-    println!("OK! {:?}", &before);
 
     // build precondition
     Ok(StatePredicate {
         ready_ports: before
             .iter()
-            .filter_map(|(name, _state)| {
-                if let Some(NameDef::Port { .. }) = proto_def.name_defs.get(name) {
-                    Some(*name)
-                } else {
-                    None
-                }
+            .filter_map(|(name, _state)| match proto_def.name_defs.get(name) {
+                Some(NameDef::Port { .. }) => Some(*name),
+                _ => None,
             })
             .collect(),
         empty_mem: before
             .iter()
-            .filter_map(|(name, state)| {
-                if let (Some(NameDef::Mem { .. }), State::Empty) =
-                    (proto_def.name_defs.get(name), state)
-                {
-                    Some(*name)
-                } else {
-                    None
-                }
+            .filter_map(|(name, state)| match (proto_def.name_defs.get(name), state) {
+                (Some(NameDef::Mem { .. }), State::Empty) => Some(*name),
+                _ => None,
             })
             .collect(),
         full_mem: before
             .iter()
-            .filter_map(|(name, state)| {
-                if let (Some(NameDef::Mem { .. }), State::Full) =
-                    (proto_def.name_defs.get(name), state)
-                {
-                    Some(*name)
-                } else {
-                    None
-                }
+            .filter_map(|(name, state)| match (proto_def.name_defs.get(name), state) {
+                (Some(NameDef::Mem { .. }), State::Full) => Some(*name),
+                _ => None,
             })
             .collect(),
     })
 }
-
 pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
     use ProtoBuildError::*;
 
@@ -295,7 +291,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
 
     let mut port_type_key: HashMap<SpaceIndex, (bool, TypeKey)> = hashmap! {};
 
-    let mut persistent_loc_kinds = vec![];
+    let mut persistent_loc_kinds: Vec<LocKind> = vec![];
 
     // consume all name defs, creating spaces. retain call_handles to be treated later
     let mut ready = BitSet::default();
@@ -327,7 +323,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         spaces.push(space);
         persistent_loc_kinds.push(kind);
     }
-    let perm_space_range = 0..spaces.len();
+    let perm_space_range = ..spaces.len();
     let mem = BitSet::padded_to_cap(perm_space_range.end);
     ready.pad_to_cap(perm_space_range.end);
 
@@ -353,8 +349,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         known_state.clear();
         whose_mem_is_this.clear();
 
-        let rule_guard =
-            rule_guard(&proto_def, rule).map_err(|name| PutWithoutFullCertainty { name })?;
+        let rule_guard = rule_guard(&proto_def, rule)?;
         let StatePredicate { ready_ports, full_mem, empty_mem } = &rule_guard;
         // 1 ensure no conflicting mem requirements
         if let Some(name) = full_mem.intersection(empty_mem).next() {

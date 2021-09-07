@@ -1,5 +1,5 @@
 use bidir_map::BidirMap;
-use core::{marker::PhantomData, mem::MaybeUninit, ops::Range, sync::atomic::AtomicBool};
+use core::{marker::PhantomData, mem::MaybeUninit, ops::RangeTo, sync::atomic::AtomicBool};
 use debug_stub_derive::DebugStub;
 use maplit::{hashmap, hashset};
 use parking_lot::Mutex;
@@ -17,6 +17,8 @@ use std::{
 use std_semaphore::Semaphore;
 
 pub mod building;
+
+pub mod building2;
 
 mod allocator;
 mod ports;
@@ -174,7 +176,7 @@ pub struct Getter(PortCommon);
 pub struct ProtoR {
     rules: Vec<Rule>,
     spaces: Vec<Space>,
-    perm_space_range: Range<usize>,
+    perm_space_range: RangeTo<usize>,
     name_mapping: BidirMap<Name, SpaceIndex>,
 }
 

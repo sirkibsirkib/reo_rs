@@ -29,46 +29,6 @@ impl PortCommon {
     }
 }
 
-// impl<T: 'static> TypedGetter<T> {
-//     pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
-//         let getter =
-//             Getter(PortCommon::claim(name, false, p.get_inner(), TypeKey::from_type_id::<T>())?);
-//         Ok(Self { getter, _phantom: Default::default() })
-//     }
-
-//     pub fn get(&mut self) -> T {
-//         let mut datum = MaybeUninit::uninit();
-//         unsafe { self.getter.get_raw(Some(datum.as_mut_ptr() as *mut u8)) };
-//         unsafe { datum.assume_init() }
-//     }
-//     pub fn get_signal(&mut self) {
-//         unsafe { self.getter.get_raw(None) };
-//     }
-// }
-// impl<T: 'static> TypedPutter<T> {
-//     pub fn claim(p: &TypeProtected<ProtoHandle>, name: Name) -> Result<Self, ClaimError> {
-//         let putter =
-//             Putter(PortCommon::claim(name, true, p.get_inner(), TypeKey::from_type_id::<T>())?);
-//         Ok(Self { putter, _phantom: Default::default() })
-//     }
-
-//     pub fn put_lossy(&mut self, datum: T) -> bool {
-//         let mut datum = MaybeUninit::new(datum);
-//         let ret = unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) };
-//         if !ret {
-//             unsafe { datum.assume_init() };
-//         }
-//         ret
-//     }
-//     pub fn try_put(&mut self, datum: T) -> Option<T> {
-//         let mut datum = MaybeUninit::new(datum);
-//         if unsafe { self.putter.put_raw(datum.as_mut_ptr() as *mut u8) } {
-//             None
-//         } else {
-//             Some(unsafe { datum.assume_init() })
-//         }
-//     }
-// }
 impl Putter {
     pub unsafe fn claim_raw(p: &Arc<Proto>, name: Name) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim_raw(name, true, p)?))
@@ -106,8 +66,16 @@ impl Putter {
     }
 
     pub unsafe fn put_typed<T>(&mut self, src: &mut MaybeUninit<T>) -> bool {
-        // exposed for the sake of C API
         self.put_inner(DatumPtr::from_raw(src.as_mut_ptr() as *mut u8))
+    }
+
+    pub unsafe fn lossy_put<T>(&mut self, datum: T) -> bool {
+        let mut datum = MaybeUninit::new(datum);
+        let consumed = self.put_typed(&mut datum);
+        if !consumed {
+            datum.as_mut_ptr().drop_in_place();
+        }
+        consumed
     }
 }
 
