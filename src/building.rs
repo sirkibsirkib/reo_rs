@@ -294,7 +294,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
     let mut persistent_loc_kinds: Vec<LocKind> = vec![];
 
     // consume all name defs, creating spaces. retain call_handles to be treated later
-    let mut ready = BitSet::default();
+    let mut ready = SpaceIndexSet::default();
     let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
     for (name, def) in proto_def.name_defs.iter() {
         let id = SpaceIndex(spaces.len());
@@ -324,30 +324,22 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         persistent_loc_kinds.push(kind);
     }
     let perm_space_range = ..spaces.len();
-    let mem = BitSet::padded_to_cap(perm_space_range.end);
-    ready.pad_to_cap(perm_space_range.end);
+    let mem = SpaceIndexSet::with_capacity(spaces.len());
 
     // NO MORE PERSISTENT THINGS
     let persistent_kind =
         |name: Name| Some(persistent_loc_kinds[name_mapping.get_by_first(&name)?.0]);
 
-    // temp vars
-    let mut temp_names: HashMap<Name, (SpaceIndex, TypeKey)> = hashmap! {};
-    let mut puts: HashSet<Name> = hashset! {};
-    let mut gets: HashSet<Name> = hashset! {};
-    let mut known_state: HashMap<Name, bool> = hashmap! {};
-
-    // keeps track of PERM memory position for the purpose of matching the MOVEMENT to it (for changing assign bits)
-    // key is location of mem (corresponding to the MOVEMENT PUTTER ultimately)
-    // value is the permanent memcell where it started
-    let mut whose_mem_is_this: HashMap<SpaceIndex, SpaceIndex> = hashmap! {};
-
     let mut rule_f = |rule: &RuleDef| {
-        puts.clear();
-        gets.clear();
-        temp_names.clear();
-        known_state.clear();
-        whose_mem_is_this.clear();
+        let mut temp_names: HashMap<Name, (SpaceIndex, TypeKey)> = hashmap! {};
+        let mut puts: HashSet<Name> = hashset! {};
+        let mut gets: HashSet<Name> = hashset! {};
+        let mut known_state: HashMap<Name, bool> = hashmap! {};
+
+        // keeps track of PERM memory position for the purpose of matching the MOVEMENT to it (for changing assign bits)
+        // key is location of mem (corresponding to the MOVEMENT PUTTER ultimately)
+        // value is the permanent memcell where it started
+        let mut whose_mem_is_this: HashMap<SpaceIndex, SpaceIndex> = hashmap! {};
 
         let rule_guard = rule_guard(&proto_def, rule)?;
         let StatePredicate { ready_ports, full_mem, empty_mem } = &rule_guard;
@@ -384,21 +376,15 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         }
 
         // 5 build the bit guard
-        let bit_guard = {
-            let mut bit_guard: BitStatePredicate = BitStatePredicate {
-                ready: ready_ports
-                    .iter()
-                    .chain(full_mem.iter())
-                    .chain(empty_mem.iter())
-                    .map(resolve)
-                    .collect::<Result<_, _>>()?,
-                full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
-                empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
-            };
-            bit_guard.ready.pad_to_cap(perm_space_range.end);
-            bit_guard.full_mem.pad_to_cap(perm_space_range.end);
-            bit_guard.empty_mem.pad_to_cap(perm_space_range.end);
-            bit_guard
+        let bit_guard = BitStatePredicate {
+            ready: ready_ports
+                .iter()
+                .chain(full_mem.iter())
+                .chain(empty_mem.iter())
+                .map(resolve)
+                .collect::<Result<_, _>>()?,
+            full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
+            empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
         };
 
         // identity for all permanent memcells
@@ -599,8 +585,6 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
                 bit_assign.ready.remove(&id);
             }
         }
-        bit_assign.full_mem.pad_to_cap(perm_space_range.end);
-        bit_assign.empty_mem.pad_to_cap(perm_space_range.end);
         Ok(Rule { bit_guard, ins, output, bit_assign })
     };
 
@@ -615,6 +599,6 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
     //DeBUGGY:println!("PROTO R {:#?}", &r);
     let cr =
         ProtoCr { unclaimed, allocator: Allocator::default(), mem, ready, ref_counts: hashmap! {} };
-    r.sanity_check(&cr); // DEBUG
+    // r.sanity_check(&cr); // DEBUG
     Ok(Arc::new(Proto { r, cr: Mutex::new(cr) }))
 }

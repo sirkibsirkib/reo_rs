@@ -39,6 +39,17 @@ impl ProtoDef {
         // permanent spaces and name_mapping
         // for space
 
-        todo!()
+        let mem = todo!();
+        let ready = todo!();
+        let unclaimed = todo!();
+        let cr = Mutex::new(ProtoCr {
+            allocator: Default::default(),
+            mem,
+            ready,
+            ref_counts: Default::default(),
+            unclaimed,
+        });
+        let r = todo!();
+        Ok(Proto { cr, r })
     }
 }

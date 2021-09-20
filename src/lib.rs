@@ -24,8 +24,8 @@ mod allocator;
 mod ports;
 mod type_info;
 
-mod bit_set;
-use bit_set::{BitSet, SetExt};
+mod space_index_set;
+use space_index_set::SpaceIndexSet;
 // mod tests;
 
 #[cfg(test)]
@@ -183,8 +183,8 @@ pub struct ProtoR {
 #[derive(Debug)]
 pub struct ProtoCr {
     unclaimed: HashSet<SpaceIndex>,
-    ready: BitSet,
-    mem: BitSet, // presence means FULL
+    ready: SpaceIndexSet,
+    mem: SpaceIndexSet, // presence means FULL
     allocator: Allocator,
     ref_counts: HashMap<DatumPtr, usize>,
 }
@@ -241,9 +241,9 @@ pub struct Rule {
 
 #[derive(Debug)]
 struct BitStatePredicate {
-    ready: BitSet,
-    full_mem: BitSet,
-    empty_mem: BitSet,
+    ready: SpaceIndexSet,
+    full_mem: SpaceIndexSet,
+    empty_mem: SpaceIndexSet,
 }
 
 #[derive(Debug)]
@@ -321,6 +321,7 @@ impl MsgBox {
     }
 }
 
+/*
 impl ProtoR {
     pub fn sanity_check(&self, cr: &ProtoCr) {
         let chunks = cr.ready.data.len();
@@ -340,9 +341,9 @@ impl ProtoR {
             })
             .collect();
         for rule in self.rules.iter() {
-            assert!(rule.bit_assign.ready.is_subset(&rule.bit_guard.ready));
-            assert!(rule.bit_guard.full_mem.is_subset(&rule.bit_guard.ready));
-            assert!(rule.bit_guard.empty_mem.is_subset(&rule.bit_guard.ready));
+            assert!(rule.bit_assign.ready.is_subset_of(&rule.bit_guard.ready));
+            assert!(rule.bit_guard.full_mem.is_subset_of(&rule.bit_guard.ready));
+            assert!(rule.bit_guard.empty_mem.is_subset_of(&rule.bit_guard.ready));
 
             assert_eq!(chunks, rule.bit_guard.ready.data.len());
             assert_eq!(chunks, rule.bit_guard.empty_mem.data.len());
@@ -496,6 +497,7 @@ impl ProtoR {
         }
     }
 }
+*/
 
 impl ProtoCr {
     fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: SpaceIndex, how: FinalizeHow) {
@@ -542,9 +544,9 @@ impl ProtoCr {
                 // let b = !rule.bit_guard.full_mem.is_subset(&self.mem);
                 // let c = !rule.bit_guard.empty_mem.is_disjoint(&self.mem);
                 // println!("{:?}", (a,b,c));
-                if !rule.bit_guard.ready.is_subset(&self.ready)
-                    || !rule.bit_guard.full_mem.is_subset(&self.mem)
-                    || !rule.bit_guard.empty_mem.is_disjoint(&self.mem)
+                if !rule.bit_guard.ready.is_subset_of(&self.ready)
+                    || !rule.bit_guard.full_mem.is_subset_of(&self.mem)
+                    || !rule.bit_guard.empty_mem.is_disjoint_with(&self.mem)
                 {
                     // println!("failed");
                     // failed guard
@@ -618,9 +620,9 @@ impl ProtoCr {
                 // made it past the instructions! time to commit!
 
                 // println!("FIRING RULE {:?}", rule);
-                self.ready.set_sub(&rule.bit_assign.ready);
-                self.mem.set_sub(&rule.bit_assign.empty_mem);
-                self.mem.set_add(&rule.bit_assign.full_mem);
+                self.ready.remove_all(&rule.bit_assign.ready);
+                self.mem.remove_all(&rule.bit_assign.empty_mem);
+                self.mem.insert_all(&rule.bit_assign.full_mem);
 
                 //DeBUGGY:println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
