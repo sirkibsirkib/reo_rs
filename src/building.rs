@@ -52,10 +52,8 @@ pub enum ProtoBuildError {
     InstructionShadowsName { name: Name },
     CheckingNonBoolType,
     CreatingNonBoolFromFormula,
-    InitialTypeMismatch { name: Name },
-    UnknownInitial { name: Name },
     MovementTypeMismatch { getter: Name, putter: Name },
-    InstructionCannotOverwrite { name: Name }, // todo get more sophisticated
+    InstructionCannotOverwrite { name: Name },
     CanOnlySwapMemory { name: Name },
 }
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

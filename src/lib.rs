@@ -228,7 +228,7 @@ struct PutterSpace {
 struct AtomicDatumPtr {
     raw: AtomicPtr<u8>,
 }
-// putters by default retain their da
+
 #[derive(Debug)]
 pub struct Rule {
     bit_guard: BitStatePredicate,
