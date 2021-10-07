@@ -168,7 +168,7 @@ pub struct ProtoR {
 
 #[derive(Debug)]
 pub struct ProtoCr {
-    unclaimed: HashSet<MoverIndex>,
+    unclaimed: MoverIndexSet,
     ready: MoverIndexSet,
     mem: MoverIndexSet, // presence means FULL
     allocator: Allocator,

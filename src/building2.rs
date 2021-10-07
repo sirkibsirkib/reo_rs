@@ -50,6 +50,9 @@ pub enum RuleBuildError {
     ReadyButDoesntMove(MoverIndex),
 }
 
+trait MoverReadyChecker {
+    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex>;
+}
 /////////
 
 impl MoverDef {
@@ -67,8 +70,28 @@ impl MoverDef {
 }
 
 impl ProtoDef {
-    fn build_rules(&self, rules: &[RuleDef]) -> Result<Vec<Rule>, RulesBuildError> {
-        rules
+    fn memory_mover_indices(&self) -> MoverIndexSet {
+        self.mover_defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, mover_def)| match mover_def.mover_kind {
+                MoverKind::MemoryCell => Some(MoverIndex(i)),
+                _ => None,
+            })
+            .collect()
+    }
+    fn port_mover_indices(&self) -> MoverIndexSet {
+        self.mover_defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, mover_def)| match mover_def.mover_kind {
+                MoverKind::MemoryCell => None,
+                _ => Some(MoverIndex(i)),
+            })
+            .collect()
+    }
+    fn build_rules(&self) -> Result<Vec<Rule>, RulesBuildError> {
+        self.rules
             .iter()
             .enumerate()
             .map(|(rule_index, rule)| {
@@ -77,17 +100,21 @@ impl ProtoDef {
             })
             .collect()
     }
-    // pub fn build(&self) -> Result<Proto, ProtoBuildError> {
-    //     // build spaces from namedefs
-    //     let mut spaces = vec![];
-    //     let mut name_mapping = HashMap::<MoverIndex, MoverIndex>::default();
-    //     for (&name, mover_def) in self.mover_defs.iter() {
-    //         let space_index = MoverIndex(spaces.len());
-    //         spaces.push(mover_def.to_space());
-    //         name_mapping.insert(name, space_index);
-    //     }
-    //     todo!()
-    // }
+    pub fn build(&self) -> Result<Proto, RulesBuildError> {
+        let rules = self.build_rules()?;
+        let r = ProtoR {
+            rules,
+            spaces: self.mover_defs.iter().copied().map(MoverDef::to_space).collect(),
+        };
+        let cr = Mutex::new(ProtoCr {
+            allocator: Default::default(),
+            mem: Default::default(),
+            ready: self.memory_mover_indices(),
+            ref_counts: Default::default(),
+            unclaimed: self.port_mover_indices(),
+        });
+        Ok(Proto { r, cr })
+    }
 }
 
 trait MoverDefsExt {
@@ -150,10 +177,15 @@ fn in_term_in_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
     }
 }
 
-trait MoverReadyChecker {
-    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex>;
+// ASSUMES all indices are within bounds
+fn first_unready(
+    ready: &MoverIndexSet,
+    i: impl IntoIterator<Item = MoverIndex>,
+) -> Option<MoverIndex> {
+    i.into_iter().find_map(|x| x.unready(ready))
 }
 
+// ASSUMES all indices are within bounds
 impl MoverReadyChecker for MoverIndex {
     fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
         if ready.contains(self) {
@@ -164,17 +196,14 @@ impl MoverReadyChecker for MoverIndex {
     }
 }
 
-fn first_unready(
-    ready: &MoverIndexSet,
-    i: impl IntoIterator<Item = MoverIndex>,
-) -> Option<MoverIndex> {
-    i.into_iter().find_map(|x| x.unready(ready))
-}
+// ASSUMES all indices are within bounds
 impl MoverReadyChecker for Term {
     fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
         in_term_out_set(ready, self)
     }
 }
+
+// ASSUMES all indices are within bounds
 impl MoverReadyChecker for Instruction {
     fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
         match self {
@@ -189,6 +218,8 @@ impl MoverReadyChecker for Instruction {
         }
     }
 }
+
+// ASSUMES all indices are within bounds
 impl MoverReadyChecker for RuleDef {
     fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
         first_unready(ready, self.ready_and_full_mem.iter())
@@ -196,6 +227,7 @@ impl MoverReadyChecker for RuleDef {
     }
 }
 
+// ASSUMES all indices are within bounds + ready
 fn instruction_fill(
     mover_defs: &Vec<MoverDef>,
     filled: &mut MoverIndexSet,
@@ -274,6 +306,7 @@ fn instruction_fill(
     Ok(())
 }
 
+// ASSUMES all indices are within bounds + ready
 fn rule_movements(
     mover_defs: &Vec<MoverDef>,
     filled: &mut MoverIndexSet,
@@ -326,21 +359,26 @@ fn rule_movements(
 
 fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, RuleBuildError> {
     use RuleBuildError as Rbe;
-    let ready_mems: MoverIndexSet = rule_def
-        .ready
-        .iter()
-        .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
-        .collect();
     // check that all elements in `ready` are in bounds
     match rule_def.ready.max_element() {
         Some(max) if mover_defs.len() <= max.0 => return Err(Rbe::MoverIndexOutOfBounds(max)),
         _ => {}
     }
 
+    // all indices are certainly WITHIN BOUNDS i.e. DEFINED
+
+    let ready_mems: MoverIndexSet = rule_def
+        .ready
+        .iter()
+        .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
+        .collect();
+
     // check that there's never a term not in the ready set
     if let Some(mover_index) = rule_def.unready(&rule_def.ready) {
         return Err(Rbe::MoverUnready(mover_index));
     }
+
+    // all indices are certainly READY
 
     // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
     let mut filled = rule_def.ready_and_full_mem.clone();
