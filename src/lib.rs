@@ -176,7 +176,7 @@ pub struct Getter(PortCommon);
 pub struct ProtoR {
     rules: Vec<Rule>,
     spaces: Vec<Space>,
-    perm_space_range: RangeTo<usize>,
+    // perm_space_range: RangeTo<usize>,
     name_mapping: BidirMap<Name, SpaceIndex>,
 }
 
@@ -257,9 +257,7 @@ struct Movement {
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 struct SpaceIndex(usize);
-
 /////////////////////////////////////////
-
 impl AtomicDatumPtr {
     fn swap(&self, new: DatumPtr) -> DatumPtr {
         DatumPtr::from_raw(self.raw.swap(new.into_raw(), SeqCst))
@@ -518,16 +516,18 @@ impl ProtoCr {
                 self.allocator.swap_allocation_to(putter_space.type_key, datum_ptr, false);
             }
         }
-        if r.perm_space_range.contains(&this_mem_id.0) {
-            self.ready.insert(this_mem_id);
-            self.coordinate(r);
-        } else {
-            // this was a temp memcell. the port behind this thread MUST be ready
-            // to fire the SINGLE rule associated with the memcell. Thus, we can
-            // safely conclude that we do not need to consider the possibility that
-            // this memcell becoming empty will enable some other rule without
-            // involving this thread's port.
-        }
+        self.ready.insert(this_mem_id);
+        self.coordinate(r);
+        // if r.perm_space_range.contains(&this_mem_id.0) {
+        //     self.ready.insert(this_mem_id);
+        //     self.coordinate(r);
+        // } else {
+        //     // this was a temp memcell. the port behind this thread MUST be ready
+        //     // to fire the SINGLE rule associated with the memcell. Thus, we can
+        //     // safely conclude that we do not need to consider the possibility that
+        //     // this memcell becoming empty will enable some other rule without
+        //     // involving this thread's port.
+        // }
     }
     fn swap_putter_ptrs(&mut self, r: &ProtoR, a: SpaceIndex, b: SpaceIndex) {
         let pa = r.spaces[a.0].get_putter_space().expect("Pa");

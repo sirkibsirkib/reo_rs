@@ -279,6 +279,7 @@ fn rule_guard(proto_def: &ProtoDef, r: &RuleDef) -> Result<StatePredicate, Proto
             .collect(),
     })
 }
+
 pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
     use ProtoBuildError::*;
 
@@ -321,7 +322,8 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         spaces.push(space);
         persistent_loc_kinds.push(kind);
     }
-    let perm_space_range = ..spaces.len();
+    let spaces = spaces;
+    // let perm_space_range = ..spaces.len();
     let mem = SpaceIndexSet::with_capacity(spaces.len());
 
     // NO MORE PERSISTENT THINGS
@@ -572,7 +574,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
             }
             let id = resolve_fully(&temp_names, &name_mapping, name)?;
             let putter_retains = match spaces[id.0] {
-                Space::Memo { .. } => perm_space_range.contains(&id.0),
+                Space::Memo { .. } => true,
                 Space::PoPu { .. } => true,
                 Space::PoGe { .. } => return Err(GetterHasNoPutters { name }),
             };
@@ -593,7 +595,7 @@ pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, P
         .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
         .collect::<Result<_, (_, ProtoBuildError)>>()?;
 
-    let r = ProtoR { rules, spaces, name_mapping, perm_space_range };
+    let r = ProtoR { rules, spaces, name_mapping };
     //DeBUGGY:println!("PROTO R {:#?}", &r);
     let cr =
         ProtoCr { unclaimed, allocator: Allocator::default(), mem, ready, ref_counts: hashmap! {} };
