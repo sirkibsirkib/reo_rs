@@ -196,67 +196,150 @@ impl MoverReadyChecker for RuleDef {
     }
 }
 
-fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, RuleBuildError> {
-    if let Some(error) = check_rule(mover_defs, rule_def) {
-        Err(error)
-    } else {
-        let bit_guard = BitStatePredicate {
-            ready: rule_def.ready.clone(),
-            full_mem: rule_def.ready_and_full_mem.clone(),
-            empty_mem: rule_def
-                .ready
-                .iter()
-                .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
-                .collect(),
-        };
-        // now we create the movements
-        let output: SmallVec<[PartitionedMovement; 3]> = rule_def
-            .movements
-            .iter()
-            .map(|movement| PartitionedMovement {
-                putter: movement.putter,
-                putter_retains: movement.putter_retains,
-                me_ge: movement
-                    .getters
-                    .iter()
-                    .filter(|mover_index| {
-                        MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index)
-                    })
-                    .collect(),
-                po_ge: movement
-                    .getters
-                    .iter()
-                    .filter(|mover_index| {
-                        MoverKind::GetterPort == mover_kind(mover_defs, *mover_index)
-                    })
-                    .collect(),
-            })
-            .collect();
-        let bit_assign = BitStatePredicate {
-            ready: Default::default(),
-            full_mem: Default::default(),
-            empty_mem: Default::default(),
-        };
-        Ok(Rule {
-            bit_assign,
-            bit_guard,
-            ins: rule_def.instructions.iter().cloned().collect(),
-            output,
-        })
+fn instruction_fill(
+    mover_defs: &Vec<MoverDef>,
+    filled: &mut MoverIndexSet,
+    ins: &Instruction,
+) -> Result<(), RuleBuildError> {
+    use RuleBuildError as Rbe;
+    match ins {
+        Instruction::CreateFromFormula { dest, term } => {
+            if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
+                return Err(Rbe::MoverisntMemory(*dest));
+            }
+            let dest_type = term_type(mover_defs, term);
+            if dest_type != BOOL_TYPE_KEY {
+                return Err(Rbe::TypeInequality(dest_type, BOOL_TYPE_KEY));
+            }
+            if filled.contains(dest) {
+                return Err(Rbe::Overwriting(*dest));
+            }
+            if let Some(mover_index) = in_term_out_set(&filled, term) {
+                return Err(Rbe::ReadingUnfilled(mover_index));
+            }
+            filled.insert(*dest);
+        }
+        Instruction::CreateFromCall { dest, func, args } => {
+            if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
+                return Err(Rbe::MoverisntMemory(*dest));
+            }
+            if filled.contains(dest) {
+                return Err(Rbe::Overwriting(*dest));
+            }
+            let dest_type = mover_type(mover_defs, *dest);
+            if dest_type != func.ret_type {
+                return Err(Rbe::TypeInequality(dest_type, func.ret_type));
+            }
+            if func.arg_types.len() != args.len() {
+                return Err(Rbe::FuncHasWrongArgNumber {
+                    other_has: args.len(),
+                    func_has: func.arg_types.len(),
+                });
+            }
+            for (&func_arg_type, arg_term) in func.arg_types.iter().zip(args.iter()) {
+                let term_type = term_type(mover_defs, arg_term);
+                if func_arg_type != term_type {
+                    return Err(Rbe::TypeInequality(func_arg_type, term_type));
+                }
+            }
+            if let Some(mover_index) = args.iter().find_map(|term| in_term_in_set(&filled, term)) {
+                return Err(Rbe::ReadingUnfilled(mover_index));
+            }
+            filled.insert(*dest);
+        }
+        Instruction::Check(term) => {
+            let term_type = term_type(mover_defs, term);
+            if term_type != BOOL_TYPE_KEY {
+                return Err(Rbe::TypeInequality(term_type, BOOL_TYPE_KEY));
+            }
+            if let Some(mover_index) = in_term_out_set(&filled, term) {
+                return Err(Rbe::ReadingUnfilled(mover_index));
+            }
+        }
+        Instruction::MemSwap(a, b) => {
+            let [ta, tb] = [mover_type(mover_defs, *a), mover_type(mover_defs, *b)];
+            if ta != tb {
+                return Err(Rbe::TypeInequality(ta, tb));
+            }
+            for mover_index in [a, b] {
+                if mover_kind(mover_defs, *mover_index) != MoverKind::MemoryCell {
+                    return Err(Rbe::MoverisntMemory(*mover_index));
+                }
+                if !filled.contains(mover_index) {
+                    return Err(Rbe::ReadingUnfilled(*mover_index));
+                }
+            }
+        }
     }
+    Ok(())
 }
 
-fn check_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Option<RuleBuildError> {
+fn rule_movements(
+    mover_defs: &Vec<MoverDef>,
+    filled: &mut MoverIndexSet,
+    rule_def: &RuleDef,
+) -> Result<(), RuleBuildError> {
     use RuleBuildError as Rbe;
+    let mut busy_moving = MoverIndexSet::default();
+    for movement in rule_def.movements.iter() {
+        // putter
+        let putter_type_key = mover_type(mover_defs, movement.putter);
+        if let MoverKind::GetterPort = mover_kind(mover_defs, movement.putter) {
+            return Err(Rbe::MoverCannotPut(movement.putter));
+        }
+        if busy_moving.insert(movement.putter) {
+            return Err(Rbe::NotUniqueInMovements(movement.putter));
+        }
+        if !movement.putter_retains {
+            if !filled.remove(&movement.putter) {
+                return Err(Rbe::ReadingUnfilled(movement.putter));
+            }
+        }
+        // getters
+        for getter in movement.getters.iter() {
+            let getter_type_key = mover_type(mover_defs, getter);
+            if putter_type_key != getter_type_key {
+                return Err(Rbe::TypeInequality(putter_type_key, getter_type_key));
+            }
+            if let MoverKind::PutterPort = mover_kind(mover_defs, movement.putter) {
+                return Err(Rbe::MoverCannotGet(getter));
+            }
+            if busy_moving.insert(getter) {
+                return Err(Rbe::NotUniqueInMovements(getter));
+            }
+            if !filled.insert(movement.putter) {
+                return Err(Rbe::Overwriting(getter));
+            }
+        }
+        let clones = if movement.putter_retains { 1 } else { 0 } + movement.getters.len();
+        if clones > 1 && putter_type_key.get_info().maybe_clone.is_none() {
+            return Err(Rbe::MoverTypeMissingClone(movement.putter));
+        }
+    }
+    if let Some(mover_index) =
+        rule_def.ready.iter().filter(|mover_index| !busy_moving.contains(mover_index)).next()
+    {
+        return Err(Rbe::ReadyButDoesntMove(mover_index));
+    }
+    Ok(())
+}
+
+fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, RuleBuildError> {
+    use RuleBuildError as Rbe;
+    let ready_mems: MoverIndexSet = rule_def
+        .ready
+        .iter()
+        .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
+        .collect();
     // check that all elements in `ready` are in bounds
     match rule_def.ready.max_element() {
-        Some(max) if mover_defs.len() <= max.0 => return Some(Rbe::MoverIndexOutOfBounds(max)),
+        Some(max) if mover_defs.len() <= max.0 => return Err(Rbe::MoverIndexOutOfBounds(max)),
         _ => {}
     }
 
     // check that there's never a term not in the ready set
     if let Some(mover_index) = rule_def.unready(&rule_def.ready) {
-        return Some(Rbe::MoverUnready(mover_index));
+        return Err(Rbe::MoverUnready(mover_index));
     }
 
     // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
@@ -267,112 +350,45 @@ fn check_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Option<RuleBuil
         }
     }
     for ins in rule_def.instructions.iter() {
-        match ins {
-            Instruction::CreateFromFormula { dest, term } => {
-                if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
-                    return Some(Rbe::MoverisntMemory(*dest));
-                }
-                let dest_type = term_type(mover_defs, term);
-                if dest_type != BOOL_TYPE_KEY {
-                    return Some(Rbe::TypeInequality(dest_type, BOOL_TYPE_KEY));
-                }
-                if filled.contains(dest) {
-                    return Some(Rbe::Overwriting(*dest));
-                }
-                if let Some(mover_index) = in_term_out_set(&filled, term) {
-                    return Some(Rbe::ReadingUnfilled(mover_index));
-                }
-                filled.insert(*dest);
-            }
-            Instruction::CreateFromCall { dest, func, args } => {
-                if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
-                    return Some(Rbe::MoverisntMemory(*dest));
-                }
-                if filled.contains(dest) {
-                    return Some(Rbe::Overwriting(*dest));
-                }
-                let dest_type = mover_type(mover_defs, *dest);
-                if dest_type != func.ret_type {
-                    return Some(Rbe::TypeInequality(dest_type, func.ret_type));
-                }
-                if func.arg_types.len() != args.len() {
-                    return Some(Rbe::FuncHasWrongArgNumber {
-                        other_has: args.len(),
-                        func_has: func.arg_types.len(),
-                    });
-                }
-                for (&func_arg_type, arg_term) in func.arg_types.iter().zip(args.iter()) {
-                    let term_type = term_type(mover_defs, arg_term);
-                    if func_arg_type != term_type {
-                        return Some(Rbe::TypeInequality(func_arg_type, term_type));
-                    }
-                }
-                if let Some(mover_index) =
-                    args.iter().find_map(|term| in_term_in_set(&filled, term))
-                {
-                    return Some(Rbe::ReadingUnfilled(mover_index));
-                }
-                filled.insert(*dest);
-            }
-            Instruction::Check(term) => {
-                let term_type = term_type(mover_defs, term);
-                if term_type != BOOL_TYPE_KEY {
-                    return Some(Rbe::TypeInequality(term_type, BOOL_TYPE_KEY));
-                }
-                if let Some(mover_index) = in_term_out_set(&filled, term) {
-                    return Some(Rbe::ReadingUnfilled(mover_index));
-                }
-            }
-            Instruction::MemSwap(a, b) => {
-                let [ta, tb] = [mover_type(mover_defs, *a), mover_type(mover_defs, *b)];
-                if ta != tb {
-                    return Some(Rbe::TypeInequality(ta, tb));
-                }
-                for mover_index in [a, b] {
-                    if mover_kind(mover_defs, *mover_index) != MoverKind::MemoryCell {
-                        return Some(Rbe::MoverisntMemory(*mover_index));
-                    }
-                    if !filled.contains(mover_index) {
-                        return Some(Rbe::ReadingUnfilled(*mover_index));
-                    }
-                }
-            }
-        }
+        instruction_fill(mover_defs, &mut filled, ins)?;
     }
+    rule_movements(mover_defs, &mut filled, rule_def)?;
 
-    let mut busy_moving = MoverIndexSet::default();
-    for movement in rule_def.movements.iter() {
-        // putter
-        let putter_type_key = mover_type(mover_defs, movement.putter);
-        if let MoverKind::GetterPort = mover_kind(mover_defs, movement.putter) {
-            return Some(Rbe::MoverCannotPut(movement.putter));
-        }
-        if busy_moving.insert(movement.putter) {
-            return Some(Rbe::NotUniqueInMovements(movement.putter));
-        }
-        // getters
-        for getter in movement.getters.iter() {
-            let getter_type_key = mover_type(mover_defs, getter);
-            if putter_type_key != getter_type_key {
-                return Some(Rbe::TypeInequality(putter_type_key, getter_type_key));
-            }
-            if let MoverKind::PutterPort = mover_kind(mover_defs, movement.putter) {
-                return Some(Rbe::MoverCannotGet(getter));
-            }
-            if busy_moving.insert(getter) {
-                return Some(Rbe::NotUniqueInMovements(getter));
-            }
-        }
-        let clones = if movement.putter_retains { 1 } else { 0 } + movement.getters.len();
-        if clones > 1 && putter_type_key.get_info().maybe_clone.is_none() {
-            return Some(Rbe::MoverTypeMissingClone(movement.putter));
-        }
-    }
+    /////////////////////////////////////////////////////
+    // OK!
 
-    rule_def
-        .ready
+    let bit_guard = BitStatePredicate {
+        ready: rule_def.ready.clone(),
+        full_mem: rule_def.ready_and_full_mem.clone(),
+        empty_mem: ready_mems
+            .iter()
+            .filter(|mover_index| !rule_def.ready_and_full_mem.contains(mover_index))
+            .collect(),
+    };
+    // now we create the movements
+    let output: SmallVec<[PartitionedMovement; 3]> = rule_def
+        .movements
         .iter()
-        .filter(|mover_index| !busy_moving.contains(mover_index))
-        .next()
-        .map(Rbe::ReadyButDoesntMove)
+        .map(|movement| PartitionedMovement {
+            putter: movement.putter,
+            putter_retains: movement.putter_retains,
+            me_ge: movement
+                .getters
+                .iter()
+                .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
+                .collect(),
+            po_ge: movement
+                .getters
+                .iter()
+                .filter(|mover_index| MoverKind::GetterPort == mover_kind(mover_defs, *mover_index))
+                .collect(),
+        })
+        .collect();
+
+    let bit_assign = BitStatePredicate {
+        ready: Default::default(),
+        full_mem: ready_mems.iter().filter(|mover_index| filled.contains(mover_index)).collect(),
+        empty_mem: ready_mems.iter().filter(|mover_index| !filled.contains(mover_index)).collect(),
+    };
+    Ok(Rule { bit_assign, bit_guard, ins: rule_def.instructions.iter().cloned().collect(), output })
 }
