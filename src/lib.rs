@@ -1,7 +1,6 @@
-use bidir_map::BidirMap;
-use core::{marker::PhantomData, mem::MaybeUninit, ops::RangeTo, sync::atomic::AtomicBool};
+use core::{marker::PhantomData, mem::MaybeUninit};
 use debug_stub_derive::DebugStub;
-use maplit::{hashmap, hashset};
+
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
@@ -16,7 +15,7 @@ use std::{
 };
 use std_semaphore::Semaphore;
 
-pub mod building;
+// pub mod building;
 
 pub mod building2;
 
@@ -24,15 +23,8 @@ mod allocator;
 mod ports;
 mod type_info;
 
-mod space_index_set;
-use space_index_set::SpaceIndexSet;
-// mod tests;
-
-#[cfg(test)]
-mod new_tests;
-
-mod ffi;
-pub use ffi::*;
+mod index_set;
+use index_set::{Index as MoverIndex, IndexSet as MoverIndexSet};
 
 //////////////////////////////////////////////////////////////////
 
@@ -90,38 +82,34 @@ pub struct TypeInfo {
 #[repr(transparent)]
 pub struct TypeKey(pub &'static TypeInfo);
 
-pub type Name = u32;
-
-#[derive(DebugStub, Clone)]
-#[repr(C)]
-pub struct CallHandle {
-    #[debug_stub = "FuncPtr"]
-    func: unsafe fn(*mut u8, *const u8), // dummy type
-    ret: TypeKey,
-    args: Vec<TypeKey>,
+/// invariant: really of type unsafe(*mut R, *const A)
+#[derive(Debug)]
+pub struct TypedFunction {
+    pointer_data: usize,
+    ret_type: TypeKey,
+    arg_types: Vec<TypeKey>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Term<I, F> {
-    True,                                        // returns bool
-    False,                                       // returns bool
-    Not(Box<Self>),                              // returns bool
-    And(Vec<Self>),                              // returns bool
-    Or(Vec<Self>),                               // returns bool
-    BoolCall { func: F, args: Vec<Term<I, F>> }, // returns bool
-    IsEq(TypeKey, Box<[Self; 2]>),               // returns bool
-    Named(I),                                    // type of I
+pub enum Term {
+    True,                          // returns bool
+    False,                         // returns bool
+    Not(Box<Self>),                // returns bool
+    And(Vec<Self>),                // returns bool
+    Or(Vec<Self>),                 // returns bool
+    IsEq(TypeKey, Box<[Self; 2]>), // returns bool
+    Named(MoverIndex),             // type of MoverIndex
 }
 
 #[derive(Debug, Clone)]
-pub enum Instruction<I, F> {
-    CreateFromFormula { dest: I, term: Term<I, F> },
-    CreateFromCall { type_key: TypeKey, dest: I, func: F, args: Vec<Term<I, F>> },
-    Check(Term<I, F>),
-    MemSwap(I, I),
+pub enum Instruction {
+    CreateFromFormula { dest: MoverIndex, term: Term },
+    CreateFromCall { dest: MoverIndex, func: Arc<TypedFunction>, args: Vec<Term> },
+    Check(Term),
+    MemSwap(MoverIndex, MoverIndex),
 }
 #[derive(Debug)]
-enum Space {
+enum MoverSpace {
     PoPu { ps: PutterSpace, mb: MsgBox },
     PoGe { mb: MsgBox, type_key: TypeKey },
     Memo { ps: PutterSpace },
@@ -154,7 +142,7 @@ pub enum FillMemError {
 #[derive(Debug)]
 struct PortCommon {
     p: Arc<Proto>,
-    space_idx: SpaceIndex,
+    space_idx: MoverIndex,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -175,16 +163,14 @@ pub struct Getter(PortCommon);
 #[derive(Debug)]
 pub struct ProtoR {
     rules: Vec<Rule>,
-    spaces: Vec<Space>,
-    // perm_space_range: RangeTo<usize>,
-    name_mapping: BidirMap<Name, SpaceIndex>,
+    spaces: Vec<MoverSpace>,
 }
 
 #[derive(Debug)]
 pub struct ProtoCr {
-    unclaimed: HashSet<SpaceIndex>,
-    ready: SpaceIndexSet,
-    mem: SpaceIndexSet, // presence means FULL
+    unclaimed: HashSet<MoverIndex>,
+    ready: MoverIndexSet,
+    mem: MoverIndexSet, // presence means FULL
     allocator: Allocator,
     ref_counts: HashMap<DatumPtr, usize>,
 }
@@ -232,31 +218,28 @@ struct AtomicDatumPtr {
 #[derive(Debug)]
 pub struct Rule {
     bit_guard: BitStatePredicate,
-    ins: SmallVec<[Instruction<SpaceIndex, CallHandle>; 4]>, // dummy
+    ins: SmallVec<[Instruction; 3]>,
     /// COMMITMENTS BELOW HERE
-    output: SmallVec<[Movement; 4]>,
+    output: SmallVec<[PartitionedMovement; 3]>,
     // .ready is always identical to bit_guard.ready. use that instead
-    bit_assign: BitStatePredicate,
+    bit_assign: BitStatePredicate, // TODO make this better
 }
 
 #[derive(Debug)]
 struct BitStatePredicate {
-    ready: SpaceIndexSet,
-    full_mem: SpaceIndexSet,
-    empty_mem: SpaceIndexSet,
+    ready: MoverIndexSet,
+    full_mem: MoverIndexSet,
+    empty_mem: MoverIndexSet,
 }
 
 #[derive(Debug)]
-struct Movement {
-    putter: SpaceIndex,
-    me_ge: Vec<SpaceIndex>,
-    po_ge: Vec<SpaceIndex>,
+struct PartitionedMovement {
+    putter: MoverIndex,
+    me_ge: Vec<MoverIndex>,
+    po_ge: Vec<MoverIndex>,
     putter_retains: bool,
 }
 
-#[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-struct SpaceIndex(usize);
 /////////////////////////////////////////
 impl AtomicDatumPtr {
     fn swap(&self, new: DatumPtr) -> DatumPtr {
@@ -278,26 +261,33 @@ impl DatumPtr {
         Self(raw as _)
     }
 }
-impl CallHandle {
+impl TypedFunction {
     unsafe fn exec(&self, dest: DatumPtr, args: &[DatumPtr]) {
-        assert_eq!(self.args.len(), args.len());
-        (self.func)(dest.into_raw(), transmute(args.as_ptr()))
+        assert_eq!(self.arg_types.len(), args.len());
+        let ptr: unsafe fn(*mut u8, *const u8) = transmute(self.pointer_data);
+        (ptr)(dest.into_raw(), transmute(args.as_ptr()))
     }
 }
 
-impl Space {
+impl MoverSpace {
+    fn type_key(&self) -> TypeKey {
+        match self {
+            MoverSpace::PoPu { ps, .. } | MoverSpace::Memo { ps } => ps.type_key,
+            MoverSpace::PoGe { type_key, .. } => *type_key,
+        }
+    }
     fn get_putter_space(&self) -> Option<&PutterSpace> {
         match self {
-            Space::PoPu { ps, .. } => Some(ps),
-            Space::PoGe { .. } => None,
-            Space::Memo { ps } => Some(ps),
+            MoverSpace::PoPu { ps, .. } => Some(ps),
+            MoverSpace::PoGe { .. } => None,
+            MoverSpace::Memo { ps } => Some(ps),
         }
     }
     fn get_msg_box(&self) -> Option<&MsgBox> {
         match self {
-            Space::PoPu { mb, .. } => Some(mb),
-            Space::PoGe { mb, .. } => Some(mb),
-            Space::Memo { .. } => None,
+            MoverSpace::PoPu { mb, .. } => Some(mb),
+            MoverSpace::PoGe { mb, .. } => Some(mb),
+            MoverSpace::Memo { .. } => None,
         }
     }
 }
@@ -319,186 +309,8 @@ impl MsgBox {
     }
 }
 
-/*
-impl ProtoR {
-    pub fn sanity_check(&self, cr: &ProtoCr) {
-        let chunks = cr.ready.data.len();
-        assert_eq!(chunks, cr.mem.data.len());
-        struct Cap {
-            put: bool,
-            mem: bool,
-            ty: TypeKey,
-        }
-        let capabilities: Vec<Cap> = self
-            .spaces
-            .iter()
-            .map(|x| match x {
-                Space::PoPu { ps, .. } => Cap { put: true, mem: false, ty: ps.type_key },
-                Space::PoGe { type_key, .. } => Cap { put: false, mem: false, ty: *type_key },
-                Space::Memo { ps } => Cap { put: true, mem: true, ty: ps.type_key },
-            })
-            .collect();
-        for rule in self.rules.iter() {
-            assert!(rule.bit_assign.ready.is_subset_of(&rule.bit_guard.ready));
-            assert!(rule.bit_guard.full_mem.is_subset_of(&rule.bit_guard.ready));
-            assert!(rule.bit_guard.empty_mem.is_subset_of(&rule.bit_guard.ready));
-
-            assert_eq!(chunks, rule.bit_guard.ready.data.len());
-            assert_eq!(chunks, rule.bit_guard.empty_mem.data.len());
-            assert_eq!(chunks, rule.bit_guard.full_mem.data.len());
-            assert_eq!(chunks, rule.bit_assign.full_mem.data.len());
-            assert_eq!(chunks, rule.bit_assign.empty_mem.data.len());
-            let mut known_filled = hashmap! {};
-            for x in rule.bit_guard.ready.iter() {
-                let cap = &capabilities[x.0];
-                if cap.mem {
-                    // implies put
-                    let f = rule.bit_guard.full_mem.contains(&x);
-                    let e = rule.bit_guard.empty_mem.contains(&x);
-                    assert!(!(f && e));
-                    if f {
-                        known_filled.insert(x, true);
-                    }
-                    if e {
-                        known_filled.insert(x, false);
-                    }
-                } else {
-                    known_filled.insert(x, cap.put);
-                }
-            }
-            fn check_and_ret_type(
-                r: &ProtoR,
-                capabilities: &Vec<Cap>,
-                known_filled: &HashMap<SpaceIndex, bool>,
-                term: &Term<SpaceIndex, CallHandle>,
-            ) -> TypeKey {
-                // TODO do I really need to recurse here??
-
-                use Term::*;
-                match term {
-                    Named(i) => {
-                        let cap = &capabilities[i.0];
-                        assert_eq!(known_filled[i], true);
-                        cap.ty
-                    }
-                    // MUST BE BOOL
-                    True | False => BOOL_TYPE_KEY,
-                    Not(t) => {
-                        assert_eq!(
-                            check_and_ret_type(r, capabilities, known_filled, t),
-                            BOOL_TYPE_KEY
-                        );
-                        BOOL_TYPE_KEY
-                    }
-                    BoolCall { func, args } => {
-                        assert_eq!(func.ret, BOOL_TYPE_KEY);
-                        assert_eq!(func.args.len(), args.len());
-                        for (&t0, term) in func.args.iter().zip(args.iter()) {
-                            let t1 = check_and_ret_type(r, &capabilities, &known_filled, term);
-                            assert_eq!(t0, t1);
-                        }
-                        BOOL_TYPE_KEY
-                    }
-                    And(ts) | Or(ts) => {
-                        for t in ts.iter() {
-                            assert_eq!(
-                                check_and_ret_type(r, capabilities, known_filled, t),
-                                BOOL_TYPE_KEY
-                            );
-                        }
-                        BOOL_TYPE_KEY
-                    }
-                    IsEq(tid, terms) => {
-                        assert_eq!(
-                            check_and_ret_type(r, capabilities, known_filled, &terms[0]),
-                            *tid
-                        );
-                        assert_eq!(
-                            check_and_ret_type(r, capabilities, known_filled, &terms[1]),
-                            *tid
-                        );
-                        BOOL_TYPE_KEY
-                    }
-                }
-            }
-            for i in rule.ins.iter() {
-                match &i {
-                    Instruction::Check(term) => assert_eq!(
-                        BOOL_TYPE_KEY,
-                        check_and_ret_type(self, &capabilities, &known_filled, term)
-                    ),
-                    Instruction::CreateFromCall { type_key, dest, func, args } => {
-                        let cap = &capabilities[dest.0];
-                        assert!(known_filled.insert(*dest, true).is_none());
-                        assert_eq!(*type_key, cap.ty);
-                        assert_eq!(func.ret, cap.ty);
-                        assert_eq!(func.args.len(), args.len());
-                        for (&t0, term) in func.args.iter().zip(args.iter()) {
-                            let t1 = check_and_ret_type(self, &capabilities, &known_filled, term);
-                            assert_eq!(t0, t1);
-                        }
-                    }
-                    Instruction::CreateFromFormula { dest, term } => {
-                        assert!(known_filled.insert(*dest, true).is_none());
-                        let cap = &capabilities[dest.0];
-                        assert_eq!(
-                            cap.ty,
-                            check_and_ret_type(self, &capabilities, &known_filled, term)
-                        )
-                    }
-                    Instruction::MemSwap(a, b) => {
-                        let a_knowledge = known_filled.remove(a);
-                        let b_knowledge = known_filled.remove(b);
-                        if let Some(x) = a_knowledge {
-                            known_filled.insert(*b, x);
-                        }
-                        if let Some(x) = b_knowledge {
-                            known_filled.insert(*a, x);
-                        }
-                    }
-                }
-            }
-            let mut busy_doing = hashmap! {}; // => true for put, => false for get
-            for movement in rule.output.iter() {
-                let p = movement.putter;
-                //DeBUGGY:println!("MV {:?}", movement);
-                assert_eq!(known_filled.get(&p), Some(&true));
-                let cap = &capabilities[p.0];
-                assert!(busy_doing.insert(p, true).is_none());
-
-                assert_eq!(
-                    self.perm_space_range.contains(&p.0) && cap.mem && !movement.putter_retains,
-                    rule.bit_assign.empty_mem.contains(&p)
-                );
-                for g in movement.me_ge.iter().copied() {
-                    let gcap = &capabilities[g.0];
-                    assert!(gcap.mem);
-                    assert_eq!(cap.ty, gcap.ty);
-                    assert_eq!(known_filled.get(&g), Some(&false));
-                    assert!(rule.bit_assign.full_mem.contains(&g));
-                    assert!(busy_doing.insert(g, false).is_none());
-                }
-                for g in movement.po_ge.iter().copied() {
-                    let gcap = &capabilities[g.0];
-                    assert!(!gcap.mem);
-                    assert_eq!(cap.ty, gcap.ty);
-                    assert_eq!(known_filled.get(&g), Some(&false));
-                    assert!(!rule.bit_assign.full_mem.contains(&g));
-                    assert!(busy_doing.insert(g, false).is_none());
-                }
-            }
-            // make sure everyone whose readiness is UNSET has a means of again
-            // becoming ready
-            for p in rule.bit_assign.ready.iter() {
-                assert!(busy_doing.contains_key(&p));
-            }
-        }
-    }
-}
-*/
-
 impl ProtoCr {
-    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: SpaceIndex, how: FinalizeHow) {
+    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: MoverIndex, how: FinalizeHow) {
         // println!("FINALIZING how={:?}", how);
         if how != FinalizeHow::Retain {
             let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
@@ -518,18 +330,8 @@ impl ProtoCr {
         }
         self.ready.insert(this_mem_id);
         self.coordinate(r);
-        // if r.perm_space_range.contains(&this_mem_id.0) {
-        //     self.ready.insert(this_mem_id);
-        //     self.coordinate(r);
-        // } else {
-        //     // this was a temp memcell. the port behind this thread MUST be ready
-        //     // to fire the SINGLE rule associated with the memcell. Thus, we can
-        //     // safely conclude that we do not need to consider the possibility that
-        //     // this memcell becoming empty will enable some other rule without
-        //     // involving this thread's port.
-        // }
     }
-    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: SpaceIndex, b: SpaceIndex) {
+    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: MoverIndex, b: MoverIndex) {
         let pa = r.spaces[a.0].get_putter_space().expect("Pa");
         let pb = r.spaces[b.0].get_putter_space().expect("Pb");
         let olda = pa.atomic_datum_ptr.load();
@@ -577,8 +379,9 @@ impl ProtoCr {
                             let was = self.ref_counts.insert(dest_ptr, 1);
                             assert!(was.is_none());
                         }
-                        CreateFromCall { type_key, dest, func, args } => {
-                            let dest_ptr = self.allocator.occupy_allocation(*type_key);
+                        CreateFromCall { dest, func, args } => {
+                            let type_key = r.spaces[dest.0].type_key();
+                            let dest_ptr = self.allocator.occupy_allocation(type_key);
                             // TODO MAKE LESS CLUNKY
                             let arg_stack =
                                 args.iter().map(|arg| eval_ptr(arg, r)).collect::<Vec<_>>();
@@ -636,17 +439,17 @@ impl ProtoCr {
         }
     }
 
-    fn do_movement(&mut self, r: &ProtoR, movement: &Movement) {
+    fn do_movement(&mut self, r: &ProtoR, movement: &PartitionedMovement) {
         let mut me_ge_iter = movement.me_ge.iter().copied();
         let mut putter_retains = movement.putter_retains;
-        let mut putter: SpaceIndex = movement.putter;
+        let mut putter: MoverIndex = movement.putter;
 
         // PHASE 1: "take care of mem getters"
         let ps: &PutterSpace = loop {
             // loops exactly once 1 or 2 times
             match &r.spaces[putter.0] {
-                Space::PoGe { .. } => panic!("CANNOT BE!"),
-                Space::PoPu { ps, mb } => {
+                MoverSpace::PoGe { .. } => panic!("CANNOT BE!"),
+                MoverSpace::PoPu { ps, mb } => {
                     let type_info = ps.type_key.get_info();
                     //DeBUGGY:println!("POPU MOVEMENT");
                     // FINAL or SEMIFINAL LOOP
@@ -698,7 +501,7 @@ impl ProtoCr {
                         break ps;
                     }
                 }
-                Space::Memo { ps } => {
+                MoverSpace::Memo { ps } => {
                     //DeBUGGY:println!("MEMO MOVEMENT");
                     //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
                     // FINAL LOOP
@@ -777,18 +580,12 @@ impl PutterSpace {
     }
 }
 
-impl fmt::Debug for SpaceIndex {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "SpaceIndex({})", self.0)
-    }
-}
-
 #[inline]
 fn bool_to_ptr(x: bool) -> DatumPtr {
     DatumPtr::from_raw(unsafe { transmute(if x { &true } else { &false }) })
 }
 
-fn eval_ptr(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> DatumPtr {
+fn eval_ptr(term: &Term, r: &ProtoR) -> DatumPtr {
     use Term::*;
     match term {
         Named(i) => r.spaces[i.0].get_putter_space().expect("k").atomic_datum_ptr.load(),
@@ -801,23 +598,11 @@ fn ptr_to_bool(x: DatumPtr) -> bool {
     unsafe { *x }
 }
 
-fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
+fn eval_bool(term: &Term, r: &ProtoR) -> bool {
     use Term::*;
     match term {
         // PTR points to BOOL
         Named(_) => ptr_to_bool(eval_ptr(term, r)),
-        // INHERENTLY BOOL
-        BoolCall { func, args } => {
-            let mut ret: AtomicBool = false.into();
-            // TODO make this less clunky
-            let args = args.iter().map(|arg| eval_ptr(arg, r)).collect::<Vec<_>>();
-            let p = &mut ret;
-            unsafe {
-                let p = transmute(p);
-                func.exec(p, &args[..]);
-                ret.load(SeqCst)
-            }
-        }
         True => true,
         False => false,
         Not(t) => !eval_bool(t, r),
@@ -830,64 +615,5 @@ fn eval_bool(term: &Term<SpaceIndex, CallHandle>, r: &ProtoR) -> bool {
                 (type_key.get_info().maybe_eq.expect("no eq!"))(ptr0.into_raw(), ptr1.into_raw())
             }
         }
-    }
-}
-
-impl CallHandle {
-    /// Caller promises that `func`...
-    /// 1. writes one value to the first param
-    /// 2. types pointed to in function args match those for given typekeys
-    pub unsafe fn new_raw(func: unsafe fn(*mut u8), ret: TypeKey, args: Vec<TypeKey>) -> Self {
-        Self { func: transmute(func), ret, args: args.iter().copied().collect() }
-    }
-
-    /// Caller promises that `func`...
-    /// 1. writes one value to the first param
-    /// 2. ret typekey matches type first pointed to in func
-    pub unsafe fn new_nullary<R>(
-        func: unsafe fn(*mut R),
-        ret: TypeKey,
-        args: &[TypeKey; 0],
-    ) -> Self {
-        Self::new_raw(transmute(func), ret, args.to_vec())
-    }
-
-    /// Caller promises that `func`...
-    /// 1. writes one value to the first param
-    /// 2. ret typekey matches type first pointed to in func
-    /// 3. sequence of args typekeys match sequence of types pointed to after first in func
-    /// 4. function has no observable effect on *const-pointed values
-    pub unsafe fn new_unary<R, A0>(
-        func: unsafe fn(*mut R, *const A0),
-        ret: TypeKey,
-        args: &[TypeKey; 1],
-    ) -> Self {
-        Self::new_raw(transmute(func), ret, args.to_vec())
-    }
-
-    /// Caller promises that `func`...
-    /// 1. writes one value to the first param
-    /// 2. ret typekey matches type first pointed to in func
-    /// 3. sequence of args typekeys match sequence of types pointed to after first in func
-    /// 4. function has no observable effect on *const-pointed values
-    pub unsafe fn new_binary<R, A0, A1>(
-        func: unsafe fn(*mut R, *const A0, *const A1),
-        ret: TypeKey,
-        args: &[TypeKey; 2],
-    ) -> Self {
-        Self::new_raw(transmute(func), ret, args.to_vec())
-    }
-
-    /// Caller promises that `func`...
-    /// 1. writes one value to the first param
-    /// 2. ret typekey matches type first pointed to in func
-    /// 3. sequence of args typekeys match sequence of types pointed to after first in func
-    /// 4. function has no observable effect on *const-pointed values
-    pub unsafe fn new_ternary<R, A0, A1, A2>(
-        func: unsafe fn(*mut R, *const A0, *const A1, *const A2),
-        ret: TypeKey,
-        args: &[TypeKey; 3],
-    ) -> Self {
-        Self::new_raw(transmute(func), ret, args.to_vec())
     }
 }

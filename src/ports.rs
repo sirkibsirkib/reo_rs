@@ -1,44 +1,48 @@
 use super::*;
 
 impl PortCommon {
-    fn claim_common(name: Name, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
+    fn claim_common(
+        space_idx: MoverIndex,
+        want_putter: bool,
+        p: &Arc<Proto>,
+    ) -> Result<Self, ClaimError> {
         use ClaimError::*;
-        if let Some(space_idx) = p.r.name_mapping.get_by_first(&name) {
-            let is_putter = match &p.r.spaces[space_idx.0] {
-                Space::PoGe { .. } => false,
-                Space::PoPu { .. } => true,
-                Space::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
-            };
-            if want_putter != is_putter {
-                return Err(WrongPortDirection);
-            }
-            let mut x = p.cr.lock();
-            if x.unclaimed.remove(space_idx) {
-                let q = Ok(Self { space_idx: *space_idx, p: p.clone() });
-                q
-            } else {
-                Err(AlreadyClaimed)
-            }
+        let is_putter = match &p.r.spaces[space_idx.0] {
+            MoverSpace::PoGe { .. } => false,
+            MoverSpace::PoPu { .. } => true,
+            MoverSpace::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
+        };
+        if want_putter != is_putter {
+            return Err(WrongPortDirection);
+        }
+        let mut x = p.cr.lock();
+        if x.unclaimed.remove(&space_idx) {
+            let q = Ok(Self { space_idx, p: p.clone() });
+            q
         } else {
-            Err(ClaimError::UnknownName)
+            Err(AlreadyClaimed)
         }
     }
 
-    unsafe fn claim_raw(name: Name, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
-        Self::claim_common(name, want_putter, p)
+    unsafe fn claim_raw(
+        mover_index: MoverIndex,
+        want_putter: bool,
+        p: &Arc<Proto>,
+    ) -> Result<Self, ClaimError> {
+        Self::claim_common(mover_index, want_putter, p)
     }
 }
 
 impl Putter {
-    pub unsafe fn claim_raw(p: &Arc<Proto>, name: Name) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim_raw(name, true, p)?))
+    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: MoverIndex) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim_raw(mover_index, true, p)?))
     }
 
     // This is the real workhorse function
     fn put_inner(&mut self, datum_ptr: DatumPtr) -> bool {
         let Proto { r, cr } = self.0.p.as_ref();
         let space = &r.spaces[self.0.space_idx.0];
-        if let Space::PoPu { ps, mb, .. } = space {
+        if let MoverSpace::PoPu { ps, mb, .. } = space {
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             {
                 let mut x = cr.lock();
@@ -153,25 +157,25 @@ fn get_data<F: FnOnce(FinalizeHow)>(ps: &PutterSpace, maybe_dest: Option<DatumPt
     // println!("GET COMPLETE");
 }
 impl Getter {
-    pub unsafe fn claim_raw(p: &Arc<Proto>, name: Name) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim_raw(name, false, p)?))
+    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: MoverIndex) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim_raw(mover_index, false, p)?))
     }
 
     // returns false if it doesn't participate in a rule
     unsafe fn get_inner(&mut self, maybe_dest: Option<DatumPtr>) -> bool {
         let Proto { r, cr } = self.0.p.as_ref();
         let space = &r.spaces[self.0.space_idx.0];
-        if let Space::PoGe { mb, .. } = space {
+        if let MoverSpace::PoGe { mb, .. } = space {
             {
                 let mut x = cr.lock();
                 assert!(x.ready.insert(self.0.space_idx));
                 x.coordinate(r);
                 // TODO check if we can time out
             }
-            let putter_id = SpaceIndex(mb.recv());
+            let putter_id = MoverIndex(mb.recv());
             // println!("My putter has id {:?}", putter_id);
             match &r.spaces[putter_id.0] {
-                Space::PoPu { ps, mb, .. } => get_data(ps, maybe_dest, move |how| {
+                MoverSpace::PoPu { ps, mb, .. } => get_data(ps, maybe_dest, move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
@@ -180,14 +184,14 @@ impl Getter {
                     })
                     // println!("FINALZIING DONE");
                 }),
-                Space::Memo { ps, .. } => get_data(ps, maybe_dest, |how| {
+                MoverSpace::Memo { ps, .. } => get_data(ps, maybe_dest, |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
                     self.0.p.cr.lock().finalize_memo(r, putter_id, how);
                     // println!("FINALZIING DONE");
                 }),
-                Space::PoGe { .. } => panic!("CANNOT"),
+                MoverSpace::PoGe { .. } => panic!("CANNOT"),
             };
         } else {
             panic!("am I not a getter?");
@@ -212,18 +216,21 @@ impl Getter {
 }
 
 impl Proto {
-    pub unsafe fn fill_memory_raw(&self, name: Name, src: *mut u8) -> Result<(), FillMemError> {
+    pub unsafe fn fill_memory_raw(
+        &self,
+        space_idx: MoverIndex,
+        src: *mut u8,
+    ) -> Result<(), FillMemError> {
         let Proto { r, cr } = self;
-        let space_idx = r.name_mapping.get_by_first(&name).ok_or(FillMemError::UnknownName)?;
-        if let Space::Memo { ps, .. } = &r.spaces[space_idx.0] {
+        if let MoverSpace::Memo { ps, .. } = &r.spaces[space_idx.0] {
             let mut lock = cr.lock();
-            if lock.mem.contains(space_idx) {
+            if lock.mem.contains(&space_idx) {
                 return Err(FillMemError::MemoryNonempty);
             }
             // success guaranteed!
             let datum_ptr = lock.allocator.occupy_allocation(ps.type_key);
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
-            lock.mem.insert(*space_idx);
+            lock.mem.insert(space_idx);
             // println!("SWAP A");
             assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
             (ps.type_key.get_info().raw_move)(datum_ptr.into_raw(), src);
@@ -234,11 +241,11 @@ impl Proto {
     }
     pub unsafe fn fill_memory_typed<T>(
         &self,
-        name: Name,
+        mover_index: MoverIndex,
         data: T,
     ) -> Result<(), (T, FillMemError)> {
         let mut data = MaybeUninit::new(data);
-        self.fill_memory_raw(name, data.as_mut_ptr() as *mut u8)
+        self.fill_memory_raw(mover_index, data.as_mut_ptr() as *mut u8)
             .map_err(|e| (data.assume_init(), e))
     }
 }

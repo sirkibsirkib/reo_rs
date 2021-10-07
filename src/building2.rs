@@ -1,24 +1,21 @@
 use crate::*;
 
-pub struct NameDefs {
-    pub mover_defs: HashMap<Name, MoverDef>,
-    pub call_defs: HashMap<Name, CallHandle>,
-}
-
 pub struct ProtoDef {
-    pub name_defs: NameDefs,
+    pub mover_defs: Vec<MoverDef>,
     pub rules: Vec<RuleDef>,
 }
 
 pub struct RuleDef {
-    pub instructions: Vec<Instruction<Name, Name>>,
-    pub movements: Vec<MovementDef>,
+    pub ready: MoverIndexSet,
+    pub ready_and_full_mem: MoverIndexSet,
+    pub instructions: Vec<Instruction>,
+    pub movements: Vec<Movement>,
 }
 
-pub struct MovementDef {
-    pub putter: Name,
-    pub putter_retains: bool,
-    pub getters: Vec<Name>,
+pub struct Movement {
+    putter: MoverIndex,
+    putter_retains: bool,
+    getters: MoverIndexSet,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -27,47 +24,355 @@ pub struct MoverDef {
     pub mover_kind: MoverKind,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MoverKind {
     PutterPort,
     GetterPort,
     MemoryCell,
 }
 
-pub enum BuildError {}
+pub struct RulesBuildError {
+    rule_index: usize,
+    rule_build_error: RuleBuildError,
+}
+pub enum RuleBuildError {
+    MoverUnready(MoverIndex),
+    MoverIndexOutOfBounds(MoverIndex),
+    MoverCannotPut(MoverIndex),
+    MoverCannotGet(MoverIndex),
+    MoverisntMemory(MoverIndex),
+    TypeInequality(TypeKey, TypeKey),
+    ReadingUnfilled(MoverIndex),
+    Overwriting(MoverIndex),
+    FuncHasWrongArgNumber { func_has: usize, other_has: usize },
+    NotUniqueInMovements(MoverIndex),
+    MoverTypeMissingClone(MoverIndex),
+    ReadyButDoesntMove(MoverIndex),
+}
+
+/////////
 
 impl MoverDef {
-    fn to_space(self) -> Space {
+    fn to_space(self) -> MoverSpace {
         let Self { type_key, mover_kind } = self;
 
         match self.mover_kind {
             MoverKind::PutterPort => {
-                Space::PoPu { mb: Default::default(), ps: PutterSpace::new(type_key) }
+                MoverSpace::PoPu { mb: Default::default(), ps: PutterSpace::new(type_key) }
             }
-            MoverKind::GetterPort => Space::PoGe { mb: Default::default(), type_key },
-            MoverKind::MemoryCell => Space::Memo { ps: PutterSpace::new(type_key) },
+            MoverKind::GetterPort => MoverSpace::PoGe { mb: Default::default(), type_key },
+            MoverKind::MemoryCell => MoverSpace::Memo { ps: PutterSpace::new(type_key) },
         }
     }
 }
 
 impl ProtoDef {
-    fn build_rules(&self, rules: &[RuleDef]) -> Result<Vec<Rule>, BuildError> {
-        rules.iter().map(|rule| self.name_defs.build_rule(rule)).collect()
+    fn build_rules(&self, rules: &[RuleDef]) -> Result<Vec<Rule>, RulesBuildError> {
+        rules
+            .iter()
+            .enumerate()
+            .map(|(rule_index, rule)| {
+                build_rule(&self.mover_defs, rule)
+                    .map_err(|rule_build_error| RulesBuildError { rule_index, rule_build_error })
+            })
+            .collect()
     }
-    pub fn build(&self) -> Result<Proto, BuildError> {
-        // build spaces from namedefs
-        let mut spaces = vec![];
-        let mut name_mapping = HashMap::<Name, SpaceIndex>::default();
-        for (&name, mover_def) in self.name_defs.mover_defs.iter() {
-            let space_index = SpaceIndex(spaces.len());
-            spaces.push(mover_def.to_space());
-            name_mapping.insert(name, space_index);
-        }
-        todo!()
+    // pub fn build(&self) -> Result<Proto, ProtoBuildError> {
+    //     // build spaces from namedefs
+    //     let mut spaces = vec![];
+    //     let mut name_mapping = HashMap::<MoverIndex, MoverIndex>::default();
+    //     for (&name, mover_def) in self.mover_defs.iter() {
+    //         let space_index = MoverIndex(spaces.len());
+    //         spaces.push(mover_def.to_space());
+    //         name_mapping.insert(name, space_index);
+    //     }
+    //     todo!()
+    // }
+}
+
+trait MoverDefsExt {
+    fn term_type(&self) -> TypeKey;
+}
+
+fn mover_def(mover_defs: &Vec<MoverDef>, mover_index: MoverIndex) -> MoverDef {
+    mover_defs[mover_index.0]
+}
+fn mover_type(mover_defs: &Vec<MoverDef>, mover_index: MoverIndex) -> TypeKey {
+    mover_def(mover_defs, mover_index).type_key
+}
+fn mover_kind(mover_defs: &Vec<MoverDef>, mover_index: MoverIndex) -> MoverKind {
+    mover_def(mover_defs, mover_index).mover_kind
+}
+
+fn term_type(mover_defs: &Vec<MoverDef>, term: &Term) -> TypeKey {
+    match term {
+        Term::Named(mover_index) => mover_type(mover_defs, *mover_index),
+        _ => BOOL_TYPE_KEY,
     }
 }
-impl NameDefs {
-    fn build_rule(&self, rules: &RuleDef) -> Result<Rule, BuildError> {
-        todo!()
+
+fn in_term_out_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
+    match term {
+        Term::True | Term::False => None,
+        Term::Not(inner_term) => in_term_out_set(set, inner_term),
+        Term::And(terms) | Term::Or(terms) => {
+            terms.iter().find_map(|term| in_term_out_set(set, term))
+        }
+        Term::IsEq(_type_key, term_pair) => {
+            term_pair.iter().find_map(|term| in_term_out_set(set, term))
+        }
+        Term::Named(mover_index) => {
+            if set.contains(mover_index) {
+                None
+            } else {
+                Some(*mover_index)
+            }
+        }
     }
+}
+fn in_term_in_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
+    match term {
+        Term::True | Term::False => None,
+        Term::Not(inner_term) => in_term_in_set(set, inner_term),
+        Term::And(terms) | Term::Or(terms) => {
+            terms.iter().find_map(|term| in_term_in_set(set, term))
+        }
+        Term::IsEq(_type_key, term_pair) => {
+            term_pair.iter().find_map(|term| in_term_in_set(set, term))
+        }
+        Term::Named(mover_index) => {
+            if set.contains(mover_index) {
+                Some(*mover_index)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+trait MoverReadyChecker {
+    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex>;
+}
+
+impl MoverReadyChecker for MoverIndex {
+    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+        if ready.contains(self) {
+            None
+        } else {
+            Some(*self)
+        }
+    }
+}
+
+fn first_unready(
+    ready: &MoverIndexSet,
+    i: impl IntoIterator<Item = MoverIndex>,
+) -> Option<MoverIndex> {
+    i.into_iter().find_map(|x| x.unready(ready))
+}
+impl MoverReadyChecker for Term {
+    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+        in_term_out_set(ready, self)
+    }
+}
+impl MoverReadyChecker for Instruction {
+    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+        match self {
+            Instruction::CreateFromFormula { dest, term } => {
+                dest.unready(ready).or(term.unready(ready))
+            }
+            Instruction::CreateFromCall { dest, func: _, args } => {
+                dest.unready(ready).or(args.iter().find_map(|ins| ins.unready(ready)))
+            }
+            Instruction::Check(term) => term.unready(ready),
+            Instruction::MemSwap(a, b) => first_unready(ready, [*a, *b].iter().copied()),
+        }
+    }
+}
+impl MoverReadyChecker for RuleDef {
+    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+        first_unready(ready, self.ready_and_full_mem.iter())
+            .or(self.instructions.iter().find_map(|ins| ins.unready(ready)))
+    }
+}
+
+fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, RuleBuildError> {
+    if let Some(error) = check_rule(mover_defs, rule_def) {
+        Err(error)
+    } else {
+        let bit_guard = BitStatePredicate {
+            ready: rule_def.ready.clone(),
+            full_mem: rule_def.ready_and_full_mem.clone(),
+            empty_mem: rule_def
+                .ready
+                .iter()
+                .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
+                .collect(),
+        };
+        // now we create the movements
+        let output: SmallVec<[PartitionedMovement; 3]> = rule_def
+            .movements
+            .iter()
+            .map(|movement| PartitionedMovement {
+                putter: movement.putter,
+                putter_retains: movement.putter_retains,
+                me_ge: movement
+                    .getters
+                    .iter()
+                    .filter(|mover_index| {
+                        MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index)
+                    })
+                    .collect(),
+                po_ge: movement
+                    .getters
+                    .iter()
+                    .filter(|mover_index| {
+                        MoverKind::GetterPort == mover_kind(mover_defs, *mover_index)
+                    })
+                    .collect(),
+            })
+            .collect();
+        let bit_assign = BitStatePredicate {
+            ready: Default::default(),
+            full_mem: Default::default(),
+            empty_mem: Default::default(),
+        };
+        Ok(Rule {
+            bit_assign,
+            bit_guard,
+            ins: rule_def.instructions.iter().cloned().collect(),
+            output,
+        })
+    }
+}
+
+fn check_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Option<RuleBuildError> {
+    use RuleBuildError as Rbe;
+    // check that all elements in `ready` are in bounds
+    match rule_def.ready.max_element() {
+        Some(max) if mover_defs.len() <= max.0 => return Some(Rbe::MoverIndexOutOfBounds(max)),
+        _ => {}
+    }
+
+    // check that there's never a term not in the ready set
+    if let Some(mover_index) = rule_def.unready(&rule_def.ready) {
+        return Some(Rbe::MoverUnready(mover_index));
+    }
+
+    // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
+    let mut filled = rule_def.ready_and_full_mem.clone();
+    for mover_index in rule_def.ready.iter() {
+        if mover_defs[mover_index.0].mover_kind == MoverKind::PutterPort {
+            filled.insert(mover_index);
+        }
+    }
+    for ins in rule_def.instructions.iter() {
+        match ins {
+            Instruction::CreateFromFormula { dest, term } => {
+                if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
+                    return Some(Rbe::MoverisntMemory(*dest));
+                }
+                let dest_type = term_type(mover_defs, term);
+                if dest_type != BOOL_TYPE_KEY {
+                    return Some(Rbe::TypeInequality(dest_type, BOOL_TYPE_KEY));
+                }
+                if filled.contains(dest) {
+                    return Some(Rbe::Overwriting(*dest));
+                }
+                if let Some(mover_index) = in_term_out_set(&filled, term) {
+                    return Some(Rbe::ReadingUnfilled(mover_index));
+                }
+                filled.insert(*dest);
+            }
+            Instruction::CreateFromCall { dest, func, args } => {
+                if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
+                    return Some(Rbe::MoverisntMemory(*dest));
+                }
+                if filled.contains(dest) {
+                    return Some(Rbe::Overwriting(*dest));
+                }
+                let dest_type = mover_type(mover_defs, *dest);
+                if dest_type != func.ret_type {
+                    return Some(Rbe::TypeInequality(dest_type, func.ret_type));
+                }
+                if func.arg_types.len() != args.len() {
+                    return Some(Rbe::FuncHasWrongArgNumber {
+                        other_has: args.len(),
+                        func_has: func.arg_types.len(),
+                    });
+                }
+                for (&func_arg_type, arg_term) in func.arg_types.iter().zip(args.iter()) {
+                    let term_type = term_type(mover_defs, arg_term);
+                    if func_arg_type != term_type {
+                        return Some(Rbe::TypeInequality(func_arg_type, term_type));
+                    }
+                }
+                if let Some(mover_index) =
+                    args.iter().find_map(|term| in_term_in_set(&filled, term))
+                {
+                    return Some(Rbe::ReadingUnfilled(mover_index));
+                }
+                filled.insert(*dest);
+            }
+            Instruction::Check(term) => {
+                let term_type = term_type(mover_defs, term);
+                if term_type != BOOL_TYPE_KEY {
+                    return Some(Rbe::TypeInequality(term_type, BOOL_TYPE_KEY));
+                }
+                if let Some(mover_index) = in_term_out_set(&filled, term) {
+                    return Some(Rbe::ReadingUnfilled(mover_index));
+                }
+            }
+            Instruction::MemSwap(a, b) => {
+                let [ta, tb] = [mover_type(mover_defs, *a), mover_type(mover_defs, *b)];
+                if ta != tb {
+                    return Some(Rbe::TypeInequality(ta, tb));
+                }
+                for mover_index in [a, b] {
+                    if mover_kind(mover_defs, *mover_index) != MoverKind::MemoryCell {
+                        return Some(Rbe::MoverisntMemory(*mover_index));
+                    }
+                    if !filled.contains(mover_index) {
+                        return Some(Rbe::ReadingUnfilled(*mover_index));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut busy_moving = MoverIndexSet::default();
+    for movement in rule_def.movements.iter() {
+        // putter
+        let putter_type_key = mover_type(mover_defs, movement.putter);
+        if let MoverKind::GetterPort = mover_kind(mover_defs, movement.putter) {
+            return Some(Rbe::MoverCannotPut(movement.putter));
+        }
+        if busy_moving.insert(movement.putter) {
+            return Some(Rbe::NotUniqueInMovements(movement.putter));
+        }
+        // getters
+        for getter in movement.getters.iter() {
+            let getter_type_key = mover_type(mover_defs, getter);
+            if putter_type_key != getter_type_key {
+                return Some(Rbe::TypeInequality(putter_type_key, getter_type_key));
+            }
+            if let MoverKind::PutterPort = mover_kind(mover_defs, movement.putter) {
+                return Some(Rbe::MoverCannotGet(getter));
+            }
+            if busy_moving.insert(getter) {
+                return Some(Rbe::NotUniqueInMovements(getter));
+            }
+        }
+        let clones = if movement.putter_retains { 1 } else { 0 } + movement.getters.len();
+        if clones > 1 && putter_type_key.get_info().maybe_clone.is_none() {
+            return Some(Rbe::MoverTypeMissingClone(movement.putter));
+        }
+    }
+
+    rule_def
+        .ready
+        .iter()
+        .filter(|mover_index| !busy_moving.contains(mover_index))
+        .next()
+        .map(Rbe::ReadyButDoesntMove)
 }
