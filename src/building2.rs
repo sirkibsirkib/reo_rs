@@ -101,19 +101,19 @@ impl ProtoDef {
             .collect()
     }
     pub fn build(&self) -> Result<Proto, RulesBuildError> {
-        let rules = self.build_rules()?;
-        let r = ProtoR {
-            rules,
-            spaces: self.mover_defs.iter().copied().map(MoverDef::to_space).collect(),
-        };
-        let cr = Mutex::new(ProtoCr {
-            allocator: Default::default(),
-            mem: Default::default(),
-            ready: self.memory_mover_indices(),
-            ref_counts: Default::default(),
-            unclaimed: self.port_mover_indices(),
-        });
-        Ok(Proto { r, cr })
+        Ok(Proto {
+            r: ProtoR {
+                rules: self.build_rules()?,
+                spaces: self.mover_defs.iter().copied().map(MoverDef::to_space).collect(),
+            },
+            cr: Mutex::new(ProtoCr {
+                allocator: Default::default(),
+                mem: Default::default(),
+                ready: self.memory_mover_indices(),
+                ref_counts: Default::default(),
+                unclaimed: self.port_mover_indices(),
+            }),
+        })
     }
 }
 
