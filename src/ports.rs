@@ -2,12 +2,12 @@ use super::*;
 
 impl PortCommon {
     fn claim_common(
-        space_idx: MoverIndex,
+        space_idx: Index,
         want_putter: bool,
         p: &Arc<Proto>,
     ) -> Result<Self, ClaimError> {
         use ClaimError::*;
-        let is_putter = match &p.r.spaces[space_idx.0] {
+        let is_putter = match &p.r.spaces[space_idx] {
             MoverSpace::PoGe { .. } => false,
             MoverSpace::PoPu { .. } => true,
             MoverSpace::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
@@ -16,7 +16,7 @@ impl PortCommon {
             return Err(WrongPortDirection);
         }
         let mut x = p.cr.lock();
-        if x.unclaimed.remove(&space_idx) {
+        if x.unclaimed.remove(space_idx) {
             let q = Ok(Self { space_idx, p: p.clone() });
             q
         } else {
@@ -25,7 +25,7 @@ impl PortCommon {
     }
 
     unsafe fn claim_raw(
-        mover_index: MoverIndex,
+        mover_index: Index,
         want_putter: bool,
         p: &Arc<Proto>,
     ) -> Result<Self, ClaimError> {
@@ -34,14 +34,14 @@ impl PortCommon {
 }
 
 impl Putter {
-    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: MoverIndex) -> Result<Self, ClaimError> {
+    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim_raw(mover_index, true, p)?))
     }
 
     // This is the real workhorse function
     fn put_inner(&mut self, datum_ptr: DatumPtr) -> bool {
         let Proto { r, cr } = self.0.p.as_ref();
-        let space = &r.spaces[self.0.space_idx.0];
+        let space = &r.spaces[self.0.space_idx];
         if let MoverSpace::PoPu { ps, mb, .. } = space {
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             {
@@ -157,14 +157,14 @@ fn get_data<F: FnOnce(FinalizeHow)>(ps: &PutterSpace, maybe_dest: Option<DatumPt
     // println!("GET COMPLETE");
 }
 impl Getter {
-    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: MoverIndex) -> Result<Self, ClaimError> {
+    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim_raw(mover_index, false, p)?))
     }
 
     // returns false if it doesn't participate in a rule
     unsafe fn get_inner(&mut self, maybe_dest: Option<DatumPtr>) -> bool {
         let Proto { r, cr } = self.0.p.as_ref();
-        let space = &r.spaces[self.0.space_idx.0];
+        let space = &r.spaces[self.0.space_idx];
         if let MoverSpace::PoGe { mb, .. } = space {
             {
                 let mut x = cr.lock();
@@ -172,10 +172,10 @@ impl Getter {
                 x.coordinate(r);
                 // TODO check if we can time out
             }
-            let putter_id = MoverIndex(mb.recv());
+            let putter_id: Index = mb.recv();
             // println!("My putter has id {:?}", putter_id);
-            match &r.spaces[putter_id.0] {
-                MoverSpace::PoPu { ps, mb, .. } => get_data(ps, maybe_dest, move |how| {
+            match &r.spaces[putter_id] {
+                MoverSpace::PoPu { ps, mb, .. } => get_data(&ps, maybe_dest, move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
@@ -184,7 +184,7 @@ impl Getter {
                     })
                     // println!("FINALZIING DONE");
                 }),
-                MoverSpace::Memo { ps, .. } => get_data(ps, maybe_dest, |how| {
+                MoverSpace::Memo { ps, .. } => get_data(&ps, maybe_dest, |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
@@ -218,13 +218,13 @@ impl Getter {
 impl Proto {
     pub unsafe fn fill_memory_raw(
         &self,
-        space_idx: MoverIndex,
+        space_idx: Index,
         src: *mut u8,
     ) -> Result<(), FillMemError> {
         let Proto { r, cr } = self;
-        if let MoverSpace::Memo { ps, .. } = &r.spaces[space_idx.0] {
+        if let MoverSpace::Memo { ps, .. } = &r.spaces[space_idx] {
             let mut lock = cr.lock();
-            if lock.mem.contains(&space_idx) {
+            if lock.mem.contains(space_idx) {
                 return Err(FillMemError::MemoryNonempty);
             }
             // success guaranteed!
@@ -241,7 +241,7 @@ impl Proto {
     }
     pub unsafe fn fill_memory_typed<T>(
         &self,
-        mover_index: MoverIndex,
+        mover_index: Index,
         data: T,
     ) -> Result<(), (T, FillMemError)> {
         let mut data = MaybeUninit::new(data);

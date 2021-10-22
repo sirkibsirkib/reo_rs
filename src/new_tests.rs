@@ -1,13 +1,6 @@
-use super::{building::*, *};
+use super::{building2::*, *};
 use maplit::{hashmap, hashset};
 use std::thread;
-
-const A: Name = 0;
-const B: Name = 1;
-const C: Name = 2;
-const D: Name = 3;
-const F: Name = 6;
-const M: Name = 13;
 
 const NULL_MUT: *mut u8 = core::ptr::null_mut();
 
@@ -15,25 +8,26 @@ const NULL_MUT: *mut u8 = core::ptr::null_mut();
 fn signal_emitter() {
     static TK0: TypeKey = BOOL_TYPE_KEY;
     let proto_def = ProtoDef {
-        name_defs: hashmap! {
-            A => NameDef::Port { is_putter: false, type_key: TK0, },
-            M => NameDef::Mem { type_key: TK0, },
-        },
+        mover_defs: vec![
+            MoverDef { mover_kind: MoverKind::GetterPort, type_key: TK0 },
+            MoverDef { mover_kind: MoverKind::MemoryCell, type_key: TK0 },
+        ],
         rules: vec![RuleDef {
-            ins: vec![],
-            output: hashmap! {
-                M => (true, hashset!{A}),
-            },
+            instructions: vec![],
+            ready: index_set! {0,1},
+            ready_and_full_mem: index_set! {1},
+            movements: vec![Movement { putter: 1, getters: index_set! {0}, putter_retains: true }],
         }],
     };
-    let p = proto_def.build().unwrap();
-    unsafe { p.fill_memory_typed(M, true) }.unwrap();
-    let mut a = unsafe { Getter::claim_raw(&p, A).unwrap() };
+    let p = Arc::new(proto_def.build().unwrap());
+    unsafe { p.fill_memory_typed(1, true) }.unwrap();
+    let mut a = unsafe { Getter::claim_raw(&p, 0).unwrap() };
     for _ in 0..5 {
         a.get_signal();
     }
 }
 
+/*
 #[test]
 fn copying_emitter() {
     static TK0: TypeKey = BOOL_TYPE_KEY;
@@ -300,3 +294,4 @@ fn unsafe_call() {
         h.join().unwrap();
     }
 }
+*/

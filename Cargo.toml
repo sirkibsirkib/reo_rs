@@ -14,6 +14,8 @@ crossbeam-channel = "0.3.8"
 std-semaphore = "0.1.0"
 smallvec = "0.6.10"
 libc = "0.2.26"
+# chunked_index_set = { git = "https://github.com/sirkibsirkib/chunked_index_set" }
+chunked_index_set = { path = "../chunked_index_set" }
 
 [dev-dependencies]
 crossbeam-utils = "0.6.5"

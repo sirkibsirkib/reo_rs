@@ -1,12 +1,17 @@
+mod allocator;
+pub mod building2;
+mod new_tests;
+mod ports;
+mod type_info;
+
+use chunked_index_set::{index_set, ChunkRead, Index, IndexSet};
 use core::{marker::PhantomData, mem::MaybeUninit};
 use debug_stub_derive::DebugStub;
-
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     alloc::Layout,
     collections::{HashMap, HashSet},
-    fmt,
     mem::transmute,
     sync::{
         atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst},
@@ -14,17 +19,6 @@ use std::{
     },
 };
 use std_semaphore::Semaphore;
-
-// pub mod building;
-
-pub mod building2;
-
-mod allocator;
-mod ports;
-mod type_info;
-
-mod index_set;
-use index_set::{Index as MoverIndex, IndexSet as MoverIndexSet};
 
 //////////////////////////////////////////////////////////////////
 
@@ -98,15 +92,15 @@ pub enum Term {
     And(Vec<Self>),                // returns bool
     Or(Vec<Self>),                 // returns bool
     IsEq(TypeKey, Box<[Self; 2]>), // returns bool
-    Named(MoverIndex),             // type of MoverIndex
+    Named(Index),                  // type of Index
 }
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    CreateFromFormula { dest: MoverIndex, term: Term },
-    CreateFromCall { dest: MoverIndex, func: Arc<TypedFunction>, args: Vec<Term> },
+    CreateFromFormula { dest: Index, term: Term },
+    CreateFromCall { dest: Index, func: Arc<TypedFunction>, args: Vec<Term> },
     Check(Term),
-    MemSwap(MoverIndex, MoverIndex),
+    MemSwap(Index, Index),
 }
 #[derive(Debug)]
 enum MoverSpace {
@@ -142,7 +136,7 @@ pub enum FillMemError {
 #[derive(Debug)]
 struct PortCommon {
     p: Arc<Proto>,
-    space_idx: MoverIndex,
+    space_idx: Index,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -168,9 +162,9 @@ pub struct ProtoR {
 
 #[derive(Debug)]
 pub struct ProtoCr {
-    unclaimed: MoverIndexSet,
-    ready: MoverIndexSet,
-    mem: MoverIndexSet, // presence means FULL
+    unclaimed: IndexSet<2>,
+    ready: IndexSet<2>,
+    mem: IndexSet<2>, // presence means FULL
     allocator: Allocator,
     ref_counts: HashMap<DatumPtr, usize>,
 }
@@ -227,16 +221,16 @@ pub struct Rule {
 
 #[derive(Debug)]
 struct BitStatePredicate {
-    ready: MoverIndexSet,
-    full_mem: MoverIndexSet,
-    empty_mem: MoverIndexSet,
+    ready: IndexSet<2>,
+    full_mem: IndexSet<2>,
+    empty_mem: IndexSet<2>,
 }
 
 #[derive(Debug)]
 struct PartitionedMovement {
-    putter: MoverIndex,
-    me_ge: Vec<MoverIndex>,
-    po_ge: Vec<MoverIndex>,
+    putter: Index,
+    me_ge: IndexSet<2>,
+    po_ge: IndexSet<2>,
     putter_retains: bool,
 }
 
@@ -310,10 +304,10 @@ impl MsgBox {
 }
 
 impl ProtoCr {
-    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: MoverIndex, how: FinalizeHow) {
+    fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: Index, how: FinalizeHow) {
         // println!("FINALIZING how={:?}", how);
         if how != FinalizeHow::Retain {
-            let putter_space = r.spaces[this_mem_id.0].get_putter_space().expect("FINMEM");
+            let putter_space = r.spaces[this_mem_id].get_putter_space().expect("FINMEM");
             let datum_ptr = putter_space.atomic_datum_ptr.swap(DatumPtr::NULL);
             let ref_count = self.ref_counts.get_mut(&datum_ptr).expect("RC");
             //DeBUGGY:println!("FINALIZING SO {:?} IS READY", this_mem_id);
@@ -331,9 +325,9 @@ impl ProtoCr {
         self.ready.insert(this_mem_id);
         self.coordinate(r);
     }
-    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: MoverIndex, b: MoverIndex) {
-        let pa = r.spaces[a.0].get_putter_space().expect("Pa");
-        let pb = r.spaces[b.0].get_putter_space().expect("Pb");
+    fn swap_putter_ptrs(&mut self, r: &ProtoR, a: Index, b: Index) {
+        let pa = r.spaces[a].get_putter_space().expect("Pa");
+        let pb = r.spaces[b].get_putter_space().expect("Pb");
         let olda = pa.atomic_datum_ptr.load();
         let oldb = pb.atomic_datum_ptr.swap(olda);
         pa.atomic_datum_ptr.store(oldb);
@@ -370,7 +364,7 @@ impl ProtoCr {
                                 q.write(value);
                                 dest_ptr
                             };
-                            let old = r.spaces[dest.0]
+                            let old = r.spaces[*dest]
                                 .get_putter_space()
                                 .expect("SPf")
                                 .atomic_datum_ptr
@@ -380,13 +374,13 @@ impl ProtoCr {
                             assert!(was.is_none());
                         }
                         CreateFromCall { dest, func, args } => {
-                            let type_key = r.spaces[dest.0].type_key();
+                            let type_key = r.spaces[*dest].type_key();
                             let dest_ptr = self.allocator.occupy_allocation(type_key);
                             // TODO MAKE LESS CLUNKY
                             let arg_stack =
                                 args.iter().map(|arg| eval_ptr(arg, r)).collect::<Vec<_>>();
                             unsafe { func.exec(dest_ptr, &arg_stack[..]) };
-                            let old = r.spaces[dest.0]
+                            let old = r.spaces[*dest]
                                 .get_putter_space()
                                 .expect("sp2")
                                 .atomic_datum_ptr
@@ -440,14 +434,14 @@ impl ProtoCr {
     }
 
     fn do_movement(&mut self, r: &ProtoR, movement: &PartitionedMovement) {
-        let mut me_ge_iter = movement.me_ge.iter().copied();
+        let mut me_ge_iter = movement.me_ge.iter();
         let mut putter_retains = movement.putter_retains;
-        let mut putter: MoverIndex = movement.putter;
+        let mut putter: Index = movement.putter;
 
         // PHASE 1: "take care of mem getters"
         let ps: &PutterSpace = loop {
             // loops exactly once 1 or 2 times
-            match &r.spaces[putter.0] {
+            match &r.spaces[putter] {
                 MoverSpace::PoGe { .. } => panic!("CANNOT BE!"),
                 MoverSpace::PoPu { ps, mb } => {
                     let type_info = ps.type_key.get_info();
@@ -459,7 +453,7 @@ impl ProtoCr {
                         // 1. memory getters are completed BEFORE port getters (by the coordinator)
                         // 2. data movement MUST follow all data clones (or undefined behavior)
                         // 3. we don't yet know if any port-getters want to MOVE (they may want signals)
-                        let dest_space = r.spaces[mem_0.0].get_putter_space().expect("dest");
+                        let dest_space = r.spaces[mem_0].get_putter_space().expect("dest");
                         // assert_eq!(dest_space.type_key, ps.type_key);
                         let dest_ptr = self.allocator.occupy_allocation(ps.type_key);
                         //DeBUGGY:println!("ALLOCATED {:p}", dest_ptr);
@@ -512,7 +506,7 @@ impl ProtoCr {
                     let ref_count: &mut usize = self.ref_counts.get_mut(&src).expect("eub");
                     for m in me_ge_iter {
                         *ref_count += 1;
-                        let getter_space = r.spaces[m.0].get_putter_space().expect("e8h8");
+                        let getter_space = r.spaces[m].get_putter_space().expect("e8h8");
                         assert_eq!(DatumPtr::NULL, getter_space.atomic_datum_ptr.swap(src));
                     }
                     if movement.po_ge.is_empty() {
@@ -540,9 +534,9 @@ impl ProtoCr {
         if !movement.po_ge.is_empty() {
             ps.rendesvous.move_flags.reset(putter_retains);
             assert_eq!(0, ps.rendesvous.countdown.swap(movement.po_ge.len(), SeqCst));
-            for po_ge in movement.po_ge.iter().copied() {
+            for po_ge in movement.po_ge.iter() {
                 // signal getter, telling them which putter to get from
-                r.spaces[po_ge.0].get_msg_box().expect("ueb").send(putter.0);
+                r.spaces[po_ge].get_msg_box().expect("ueb").send(putter);
             }
         }
     }
@@ -588,7 +582,7 @@ fn bool_to_ptr(x: bool) -> DatumPtr {
 fn eval_ptr(term: &Term, r: &ProtoR) -> DatumPtr {
     use Term::*;
     match term {
-        Named(i) => r.spaces[i.0].get_putter_space().expect("k").atomic_datum_ptr.load(),
+        Named(i) => r.spaces[*i].get_putter_space().expect("k").atomic_datum_ptr.load(),
         _ => bool_to_ptr(eval_bool(term, r)),
     }
 }

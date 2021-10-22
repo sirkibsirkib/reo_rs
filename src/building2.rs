@@ -5,17 +5,24 @@ pub struct ProtoDef {
     pub rules: Vec<RuleDef>,
 }
 
+#[derive(Default)]
+struct ReadyKindSubsets {
+    putter_ports: IndexSet<2>,
+    getter_ports: IndexSet<2>,
+    memory_cells: IndexSet<2>,
+}
+
 pub struct RuleDef {
-    pub ready: MoverIndexSet,
-    pub ready_and_full_mem: MoverIndexSet,
+    pub ready: IndexSet<2>,
+    pub ready_and_full_mem: IndexSet<2>,
     pub instructions: Vec<Instruction>,
     pub movements: Vec<Movement>,
 }
 
 pub struct Movement {
-    putter: MoverIndex,
-    putter_retains: bool,
-    getters: MoverIndexSet,
+    pub putter: Index,
+    pub putter_retains: bool,
+    pub getters: IndexSet<2>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -31,30 +38,30 @@ pub enum MoverKind {
     MemoryCell,
 }
 
+#[derive(Debug, Clone)]
 pub struct RulesBuildError {
     rule_index: usize,
     rule_build_error: RuleBuildError,
 }
+#[derive(Debug, Clone)]
 pub enum RuleBuildError {
-    MoverUnready(MoverIndex),
-    MoverIndexOutOfBounds(MoverIndex),
-    MoverCannotPut(MoverIndex),
-    MoverCannotGet(MoverIndex),
-    MoverisntMemory(MoverIndex),
+    MoverUnready(Index),
+    IndexOutOfBounds(Index),
+    MoverCannotPut(Index),
+    MoverCannotGet(Index),
+    MoverisntMemory(Index),
     TypeInequality(TypeKey, TypeKey),
-    ReadingUnfilled(MoverIndex),
-    Overwriting(MoverIndex),
+    ReadingUnfilled(Index),
+    Overwriting(Index),
     FuncHasWrongArgNumber { func_has: usize, other_has: usize },
-    NotUniqueInMovements(MoverIndex),
-    MoverTypeMissingClone(MoverIndex),
-    ReadyButDoesntMove(MoverIndex),
+    NotUniqueInMovements(Index),
+    MoverTypeMissingClone(Index),
+    ReadyButDoesntMove(Index),
 }
 
 trait MoverReadyChecker {
-    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex>;
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index>;
 }
-/////////
-
 impl MoverDef {
     fn to_space(self) -> MoverSpace {
         let Self { type_key, mover_kind } = self;
@@ -70,23 +77,23 @@ impl MoverDef {
 }
 
 impl ProtoDef {
-    fn memory_mover_indices(&self) -> MoverIndexSet {
+    fn memory_mover_indices(&self) -> IndexSet<2> {
         self.mover_defs
             .iter()
             .enumerate()
             .filter_map(|(i, mover_def)| match mover_def.mover_kind {
-                MoverKind::MemoryCell => Some(MoverIndex(i)),
+                MoverKind::MemoryCell => Some(i),
                 _ => None,
             })
             .collect()
     }
-    fn port_mover_indices(&self) -> MoverIndexSet {
+    fn port_mover_indices(&self) -> IndexSet<2> {
         self.mover_defs
             .iter()
             .enumerate()
             .filter_map(|(i, mover_def)| match mover_def.mover_kind {
                 MoverKind::MemoryCell => None,
-                _ => Some(MoverIndex(i)),
+                _ => Some(i),
             })
             .collect()
     }
@@ -117,7 +124,7 @@ impl ProtoDef {
     }
 }
 
-fn in_term_out_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
+fn in_term_out_set(set: &IndexSet<2>, term: &Term) -> Option<Index> {
     match term {
         Term::True | Term::False => None,
         Term::Not(inner_term) => in_term_out_set(set, inner_term),
@@ -128,7 +135,7 @@ fn in_term_out_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
             term_pair.iter().find_map(|term| in_term_out_set(set, term))
         }
         Term::Named(mover_index) => {
-            if set.contains(mover_index) {
+            if set.contains(*mover_index) {
                 None
             } else {
                 Some(*mover_index)
@@ -136,7 +143,7 @@ fn in_term_out_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
         }
     }
 }
-fn in_term_in_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
+fn in_term_in_set(set: &IndexSet<2>, term: &Term) -> Option<Index> {
     match term {
         Term::True | Term::False => None,
         Term::Not(inner_term) => in_term_in_set(set, inner_term),
@@ -147,7 +154,7 @@ fn in_term_in_set(set: &MoverIndexSet, term: &Term) -> Option<MoverIndex> {
             term_pair.iter().find_map(|term| in_term_in_set(set, term))
         }
         Term::Named(mover_index) => {
-            if set.contains(mover_index) {
+            if set.contains(*mover_index) {
                 Some(*mover_index)
             } else {
                 None
@@ -161,7 +168,7 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
 
     // check that ready -> defined
     match rule_def.ready.max_element() {
-        Some(max) if mover_defs.len() <= max.0 => return Err(Rbe::MoverIndexOutOfBounds(max)),
+        Some(max) if mover_defs.len() <= max => return Err(Rbe::IndexOutOfBounds(max)),
         _ => {}
     }
 
@@ -172,13 +179,21 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
 
     // in ruledef -> ready and defined
 
-    // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
-    let mut filled = rule_def.ready_and_full_mem.clone();
-    for mover_index in rule_def.ready.iter() {
-        if mover_defs[mover_index.0].mover_kind == MoverKind::PutterPort {
-            filled.insert(mover_index);
+    let rks = {
+        let mut rks = ReadyKindSubsets::default();
+        for i in rule_def.ready.iter() {
+            match mover_defs[i].mover_kind {
+                MoverKind::PutterPort => &mut rks.putter_ports,
+                MoverKind::GetterPort => &mut rks.getter_ports,
+                MoverKind::MemoryCell => &mut rks.memory_cells,
+            }
+            .insert(i);
         }
-    }
+        rks
+    };
+
+    // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
+    let mut filled: IndexSet<2> = rule_def.ready_and_full_mem.or(&rks.putter_ports).to_index_set();
     for ins in rule_def.instructions.iter() {
         instruction_fill(mover_defs, &mut filled, ins)?;
     }
@@ -187,19 +202,10 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
     /////////////////////////////////////////////////////
     // OK!
 
-    let ready_mems: MoverIndexSet = rule_def
-        .ready
-        .iter()
-        .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
-        .collect();
-
     let bit_guard = BitStatePredicate {
         ready: rule_def.ready.clone(),
         full_mem: rule_def.ready_and_full_mem.clone(),
-        empty_mem: ready_mems
-            .iter()
-            .filter(|mover_index| !rule_def.ready_and_full_mem.contains(mover_index))
-            .collect(),
+        empty_mem: rks.memory_cells.without(&rule_def.ready_and_full_mem).to_index_set(),
     };
     // now we create the movements
     let output: SmallVec<[PartitionedMovement; 3]> = rule_def
@@ -208,23 +214,15 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
         .map(|movement| PartitionedMovement {
             putter: movement.putter,
             putter_retains: movement.putter_retains,
-            me_ge: movement
-                .getters
-                .iter()
-                .filter(|mover_index| MoverKind::MemoryCell == mover_kind(mover_defs, *mover_index))
-                .collect(),
-            po_ge: movement
-                .getters
-                .iter()
-                .filter(|mover_index| MoverKind::GetterPort == mover_kind(mover_defs, *mover_index))
-                .collect(),
+            me_ge: movement.getters.without(&rks.getter_ports).to_index_set(),
+            po_ge: movement.getters.without(&rks.memory_cells).to_index_set(),
         })
         .collect();
 
     let bit_assign = BitStatePredicate {
         ready: Default::default(),
-        full_mem: ready_mems.iter().filter(|mover_index| filled.contains(mover_index)).collect(),
-        empty_mem: ready_mems.iter().filter(|mover_index| !filled.contains(mover_index)).collect(),
+        full_mem: rks.memory_cells.and(&filled).to_index_set(),
+        empty_mem: rks.memory_cells.without(&filled).to_index_set(),
     };
     Ok(Rule { bit_assign, bit_guard, ins: rule_def.instructions.iter().cloned().collect(), output })
 }
@@ -232,15 +230,15 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
 ///////////////////////
 // THE FOLLOWING ALL ASSUME READY. READY -> DEFINED
 
-fn mover_def(mover_defs: &Vec<MoverDef>, mover_index: MoverIndex) -> MoverDef {
-    mover_defs[mover_index.0]
+fn mover_def(mover_defs: &Vec<MoverDef>, mover_index: Index) -> MoverDef {
+    mover_defs[mover_index]
 }
 
-fn mover_type(mover_defs: &Vec<MoverDef>, mover_index: MoverIndex) -> TypeKey {
+fn mover_type(mover_defs: &Vec<MoverDef>, mover_index: Index) -> TypeKey {
     mover_def(mover_defs, mover_index).type_key
 }
 
-fn mover_kind(mover_defs: &Vec<MoverDef>, mover_index: MoverIndex) -> MoverKind {
+fn mover_kind(mover_defs: &Vec<MoverDef>, mover_index: Index) -> MoverKind {
     mover_def(mover_defs, mover_index).mover_kind
 }
 
@@ -251,16 +249,13 @@ fn term_type(mover_defs: &Vec<MoverDef>, term: &Term) -> TypeKey {
     }
 }
 
-fn first_unready(
-    ready: &MoverIndexSet,
-    i: impl IntoIterator<Item = MoverIndex>,
-) -> Option<MoverIndex> {
+fn first_unready(ready: &IndexSet<2>, i: impl IntoIterator<Item = Index>) -> Option<Index> {
     i.into_iter().find_map(|x| x.unready(ready))
 }
 
-impl MoverReadyChecker for MoverIndex {
-    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
-        if ready.contains(self) {
+impl MoverReadyChecker for Index {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
+        if ready.contains(*self) {
             None
         } else {
             Some(*self)
@@ -269,13 +264,13 @@ impl MoverReadyChecker for MoverIndex {
 }
 
 impl MoverReadyChecker for Term {
-    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
         in_term_out_set(ready, self)
     }
 }
 
 impl MoverReadyChecker for Instruction {
-    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
         match self {
             Instruction::CreateFromFormula { dest, term } => {
                 dest.unready(ready).or(term.unready(ready))
@@ -290,7 +285,7 @@ impl MoverReadyChecker for Instruction {
 }
 
 impl MoverReadyChecker for RuleDef {
-    fn unready(&self, ready: &MoverIndexSet) -> Option<MoverIndex> {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
         first_unready(ready, self.ready_and_full_mem.iter())
             .or(self.instructions.iter().find_map(|ins| ins.unready(ready)))
     }
@@ -298,7 +293,7 @@ impl MoverReadyChecker for RuleDef {
 
 fn instruction_fill(
     mover_defs: &Vec<MoverDef>,
-    filled: &mut MoverIndexSet,
+    filled: &mut IndexSet<2>,
     ins: &Instruction,
 ) -> Result<(), RuleBuildError> {
     use RuleBuildError as Rbe;
@@ -311,7 +306,7 @@ fn instruction_fill(
             if dest_type != BOOL_TYPE_KEY {
                 return Err(Rbe::TypeInequality(dest_type, BOOL_TYPE_KEY));
             }
-            if filled.contains(dest) {
+            if filled.contains(*dest) {
                 return Err(Rbe::Overwriting(*dest));
             }
             if let Some(mover_index) = in_term_out_set(&filled, term) {
@@ -323,7 +318,7 @@ fn instruction_fill(
             if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
                 return Err(Rbe::MoverisntMemory(*dest));
             }
-            if filled.contains(dest) {
+            if filled.contains(*dest) {
                 return Err(Rbe::Overwriting(*dest));
             }
             let dest_type = mover_type(mover_defs, *dest);
@@ -365,7 +360,7 @@ fn instruction_fill(
                 if mover_kind(mover_defs, *mover_index) != MoverKind::MemoryCell {
                     return Err(Rbe::MoverisntMemory(*mover_index));
                 }
-                if !filled.contains(mover_index) {
+                if !filled.contains(*mover_index) {
                     return Err(Rbe::ReadingUnfilled(*mover_index));
                 }
             }
@@ -376,22 +371,22 @@ fn instruction_fill(
 
 fn rule_movements(
     mover_defs: &Vec<MoverDef>,
-    filled: &mut MoverIndexSet,
+    filled: &mut IndexSet<2>,
     rule_def: &RuleDef,
 ) -> Result<(), RuleBuildError> {
     use RuleBuildError as Rbe;
-    let mut busy_moving = MoverIndexSet::default();
+    let mut busy_moving = IndexSet::<2>::default();
     for movement in rule_def.movements.iter() {
         // putter
         let putter_type_key = mover_type(mover_defs, movement.putter);
         if let MoverKind::GetterPort = mover_kind(mover_defs, movement.putter) {
             return Err(Rbe::MoverCannotPut(movement.putter));
         }
-        if busy_moving.insert(movement.putter) {
+        if !busy_moving.insert(movement.putter) {
             return Err(Rbe::NotUniqueInMovements(movement.putter));
         }
         if !movement.putter_retains {
-            if !filled.remove(&movement.putter) {
+            if !filled.remove(movement.putter) {
                 return Err(Rbe::ReadingUnfilled(movement.putter));
             }
         }
@@ -404,7 +399,7 @@ fn rule_movements(
             if let MoverKind::PutterPort = mover_kind(mover_defs, movement.putter) {
                 return Err(Rbe::MoverCannotGet(getter));
             }
-            if busy_moving.insert(getter) {
+            if !busy_moving.insert(getter) {
                 return Err(Rbe::NotUniqueInMovements(getter));
             }
             if !filled.insert(movement.putter) {
@@ -417,7 +412,7 @@ fn rule_movements(
         }
     }
     if let Some(mover_index) =
-        rule_def.ready.iter().filter(|mover_index| !busy_moving.contains(mover_index)).next()
+        rule_def.ready.iter().filter(|mover_index| !busy_moving.contains(*mover_index)).next()
     {
         return Err(Rbe::ReadyButDoesntMove(mover_index));
     }

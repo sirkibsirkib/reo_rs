@@ -46,6 +46,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b486ce3ccf7ffd79fdeb678eac06a9e6c09fc88d33836340becb8fffe87c5e33"
 
 [[package]]
+name = "chunked_index_set"
+version = "0.1.0"
+
+[[package]]
 name = "cloudabi"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -430,6 +434,7 @@ name = "reo_rs"
 version = "0.2.0"
 dependencies = [
  "bidir-map",
+ "chunked_index_set",
  "crossbeam-channel",
  "crossbeam-utils",
  "debug_stub_derive",
