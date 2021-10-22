@@ -222,20 +222,16 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
         })
         .collect();
 
-    let bit_assign = BitStatePredicate {
-        ready: Default::default(),
-        full_mem: rks
+    let rule = Rule {
+        bit_guard,
+        ins: rule_def.instructions.iter().cloned().collect(),
+        output,
+        make_mems_filled: rks
             .memory_cells
             .and(&filled)
             .without(&rule_def.ready_and_full_mem)
             .to_index_set(),
-        empty_mem: rks.memory_cells.without(&filled).to_index_set(),
-    };
-    let rule = Rule {
-        bit_assign,
-        bit_guard,
-        ins: rule_def.instructions.iter().cloned().collect(),
-        output,
+        make_mems_empty: rks.memory_cells.without(&filled).to_index_set(),
     };
     println!("rule {:#?}", &rule);
     Ok(rule)

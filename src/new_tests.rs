@@ -24,9 +24,10 @@ fn signal_emitter() {
     let p = Arc::new(p);
     unsafe { p.fill_memory_typed(1, true) }.unwrap();
     let mut a = unsafe { Getter::claim_raw(&p, 0).unwrap() };
-    let mut dest = false;
-    for _ in 0..1 {
-        unsafe { a.get_raw(&mut dest as *mut bool as *mut u8) };
+    // let mut dest = false;
+    for _ in 0..3 {
+        a.get_signal();
+        // unsafe { a.get_raw(&mut dest as *mut bool as *mut u8) };
     }
 }
 

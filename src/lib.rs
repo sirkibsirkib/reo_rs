@@ -217,8 +217,8 @@ pub struct Rule {
     ins: SmallVec<[Instruction; 3]>,
     /// COMMITMENTS BELOW HERE
     output: SmallVec<[PartitionedMovement; 3]>,
-    // .ready is always identical to bit_guard.ready. use that instead
-    bit_assign: BitStatePredicate, // TODO make this better
+    make_mems_empty: IndexSet<2>,
+    make_mems_filled: IndexSet<2>,
 }
 
 #[derive(Debug)]
@@ -397,8 +397,9 @@ impl ProtoCr {
         pa.atomic_datum_ptr.store(oldb);
     }
     fn coordinate(&mut self, r: &ProtoR) {
-        println!("{:#?}", r);
         //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
+
+        println!("ABOUT TO COORDINATE {:#?}", &r.spaces);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
                 // let a = !rule.bit_guard.ready.is_subset(&self.ready);
@@ -414,6 +415,8 @@ impl ProtoCr {
                     //DeBUGGY:println!("FAILED G for {:?}. ({}, {}, {})", rule, g1, g2, g3);
                     continue 'rules;
                 }
+
+                println!("ABOUT TO TRY INS {:#?}", &r.spaces);
                 // println!("DOING A RULE!");
                 //DeBUGGY:println!("SUCCESS");
                 // //DeBUGGY:println!("going to eval ins for rule {:?}", rule);
@@ -480,11 +483,16 @@ impl ProtoCr {
                     }
                 }
                 // made it past the instructions! time to commit!
+                println!("ABOUT TO COMMIT {:#?}", &r.spaces);
+
+                println!("BEFORE COMMIT {:?}", [&self.ready, &self.mem_filled]);
 
                 // println!("FIRING RULE {:?}", rule);
-                self.ready.remove_all(&rule.bit_assign.ready);
-                self.mem_filled.remove_all(&rule.bit_assign.empty_mem);
-                self.mem_filled.insert_all(&rule.bit_assign.full_mem);
+                self.ready.remove_all(&rule.bit_guard.ready);
+                self.mem_filled.remove_all(&rule.make_mems_empty);
+                self.mem_filled.insert_all(&rule.make_mems_filled);
+                println!("AFTER COMMIT {:?}", [&self.ready, &self.mem_filled]);
+                println!("ABOUT TO MOVE {:#?}", &r.spaces);
 
                 //DeBUGGY:println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
@@ -504,6 +512,7 @@ impl ProtoCr {
         let mut putter: Index = movement.putter;
 
         // PHASE 1: "take care of mem getters"
+        println!("ABOVE TO MEM MOVE {:#?}", &r.spaces);
         let ps: &PutterSpace = loop {
             // loops exactly once 1 or 2 times
             match &r.spaces[putter] {
@@ -593,6 +602,7 @@ impl ProtoCr {
                 }
             }
         };
+        println!("ABOUT TO POGE MOVE {:#?}", ps);
 
         // PHASE 2: "take care of port getters"
         //DeBUGGY:println!("releasing getters!");
