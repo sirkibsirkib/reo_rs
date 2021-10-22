@@ -214,38 +214,3 @@ impl Getter {
         unsafe { self.get_raw(core::ptr::null_mut()) }
     }
 }
-
-impl Proto {
-    pub unsafe fn fill_memory_raw(
-        &self,
-        space_idx: Index,
-        src: *mut u8,
-    ) -> Result<(), FillMemError> {
-        let Proto { r, cr } = self;
-        if let MoverSpace::Memo { ps, .. } = &r.spaces[space_idx] {
-            let mut lock = cr.lock();
-            if lock.mem.contains(space_idx) {
-                return Err(FillMemError::MemoryNonempty);
-            }
-            // success guaranteed!
-            let datum_ptr = lock.allocator.occupy_allocation(ps.type_key);
-            assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
-            lock.mem.insert(space_idx);
-            // println!("SWAP A");
-            assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
-            (ps.type_key.get_info().raw_move)(datum_ptr.into_raw(), src);
-            Ok(())
-        } else {
-            Err(FillMemError::NameNotForMemCell)
-        }
-    }
-    pub unsafe fn fill_memory_typed<T>(
-        &self,
-        mover_index: Index,
-        data: T,
-    ) -> Result<(), (T, FillMemError)> {
-        let mut data = MaybeUninit::new(data);
-        self.fill_memory_raw(mover_index, data.as_mut_ptr() as *mut u8)
-            .map_err(|e| (data.assume_init(), e))
-    }
-}

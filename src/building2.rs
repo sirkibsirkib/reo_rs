@@ -115,7 +115,7 @@ impl ProtoDef {
             },
             cr: Mutex::new(ProtoCr {
                 allocator: Default::default(),
-                mem: Default::default(),
+                mem_filled: Default::default(),
                 ready: self.memory_mover_indices(),
                 ref_counts: Default::default(),
                 unclaimed: self.port_mover_indices(),
@@ -194,7 +194,10 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
 
     // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
     let mut filled: IndexSet<2> = rule_def.ready_and_full_mem.or(&rks.putter_ports).to_index_set();
+
+    println!("{:?} filled", &filled);
     for ins in rule_def.instructions.iter() {
+        println!("{:?} filled_before", &filled);
         instruction_fill(mover_defs, &mut filled, ins)?;
     }
     rule_movements(mover_defs, &mut filled, rule_def)?;
@@ -221,10 +224,21 @@ fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, Ru
 
     let bit_assign = BitStatePredicate {
         ready: Default::default(),
-        full_mem: rks.memory_cells.and(&filled).to_index_set(),
+        full_mem: rks
+            .memory_cells
+            .and(&filled)
+            .without(&rule_def.ready_and_full_mem)
+            .to_index_set(),
         empty_mem: rks.memory_cells.without(&filled).to_index_set(),
     };
-    Ok(Rule { bit_assign, bit_guard, ins: rule_def.instructions.iter().cloned().collect(), output })
+    let rule = Rule {
+        bit_assign,
+        bit_guard,
+        ins: rule_def.instructions.iter().cloned().collect(),
+        output,
+    };
+    println!("rule {:#?}", &rule);
+    Ok(rule)
 }
 
 ///////////////////////
@@ -402,7 +416,7 @@ fn rule_movements(
             if !busy_moving.insert(getter) {
                 return Err(Rbe::NotUniqueInMovements(getter));
             }
-            if !filled.insert(movement.putter) {
+            if !filled.insert(getter) {
                 return Err(Rbe::Overwriting(getter));
             }
         }

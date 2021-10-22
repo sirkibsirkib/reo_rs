@@ -19,11 +19,14 @@ fn signal_emitter() {
             movements: vec![Movement { putter: 1, getters: index_set! {0}, putter_retains: true }],
         }],
     };
-    let p = Arc::new(proto_def.build().unwrap());
+    let p = proto_def.build().unwrap();
+    println!("{:#?}", p);
+    let p = Arc::new(p);
     unsafe { p.fill_memory_typed(1, true) }.unwrap();
     let mut a = unsafe { Getter::claim_raw(&p, 0).unwrap() };
-    for _ in 0..5 {
-        a.get_signal();
+    let mut dest = false;
+    for _ in 0..1 {
+        unsafe { a.get_raw(&mut dest as *mut bool as *mut u8) };
     }
 }
 

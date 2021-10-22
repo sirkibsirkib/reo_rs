@@ -6,7 +6,7 @@ mod type_info;
 
 use chunked_index_set::{index_set, ChunkRead, Index, IndexSet};
 use core::{marker::PhantomData, mem::MaybeUninit};
-use debug_stub_derive::DebugStub;
+// use debug_stub_derive::DebugStub;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
@@ -22,16 +22,24 @@ use std_semaphore::Semaphore;
 
 //////////////////////////////////////////////////////////////////
 
-pub static BOOL_TYPE_INFO: TypeInfo = TypeInfo {
-    layout: Layout::new::<bool>(),
-    raw_move: |dest: *mut u8, src: *const u8| {
+pub static BOOL_TYPE_INFO: TypeInfo = {
+    static BOOL_COPY: unsafe fn(*mut u8, *const u8) = |dest, src| {
         let dest = dest as *mut bool;
         let src = src as *const bool;
         unsafe { *dest = *src }
-    },
-    maybe_clone: None,
-    maybe_eq: None,
-    maybe_drop: None,
+    };
+    static BOOL_EQ: unsafe fn(*const u8, *const u8) -> bool = |a, b| {
+        let a = a as *const bool;
+        let b = b as *const bool;
+        unsafe { *a == *b }
+    };
+    TypeInfo {
+        layout: Layout::new::<bool>(),
+        raw_move: BOOL_COPY,
+        maybe_clone: Some(BOOL_COPY),
+        maybe_eq: Some(BOOL_EQ),
+        maybe_drop: None,
+    }
 };
 pub static BOOL_TYPE_KEY: TypeKey = TypeKey(&BOOL_TYPE_INFO);
 
@@ -59,20 +67,16 @@ pub struct TypeInfoC {
     pub maybe_drop: *mut u8,                     // nullable
 }
 
-#[derive(Clone, DebugStub)]
+#[derive(Clone)]
 pub struct TypeInfo {
     pub layout: Layout,
-    #[debug_stub = "write from read"]
     pub raw_move: unsafe fn(*mut u8, *const u8),
-    #[debug_stub = "optional clone function pointer"]
     pub maybe_clone: Option<unsafe fn(*mut u8, *const u8)>,
-    #[debug_stub = "optional eq function pointer"]
     pub maybe_eq: Option<unsafe fn(*const u8, *const u8) -> bool>,
-    #[debug_stub = "optional drop function pointer"]
     pub maybe_drop: Option<unsafe fn(*mut u8)>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct TypeKey(pub &'static TypeInfo);
 
@@ -164,7 +168,7 @@ pub struct ProtoR {
 pub struct ProtoCr {
     unclaimed: IndexSet<2>,
     ready: IndexSet<2>,
-    mem: IndexSet<2>, // presence means FULL
+    mem_filled: IndexSet<2>,
     allocator: Allocator,
     ref_counts: HashMap<DatumPtr, usize>,
 }
@@ -191,11 +195,9 @@ pub(crate) struct TypedAllocations {
 struct MoveFlags {
     move_flags: AtomicU8,
 }
-#[derive(DebugStub)]
 pub struct Rendesvous {
     countdown: AtomicUsize,
     move_flags: MoveFlags,
-    #[debug_stub = "<Semaphore>"]
     mover_sema: Semaphore,
 }
 #[derive(Debug)]
@@ -235,6 +237,33 @@ struct PartitionedMovement {
 }
 
 /////////////////////////////////////////
+impl core::fmt::Debug for TypeKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("TypeKey")
+            .field("pointer", &(self as *const Self as usize))
+            .field("info", &self.0)
+            .finish()
+    }
+}
+impl core::fmt::Debug for Rendesvous {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("Rendesvous")
+            .field("countdown", &self.countdown)
+            .field("move_flags", &self.move_flags)
+            .finish()
+    }
+}
+impl core::fmt::Debug for TypeInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("TypeInfo")
+            .field("layout", &self.layout)
+            .field("raw_move", &(self.raw_move as usize))
+            .field("maybe_clone", &self.maybe_clone.map(|x| x as usize))
+            .field("maybe_eq", &self.maybe_eq.map(|x| x as usize))
+            .field("maybe_drop", &self.maybe_drop.map(|x| x as usize))
+            .finish()
+    }
+}
 impl AtomicDatumPtr {
     fn swap(&self, new: DatumPtr) -> DatumPtr {
         DatumPtr::from_raw(self.raw.swap(new.into_raw(), SeqCst))
@@ -303,6 +332,41 @@ impl MsgBox {
     }
 }
 
+impl Proto {
+    pub unsafe fn fill_memory_raw(
+        &self,
+        space_idx: Index,
+        src: *mut u8,
+    ) -> Result<(), FillMemError> {
+        let Proto { r, cr } = self;
+        if let MoverSpace::Memo { ps, .. } = &r.spaces[space_idx] {
+            let mut lock = cr.lock();
+            if lock.mem_filled.contains(space_idx) {
+                return Err(FillMemError::MemoryNonempty);
+            }
+            // success guaranteed!
+            let datum_ptr = lock.allocator.occupy_allocation(ps.type_key);
+            assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
+            lock.mem_filled.insert(space_idx);
+            // println!("SWAP A");
+            assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
+            (ps.type_key.get_info().raw_move)(datum_ptr.into_raw(), src);
+            Ok(())
+        } else {
+            Err(FillMemError::NameNotForMemCell)
+        }
+    }
+    pub unsafe fn fill_memory_typed<T>(
+        &self,
+        mover_index: Index,
+        data: T,
+    ) -> Result<(), (T, FillMemError)> {
+        let mut data = MaybeUninit::new(data);
+        self.fill_memory_raw(mover_index, data.as_mut_ptr() as *mut u8)
+            .map_err(|e| (data.assume_init(), e))
+    }
+}
+
 impl ProtoCr {
     fn finalize_memo(&mut self, r: &ProtoR, this_mem_id: Index, how: FinalizeHow) {
         // println!("FINALIZING how={:?}", how);
@@ -333,6 +397,7 @@ impl ProtoCr {
         pa.atomic_datum_ptr.store(oldb);
     }
     fn coordinate(&mut self, r: &ProtoR) {
+        println!("{:#?}", r);
         //DeBUGGY:println!("COORDINATE START. READY={:?} MEM={:?}", &self.ready, &self.mem);
         'outer: loop {
             'rules: for rule in r.rules.iter() {
@@ -341,8 +406,8 @@ impl ProtoCr {
                 // let c = !rule.bit_guard.empty_mem.is_disjoint(&self.mem);
                 // println!("{:?}", (a,b,c));
                 if !rule.bit_guard.ready.is_subset_of(&self.ready)
-                    || !rule.bit_guard.full_mem.is_subset_of(&self.mem)
-                    || !rule.bit_guard.empty_mem.is_disjoint_with(&self.mem)
+                    || !rule.bit_guard.full_mem.is_subset_of(&self.mem_filled)
+                    || !rule.bit_guard.empty_mem.is_disjoint_with(&self.mem_filled)
                 {
                     // println!("failed");
                     // failed guard
@@ -418,8 +483,8 @@ impl ProtoCr {
 
                 // println!("FIRING RULE {:?}", rule);
                 self.ready.remove_all(&rule.bit_assign.ready);
-                self.mem.remove_all(&rule.bit_assign.empty_mem);
-                self.mem.insert_all(&rule.bit_assign.full_mem);
+                self.mem_filled.remove_all(&rule.bit_assign.empty_mem);
+                self.mem_filled.insert_all(&rule.bit_assign.full_mem);
 
                 //DeBUGGY:println!("DO MOVEMENTs!");
                 for movement in rule.output.iter() {
@@ -528,6 +593,7 @@ impl ProtoCr {
                 }
             }
         };
+
         // PHASE 2: "take care of port getters"
         //DeBUGGY:println!("releasing getters!");
         //DeBUGGY:println!("PTR IS {:p}", ps.ptr.load(SeqCst));
