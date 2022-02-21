@@ -87,6 +87,23 @@ fn sync_round_raw() {
 }
 
 #[test]
+fn sync_round_signal() {
+    let proto = Arc::new(PROTO_DEF_SYNC.build().unwrap());
+    let mut p0 = Putter::claim(&proto, 0).unwrap();
+    let mut p1 = Getter::claim(&proto, 1).unwrap();
+    let handles = [
+        thread::spawn(move || {
+            let mut data = true;
+            unsafe { p0.put_raw(u8_ptr(&mut data)) };
+        }),
+        thread::spawn(move || p1.get_signal()),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[test]
 fn async_build() {
     PROTO_DEF_ASYNC.build().unwrap();
 }
@@ -112,6 +129,16 @@ fn async_round_raw() {
     unsafe { p0.put_raw(u8_ptr(&mut data0)) };
     unsafe { p2.get_raw(u8_ptr(&mut data2)) };
     assert!(data2);
+}
+#[test]
+fn async_round_signal() {
+    let proto = Arc::new(PROTO_DEF_ASYNC.build().unwrap());
+    let mut p0 = Putter::claim(&proto, 0).unwrap();
+    let mut p2 = Getter::claim(&proto, 2).unwrap();
+
+    let mut data = true;
+    unsafe { p0.put_raw(u8_ptr(&mut data)) };
+    p2.get_signal();
 }
 
 // #[test]
