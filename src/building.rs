@@ -409,7 +409,7 @@ fn rule_movements(
             if putter_type_key != getter_type_key {
                 return Err(Rbe::TypeInequality(putter_type_key, getter_type_key));
             }
-            if let MoverKind::PutterPort = mover_kind(mover_defs, movement.putter) {
+            if let MoverKind::PutterPort = mover_kind(mover_defs, getter) {
                 return Err(Rbe::MoverCannotGet(getter));
             }
             if !busy_moving.insert(getter) {

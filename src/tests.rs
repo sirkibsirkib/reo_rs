@@ -4,6 +4,10 @@ use std::thread;
 
 const NULL_MUT: *mut u8 = core::ptr::null_mut();
 
+fn u8_ptr<T>(t: &mut T) -> *mut u8 {
+    t as *mut T as *mut u8
+}
+
 lazy_static::lazy_static! {
     static ref PROTO_DEF_TRIVIAL: ProtoDef = ProtoDef::default();
     static ref PROTO_DEF_SYNC: ProtoDef = ProtoDef {
@@ -21,13 +25,44 @@ lazy_static::lazy_static! {
 }
 
 #[test]
-fn build_trivial() {
+fn trivial_build() {
     PROTO_DEF_TRIVIAL.build().unwrap();
 }
 
 #[test]
-fn build_sync() {
+fn sync_build() {
     PROTO_DEF_SYNC.build().unwrap();
+}
+
+#[test]
+fn sync_claim() {
+    let proto = Arc::new(PROTO_DEF_SYNC.build().unwrap());
+    let _ = Getter::claim(&proto, 2).unwrap_err();
+    let _ = Putter::claim(&proto, 0).unwrap();
+    let _ = Putter::claim(&proto, 0).unwrap_err();
+    let _ = Getter::claim(&proto, 1).unwrap();
+    let _ = Getter::claim(&proto, 1).unwrap_err();
+}
+
+#[test]
+fn sync_round_raw() {
+    let proto = Arc::new(PROTO_DEF_SYNC.build().unwrap());
+    let mut p0 = Putter::claim(&proto, 0).unwrap();
+    let mut p1 = Getter::claim(&proto, 1).unwrap();
+    let handles = [
+        thread::spawn(move || {
+            let mut data = true;
+            unsafe { p0.put_raw(u8_ptr(&mut data)) };
+        }),
+        thread::spawn(move || {
+            let mut data = false;
+            unsafe { p1.get_raw(u8_ptr(&mut data)) };
+            assert!(data);
+        }),
+    ];
+    for h in handles {
+        h.join().unwrap();
+    }
 }
 
 // #[test]

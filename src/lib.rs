@@ -152,9 +152,11 @@ pub struct Proto {
     r: ProtoR,
 }
 
+#[derive(Debug)]
 #[repr(transparent)]
 pub struct Putter(PortCommon);
 
+#[derive(Debug)]
 #[repr(transparent)]
 pub struct Getter(PortCommon);
 

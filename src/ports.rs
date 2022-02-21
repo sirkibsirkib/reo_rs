@@ -6,36 +6,32 @@ impl PortCommon {
         want_putter: bool,
         p: &Arc<Proto>,
     ) -> Result<Self, ClaimError> {
-        use ClaimError::*;
-        let is_putter = match &p.r.spaces[space_idx] {
+        use ClaimError as Ce;
+        let is_putter = match p.r.spaces.get(space_idx).ok_or(Ce::UnknownName)? {
             MoverSpace::PoGe { .. } => false,
             MoverSpace::PoPu { .. } => true,
-            MoverSpace::Memo { .. } => return Err(ClaimError::NameRefersToMemoryCell),
+            MoverSpace::Memo { .. } => return Err(Ce::NameRefersToMemoryCell),
         };
         if want_putter != is_putter {
-            return Err(WrongPortDirection);
+            return Err(Ce::WrongPortDirection);
         }
         let mut x = p.cr.lock();
         if x.unclaimed.remove(space_idx) {
             let q = Ok(Self { space_idx, p: p.clone() });
             q
         } else {
-            Err(AlreadyClaimed)
+            Err(Ce::AlreadyClaimed)
         }
     }
 
-    unsafe fn claim_raw(
-        mover_index: Index,
-        want_putter: bool,
-        p: &Arc<Proto>,
-    ) -> Result<Self, ClaimError> {
+    fn claim(mover_index: Index, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
         Self::claim_common(mover_index, want_putter, p)
     }
 }
 
 impl Putter {
-    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim_raw(mover_index, true, p)?))
+    pub fn claim(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim(mover_index, true, p)?))
     }
 
     // This is the real workhorse function
@@ -69,18 +65,18 @@ impl Putter {
         self.put_inner(DatumPtr::from_raw(src))
     }
 
-    pub unsafe fn put_typed<T>(&mut self, src: &mut MaybeUninit<T>) -> bool {
-        self.put_inner(DatumPtr::from_raw(src.as_mut_ptr() as *mut u8))
-    }
+    // pub unsafe fn put_typed<T>(&mut self, src: &mut MaybeUninit<T>) -> bool {
+    //     self.put_inner(DatumPtr::from_raw(src.as_mut_ptr() as *mut u8))
+    // }
 
-    pub unsafe fn lossy_put<T>(&mut self, datum: T) -> bool {
-        let mut datum = MaybeUninit::new(datum);
-        let consumed = self.put_typed(&mut datum);
-        if !consumed {
-            datum.as_mut_ptr().drop_in_place();
-        }
-        consumed
-    }
+    // pub unsafe fn lossy_put<T>(&mut self, datum: T) -> bool {
+    //     let mut datum = MaybeUninit::new(datum);
+    //     let consumed = self.put_typed(&mut datum);
+    //     if !consumed {
+    //         datum.as_mut_ptr().drop_in_place();
+    //     }
+    //     consumed
+    // }
 }
 
 fn get_data<F: FnOnce(FinalizeHow)>(ps: &PutterSpace, maybe_dest: Option<DatumPtr>, finalize: F) {
@@ -157,8 +153,8 @@ fn get_data<F: FnOnce(FinalizeHow)>(ps: &PutterSpace, maybe_dest: Option<DatumPt
     // println!("GET COMPLETE");
 }
 impl Getter {
-    pub unsafe fn claim_raw(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
-        Ok(Self(PortCommon::claim_raw(mover_index, false, p)?))
+    pub fn claim(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
+        Ok(Self(PortCommon::claim(mover_index, false, p)?))
     }
 
     // returns false if it doesn't participate in a rule
@@ -204,11 +200,11 @@ impl Getter {
         assert!(self.get_inner(if dest.is_null() { None } else { Some(DatumPtr::from_raw(dest)) }));
     }
 
-    pub unsafe fn get_typed<T>(&mut self) -> T {
-        let mut data = MaybeUninit::<T>::uninit();
-        self.get_raw(data.as_mut_ptr() as *mut u8);
-        data.assume_init()
-    }
+    // pub unsafe fn get_typed<T>(&mut self) -> T {
+    //     let mut data = MaybeUninit::<T>::uninit();
+    //     self.get_raw(data.as_mut_ptr() as *mut u8);
+    //     data.assume_init()
+    // }
 
     pub fn get_signal(&mut self) {
         unsafe { self.get_raw(core::ptr::null_mut()) }
