@@ -22,6 +22,27 @@ lazy_static::lazy_static! {
             movements: vec![Movement { putter: 0, putter_retains: false, getters: index_set! {1} }],
         }],
     };
+    static ref PROTO_DEF_ASYNC: ProtoDef = ProtoDef {
+        mover_defs: vec![
+            MoverDef { type_key: BTK, mover_kind: MoverKind::PutterPort },
+            MoverDef { type_key: BTK, mover_kind: MoverKind::MemoryCell },
+            MoverDef { type_key: BTK, mover_kind: MoverKind::GetterPort },
+        ],
+        rules: vec![
+            RuleDef {
+                ready: index_set! {0,1},
+                ready_and_full_mem: index_set! {},
+                instructions: vec![],
+                movements: vec![Movement { putter: 0, putter_retains: false, getters: index_set! {1} }],
+            },
+            RuleDef {
+                ready: index_set! {1,2},
+                ready_and_full_mem: index_set! {1},
+                instructions: vec![],
+                movements: vec![Movement { putter: 1, putter_retains: false, getters: index_set! {2} }],
+            }
+        ],
+    };
 }
 
 #[test]
@@ -37,11 +58,11 @@ fn sync_build() {
 #[test]
 fn sync_claim() {
     let proto = Arc::new(PROTO_DEF_SYNC.build().unwrap());
-    let _ = Getter::claim(&proto, 2).unwrap_err();
     let _ = Putter::claim(&proto, 0).unwrap();
     let _ = Putter::claim(&proto, 0).unwrap_err();
     let _ = Getter::claim(&proto, 1).unwrap();
     let _ = Getter::claim(&proto, 1).unwrap_err();
+    let _ = Getter::claim(&proto, 2).unwrap_err();
 }
 
 #[test]
@@ -63,6 +84,34 @@ fn sync_round_raw() {
     for h in handles {
         h.join().unwrap();
     }
+}
+
+#[test]
+fn async_build() {
+    PROTO_DEF_ASYNC.build().unwrap();
+}
+#[test]
+fn async_claim() {
+    let proto = Arc::new(PROTO_DEF_ASYNC.build().unwrap());
+    let _ = Putter::claim(&proto, 0).unwrap();
+    let _ = Putter::claim(&proto, 0).unwrap_err();
+    let _ = Putter::claim(&proto, 1).unwrap_err();
+    let _ = Getter::claim(&proto, 2).unwrap();
+    let _ = Getter::claim(&proto, 2).unwrap_err();
+    let _ = Getter::claim(&proto, 3).unwrap_err();
+}
+
+#[test]
+fn async_round_raw() {
+    let proto = Arc::new(PROTO_DEF_ASYNC.build().unwrap());
+    let mut p0 = Putter::claim(&proto, 0).unwrap();
+    let mut p2 = Getter::claim(&proto, 2).unwrap();
+
+    let mut data0 = true;
+    let mut data2 = false;
+    unsafe { p0.put_raw(u8_ptr(&mut data0)) };
+    unsafe { p2.get_raw(u8_ptr(&mut data2)) };
+    assert!(data2);
 }
 
 // #[test]

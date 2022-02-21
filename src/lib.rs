@@ -44,7 +44,7 @@ pub static BOOL_TYPE_INFO: TypeInfo = {
 pub static BOOL_TYPE_KEY: TypeKey = TypeKey(&BOOL_TYPE_INFO);
 
 // invariant: all TypeKey elements in inner TypeMaps correspond 1-to-1 with std::any::TypeId
-pub struct TypeProtected<T>(T);
+// pub struct TypeProtected<T>(T);
 
 pub struct TypedPutter<T> {
     putter: Putter,
@@ -99,6 +99,8 @@ pub enum Term {
     Named(Index),                  // type of Index
 }
 
+// pub struct DataTyped<T>(T);
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     CreateFromFormula { dest: Index, term: Term },
@@ -125,7 +127,6 @@ struct MsgBox {
 pub enum ClaimError {
     WrongPortDirection,
     NameRefersToMemoryCell,
-    TypeCheckFailed(TypeKey),
     UnknownName,
     AlreadyClaimed,
 }
