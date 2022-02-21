@@ -1,7 +1,7 @@
 mod allocator;
-pub mod building2;
-mod new_tests;
+pub mod building;
 mod ports;
+mod tests;
 mod type_info;
 
 use chunked_index_set::{index_set, ChunkRead, Index, IndexSet};

@@ -1,604 +1,433 @@
-use super::*;
+use crate::*;
 
-#[derive(Debug, Clone)]
-pub enum NameDef {
-    Port { is_putter: bool, type_key: TypeKey },
-    Mem { type_key: TypeKey },
-    Func(CallHandle),
-}
-
-#[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Default)]
 pub struct ProtoDef {
-    pub name_defs: HashMap<Name, NameDef>,
+    pub mover_defs: Vec<MoverDef>,
     pub rules: Vec<RuleDef>,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone)]
-pub struct StatePredicate {
-    pub ready_ports: HashSet<Name>,
-    pub full_mem: HashSet<Name>,
-    pub empty_mem: HashSet<Name>,
+#[derive(Default)]
+struct ReadyKindSubsets {
+    putter_ports: IndexSet<2>,
+    getter_ports: IndexSet<2>,
+    memory_cells: IndexSet<2>,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone)]
-pub struct RuleDef {
-    // precondition for firing
-    // pub state_guard: StatePredicate,
-    pub ins: Vec<Instruction<Name, Name>>,
-    pub output: HashMap<Name, (bool, HashSet<Name>)>,
-}
 #[derive(Debug)]
-pub enum ProtoBuildError {
-    UnmovedCreation { name: Name },
-    Overwritten { name: Name },
-    RepeatedlyInMovements { name: Name },
-    // older
-    PutWithoutFullCertainty { name: Name },
-    GetWithoutEmptyCertainty { name: Name },
-    ReadWithoutFullCertainty { name: Name },
-    PutterCannotGet { name: Name },
-    UndefinedLocName { name: Name },
-    UndefinedFuncName { name: Name },
-    TermNameIsNotPutter { name: Name },
-    EqForDifferentTypes,
-    GetterHasMultiplePutters { name: Name },
-    GetterHasNoPutters { name: Name },
-    PortInMemPremise { name: Name },
-    MemInPortPremise { name: Name },
-    ConflictingMemPremise { name: Name },
-    InstructionShadowsName { name: Name },
-    CheckingNonBoolType,
-    CreatingNonBoolFromFormula,
-    MovementTypeMismatch { getter: Name, putter: Name },
-    InstructionCannotOverwrite { name: Name },
-    CanOnlySwapMemory { name: Name },
-}
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum LocKind {
-    PoPu,
-    PoGe,
-    Memo,
-}
-/////////////////////////////////////
-
-fn resolve_fully(
-    temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,
-    name_mapping: &BidirMap<Name, SpaceIndex>,
-    name: Name,
-) -> Result<SpaceIndex, ProtoBuildError> {
-    use ProtoBuildError::*;
-    temp_names
-        .get(&name)
-        .map(|x| x.0)
-        .or_else(|| name_mapping.get_by_first(&name).copied())
-        .ok_or(UndefinedLocName { name })
+pub struct RuleDef {
+    pub ready: IndexSet<2>,
+    pub ready_and_full_mem: IndexSet<2>,
+    pub instructions: Vec<Instruction>,
+    pub movements: Vec<Movement>,
 }
 
-fn term_eval_tid(
-    spaces: &Vec<Space>,
-    temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,
-    name_mapping: &BidirMap<Name, SpaceIndex>,
-    term: &Term<Name, Name>,
-) -> Result<TypeKey, ProtoBuildError> {
-    use ProtoBuildError::*;
-    use Term::*;
-    Ok(match term {
-        Named(name) => {
-            spaces[resolve_fully(temp_names, name_mapping, *name)?.0]
-                .get_putter_space()
-                .ok_or(TermNameIsNotPutter { name: *name })?
-                .type_key
-        }
-        _ => BOOL_TYPE_KEY,
-    })
+#[derive(Debug)]
+pub struct Movement {
+    pub putter: Index,
+    pub putter_retains: bool,
+    pub getters: IndexSet<2>,
 }
 
-fn term_convert(
-    spaces: &Vec<Space>,
-    temp_names: &HashMap<Name, (SpaceIndex, TypeKey)>,
-    name_mapping: &BidirMap<Name, SpaceIndex>,
-    call_handles: &HashMap<Name, CallHandle>,
-    known_state: &HashMap<Name, bool>,
-    term: &Term<Name, Name>,
-) -> Result<Term<SpaceIndex, CallHandle>, ProtoBuildError> {
-    use ProtoBuildError::*;
-    use Term::*;
-    let clos = |fs: &Vec<Term<Name, Name>>| {
-        fs.iter()
-            .map(|t: &Term<Name, Name>| {
-                term_convert(spaces, temp_names, name_mapping, call_handles, known_state, t)
-            })
-            .collect::<Result<_, ProtoBuildError>>()
-    };
-    Ok(match term {
-        True => True,
-        False => False,
-        Not(f) => Not(Box::new(term_convert(
-            spaces,
-            temp_names,
-            name_mapping,
-            call_handles,
-            known_state,
-            f,
-        )?)),
-        BoolCall { func, args } => BoolCall {
-            func: call_handles.get(func).ok_or(UndefinedFuncName { name: *func })?.clone(),
-            args: clos(args)?,
-        },
-        And(fs) => And(clos(fs)?),
-        Or(fs) => Or(clos(fs)?),
-        IsEq(tid, boxed) => {
-            let [lhs, rhs] = [&boxed[0], &boxed[1]];
-            let [t0, t1] = [
-                term_eval_tid(spaces, temp_names, name_mapping, &lhs)?,
-                term_eval_tid(spaces, temp_names, name_mapping, &rhs)?,
-            ];
-            if t0 != t1 || t0 != *tid {
-                return Err(EqForDifferentTypes);
+#[derive(Debug, Copy, Clone)]
+pub struct MoverDef {
+    pub type_key: TypeKey,
+    pub mover_kind: MoverKind,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum MoverKind {
+    PutterPort,
+    GetterPort,
+    MemoryCell,
+}
+
+#[derive(Debug, Clone)]
+pub struct RulesBuildError {
+    rule_index: usize,
+    rule_build_error: RuleBuildError,
+}
+#[derive(Debug, Clone)]
+pub enum RuleBuildError {
+    MoverUnready(Index),
+    IndexOutOfBounds(Index),
+    MoverCannotPut(Index),
+    MoverCannotGet(Index),
+    MoverisntMemory(Index),
+    TypeInequality(TypeKey, TypeKey),
+    ReadingUnfilled(Index),
+    Overwriting(Index),
+    FuncHasWrongArgNumber { func_has: usize, other_has: usize },
+    NotUniqueInMovements(Index),
+    MoverTypeMissingClone(Index),
+    ReadyButDoesntMove(Index),
+}
+
+trait MoverReadyChecker {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index>;
+}
+impl MoverDef {
+    fn to_space(self) -> MoverSpace {
+        let Self { type_key, mover_kind } = self;
+
+        match self.mover_kind {
+            MoverKind::PutterPort => {
+                MoverSpace::PoPu { mb: Default::default(), ps: PutterSpace::new(type_key) }
             }
-            IsEq(
-                *tid,
-                Box::new([
-                    term_convert(spaces, temp_names, name_mapping, call_handles, known_state, lhs)?,
-                    term_convert(spaces, temp_names, name_mapping, call_handles, known_state, rhs)?,
-                ]),
-            )
+            MoverKind::GetterPort => MoverSpace::PoGe { mb: Default::default(), type_key },
+            MoverKind::MemoryCell => MoverSpace::Memo { ps: PutterSpace::new(type_key) },
         }
-        Named(name) => Named({
-            if known_state.get(name).copied() != Some(true) {
-                return Err(ReadWithoutFullCertainty { name: *name });
-            }
-            resolve_fully(temp_names, name_mapping, *name)?
-        }),
-    })
+    }
 }
-
-// fn build2(proto_def: &ProtoDef) -> Result<Proto, ()> {
-//     let r = ProtoR { name_mapping };
-//     let cr = ProtoCr {};
-//     Ok(Proto { r, cr })
-// }
 
 impl ProtoDef {
-    pub fn build(&self) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
-        build_proto(self)
+    fn memory_mover_indices(&self) -> IndexSet<2> {
+        self.mover_defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, mover_def)| match mover_def.mover_kind {
+                MoverKind::MemoryCell => Some(i),
+                _ => None,
+            })
+            .collect()
+    }
+    fn port_mover_indices(&self) -> IndexSet<2> {
+        self.mover_defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, mover_def)| match mover_def.mover_kind {
+                MoverKind::MemoryCell => None,
+                _ => Some(i),
+            })
+            .collect()
+    }
+    fn build_rules(&self) -> Result<Vec<Rule>, RulesBuildError> {
+        self.rules
+            .iter()
+            .enumerate()
+            .map(|(rule_index, rule)| {
+                build_rule(&self.mover_defs, rule)
+                    .map_err(|rule_build_error| RulesBuildError { rule_index, rule_build_error })
+            })
+            .collect()
+    }
+    pub fn build(&self) -> Result<Proto, RulesBuildError> {
+        Ok(Proto {
+            r: ProtoR {
+                rules: self.build_rules()?,
+                spaces: self.mover_defs.iter().copied().map(MoverDef::to_space).collect(),
+            },
+            cr: Mutex::new(ProtoCr {
+                allocator: Default::default(),
+                mem_filled: Default::default(),
+                ready: self.memory_mover_indices(),
+                ref_counts: Default::default(),
+                unclaimed: self.port_mover_indices(),
+            }),
+        })
     }
 }
 
-fn rule_guard(proto_def: &ProtoDef, r: &RuleDef) -> Result<StatePredicate, ProtoBuildError> {
-    use ProtoBuildError::*;
-    //////////////////////////////////////////
-    #[derive(Debug)]
-    enum State {
-        Full,
-        Empty,
-    }
-    type States = HashMap<Name, State>;
-    type NameTerm = Term<Name, Name>;
-    fn full_terms<'a>(
-        b: &mut States,
-        ts: impl IntoIterator<Item = &'a NameTerm>,
-    ) -> Result<(), ProtoBuildError> {
-        for t in ts {
-            full_term(b, t)?;
+fn in_term_out_set(set: &IndexSet<2>, term: &Term) -> Option<Index> {
+    match term {
+        Term::True | Term::False => None,
+        Term::Not(inner_term) => in_term_out_set(set, inner_term),
+        Term::And(terms) | Term::Or(terms) => {
+            terms.iter().find_map(|term| in_term_out_set(set, term))
         }
-        Ok(())
-    }
-    fn create_name(b: &mut States, name: Name) -> Result<(), ProtoBuildError> {
-        match b.insert(name, State::Empty) {
-            None => Err(UnmovedCreation { name }),
-            Some(State::Empty) => Err(Overwritten { name }),
-            Some(State::Full) => Ok(()),
+        Term::IsEq(_type_key, term_pair) => {
+            term_pair.iter().find_map(|term| in_term_out_set(set, term))
         }
-    }
-    fn full_term(b: &mut States, t: &NameTerm) -> Result<(), ProtoBuildError> {
-        match t {
-            Term::True | Term::False => Ok(()),
-            Term::Not(t) => full_term(b, t),
-            Term::And(ts) | Term::Or(ts) => full_terms(b, ts.iter()),
-            Term::BoolCall { args, .. } => full_terms(b, args.iter()),
-            Term::IsEq(_type_key, ts) => full_terms(b, ts.iter()),
-            Term::Named(name) => {
-                // names are not empty 'after'; names are full 'before'
-                if let Some(State::Empty) = b.insert(*name, State::Full) {
-                    Err(ProtoBuildError::Overwritten { name: *name })
-                } else {
-                    Ok(())
-                }
-            }
-        }
-    }
-    ////////////////////////////////
-
-    let mut before = States::default();
-
-    // walk over all parallel movements
-    for (&putter, (_putter_retains, getters)) in r.output.iter() {
-        // println!("before {:?}", &before);
-        // known state -> duplication; its full 'before'
-        if let Some(_) = before.insert(putter, State::Full) {
-            return Err(RepeatedlyInMovements { name: putter });
-        }
-        // known state -> duplication; its empty 'before'
-        for &getter in getters.iter() {
-            if before.insert(getter, State::Empty).is_some() {
-                return Err(RepeatedlyInMovements { name: getter });
-            }
-        }
-    }
-
-    // walk 'beforeward' over instructions
-    for instruction in r.ins.iter().rev() {
-        // println!("before {:?}", &before);
-        match instruction {
-            Instruction::CreateFromFormula { dest, term } => {
-                full_term(&mut before, term)?;
-                create_name(&mut before, *dest)?
-            }
-            Instruction::CreateFromCall { dest, args, .. } => {
-                full_terms(&mut before, args.iter())?;
-                create_name(&mut before, *dest)?
-            }
-            Instruction::Check(t) => full_term(&mut before, t)?,
-            Instruction::MemSwap(a, b) => {
-                for &name in [a, b] {
-                    // both are not empty 'after'; both are full 'before'
-                    if let Some(State::Empty) = before.insert(name, State::Full) {
-                        return Err(Overwritten { name });
-                    }
-                }
-            }
-        }
-    }
-
-    // build precondition
-    Ok(StatePredicate {
-        ready_ports: before
-            .iter()
-            .filter_map(|(name, _state)| match proto_def.name_defs.get(name) {
-                Some(NameDef::Port { .. }) => Some(*name),
-                _ => None,
-            })
-            .collect(),
-        empty_mem: before
-            .iter()
-            .filter_map(|(name, state)| match (proto_def.name_defs.get(name), state) {
-                (Some(NameDef::Mem { .. }), State::Empty) => Some(*name),
-                _ => None,
-            })
-            .collect(),
-        full_mem: before
-            .iter()
-            .filter_map(|(name, state)| match (proto_def.name_defs.get(name), state) {
-                (Some(NameDef::Mem { .. }), State::Full) => Some(*name),
-                _ => None,
-            })
-            .collect(),
-    })
-}
-
-pub fn build_proto(proto_def: &ProtoDef) -> Result<Arc<Proto>, (Option<usize>, ProtoBuildError)> {
-    use ProtoBuildError::*;
-
-    let mut spaces = vec![];
-    let mut name_mapping = BidirMap::<Name, SpaceIndex>::new();
-    let mut unclaimed: HashSet<SpaceIndex> = hashset! {};
-    // locid -> (is_putter, type_key)
-
-    let mut port_type_key: HashMap<SpaceIndex, (bool, TypeKey)> = hashmap! {};
-
-    let mut persistent_loc_kinds: Vec<LocKind> = vec![];
-
-    // consume all name defs, creating spaces. retain call_handles to be treated later
-    let mut ready = SpaceIndexSet::default();
-    let mut call_handles: HashMap<Name, CallHandle> = hashmap! {};
-    for (name, def) in proto_def.name_defs.iter() {
-        let id = SpaceIndex(spaces.len());
-        name_mapping.insert(*name, id);
-        let (space, kind) = match def {
-            NameDef::Port { is_putter, type_key } => {
-                unclaimed.insert(id);
-                port_type_key.insert(id, (*is_putter, *type_key));
-                let mb = MsgBox::default();
-                if *is_putter {
-                    let ps = PutterSpace::new(*type_key);
-                    (Space::PoPu { ps, mb }, LocKind::PoPu)
-                } else {
-                    (Space::PoGe { mb, type_key: *type_key }, LocKind::PoGe)
-                }
-            }
-            NameDef::Mem { type_key } => {
-                ready.insert(id);
-                (Space::Memo { ps: PutterSpace::new(*type_key) }, LocKind::Memo)
-            }
-            NameDef::Func(call_handle) => {
-                call_handles.insert(*name, call_handle.clone());
-                continue;
-            }
-        };
-        spaces.push(space);
-        persistent_loc_kinds.push(kind);
-    }
-    let spaces = spaces;
-    // let perm_space_range = ..spaces.len();
-    let mem = SpaceIndexSet::with_capacity(spaces.len());
-
-    // NO MORE PERSISTENT THINGS
-    let persistent_kind =
-        |name: Name| Some(persistent_loc_kinds[name_mapping.get_by_first(&name)?.0]);
-
-    let mut rule_f = |rule: &RuleDef| {
-        let mut temp_names: HashMap<Name, (SpaceIndex, TypeKey)> = hashmap! {};
-        let mut puts: HashSet<Name> = hashset! {};
-        let mut gets: HashSet<Name> = hashset! {};
-        let mut known_state: HashMap<Name, bool> = hashmap! {};
-
-        // keeps track of PERM memory position for the purpose of matching the MOVEMENT to it (for changing assign bits)
-        // key is location of mem (corresponding to the MOVEMENT PUTTER ultimately)
-        // value is the permanent memcell where it started
-        let mut whose_mem_is_this: HashMap<SpaceIndex, SpaceIndex> = hashmap! {};
-
-        let rule_guard = rule_guard(&proto_def, rule)?;
-        let StatePredicate { ready_ports, full_mem, empty_mem } = &rule_guard;
-        // 1 ensure no conflicting mem requirements
-        if let Some(name) = full_mem.intersection(empty_mem).next() {
-            return Err(ConflictingMemPremise { name: *name });
-        }
-
-        // 2 ensure no ports in mem position
-        for name in full_mem.union(empty_mem) {
-            if persistent_kind(*name).ok_or(UndefinedLocName { name: *name })? != LocKind::Memo {
-                return Err(PortInMemPremise { name: *name });
-            }
-        }
-
-        let resolve = |name: &Name| {
-            name_mapping.get_by_first(name).copied().ok_or(UndefinedLocName { name: *name })
-        };
-        for name in ready_ports.iter() {
-            let kind = persistent_kind(*name).ok_or(UndefinedLocName { name: *name })?;
-            match kind {
-                LocKind::PoPu => known_state.insert(*name, true),
-                LocKind::PoGe => known_state.insert(*name, false),
-                LocKind::Memo => return Err(MemInPortPremise { name: *name }),
-            };
-        }
-
-        // 6 store known state of memcells
-        for name in full_mem.iter().copied() {
-            known_state.insert(name, true);
-        }
-        for name in empty_mem.iter().copied() {
-            known_state.insert(name, false);
-        }
-
-        // 5 build the bit guard
-        let bit_guard = BitStatePredicate {
-            ready: ready_ports
-                .iter()
-                .chain(full_mem.iter())
-                .chain(empty_mem.iter())
-                .map(resolve)
-                .collect::<Result<_, _>>()?,
-            full_mem: full_mem.iter().map(resolve).collect::<Result<_, _>>()?,
-            empty_mem: empty_mem.iter().map(resolve).collect::<Result<_, _>>()?,
-        };
-
-        // identity for all permanent memcells
-        whose_mem_is_this
-            .extend(bit_guard.full_mem.iter().chain(bit_guard.empty_mem.iter()).map(|id| (id, id)));
-
-        let mut ins = SmallVec::new();
-        'instructions: for i in rule.ins.iter() {
-            use Instruction::*;
-            let instruction = match i {
-                Check(term) => {
-                    if term_eval_tid(&spaces, &temp_names, &name_mapping, &term)? != BOOL_TYPE_KEY {
-                        return Err(CheckingNonBoolType);
-                    }
-                    Instruction::Check(term_convert(
-                        &spaces,
-                        &temp_names,
-                        &name_mapping,
-                        &call_handles,
-                        &known_state,
-                        term,
-                    )?)
-                }
-                CreateFromFormula { dest, term } => {
-                    let type_key = term_eval_tid(&spaces, &temp_names, &name_mapping, &term)?;
-                    if type_key != BOOL_TYPE_KEY {
-                        return Err(CreatingNonBoolFromFormula);
-                    }
-                    if resolve_fully(&temp_names, &name_mapping, *dest).is_ok() {
-                        return Err(InstructionCannotOverwrite { name: *dest });
-                    }
-                    let ps = PutterSpace::new(type_key);
-                    spaces.push(Space::Memo { ps });
-                    let temp_id = SpaceIndex(spaces.len() - 1);
-                    if temp_names.insert(*dest, (temp_id, type_key)).is_some() {
-                        return Err(InstructionShadowsName { name: *dest });
-                    }
-                    let term = term_convert(
-                        &spaces,
-                        &temp_names,
-                        &name_mapping,
-                        &call_handles,
-                        &known_state,
-                        &term,
-                    )?;
-                    known_state.insert(*dest, true); // must be a fresh name
-                    CreateFromFormula { dest: temp_id, term }
-                }
-                CreateFromCall { type_key, dest, func, args } => {
-                    let ch =
-                        call_handles.get(func).ok_or(UndefinedFuncName { name: *func })?.clone();
-                    let args = args
-                        .into_iter()
-                        .map(|arg| {
-                            term_convert(
-                                &spaces,
-                                &temp_names,
-                                &name_mapping,
-                                &call_handles,
-                                &known_state,
-                                arg,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, ProtoBuildError>>()?;
-                    let temp_id = SpaceIndex(spaces.len());
-                    let ps = PutterSpace::new(*type_key);
-                    spaces.push(Space::Memo { ps });
-                    if temp_names.insert(*dest, (temp_id, *type_key)).is_some() {
-                        return Err(InstructionShadowsName { name: *dest });
-                    }
-                    known_state.insert(*dest, true); // must be a fresh name
-                    CreateFromCall { type_key: *type_key, dest: temp_id, func: ch.clone(), args }
-                }
-                MemSwap(a, b) => {
-                    let aid = resolve_fully(&temp_names, &name_mapping, *a);
-                    let bid = resolve_fully(&temp_names, &name_mapping, *b);
-
-                    let [aid, bid] = if aid.is_err() && bid.is_err() {
-                        // swap of nothing to nothing
-                        continue 'instructions;
-                    } else if aid.is_err() || bid.is_err() {
-                        // swap from existing to new temp
-                        let (new_name, ex_name, ex_id) =
-                            if aid.is_err() { (a, b, bid.unwrap()) } else { (b, a, aid.unwrap()) };
-                        if let Space::Memo { ps } = &spaces[ex_id.0] {
-                            let type_key = ps.type_key;
-                            let temp_id = SpaceIndex(spaces.len());
-                            temp_names.insert(*new_name, (temp_id, type_key)); // cannot fail
-                            spaces.push(Space::Memo { ps: PutterSpace::new(type_key) });
-                            if let Some(x) = known_state.remove(ex_name) {
-                                known_state.insert(*new_name, x);
-                            }
-                            known_state.insert(*ex_name, false);
-                            [ex_id, temp_id]
-                        } else {
-                            return Err(CanOnlySwapMemory { name: *ex_name });
-                        }
-                    } else {
-                        // swap between existing
-                        let ka = known_state.remove(a);
-                        let kb = known_state.remove(b);
-                        if let Some(x) = ka {
-                            known_state.insert(*b, x);
-                        }
-                        if let Some(x) = kb {
-                            known_state.insert(*a, x);
-                        }
-                        [aid.unwrap(), bid.unwrap()]
-                    };
-                    let wmit_a = whose_mem_is_this.remove(&aid);
-                    let wmit_b = whose_mem_is_this.remove(&aid);
-                    if let Some(x) = wmit_a {
-                        whose_mem_is_this.insert(bid, x);
-                    }
-                    if let Some(x) = wmit_b {
-                        whose_mem_is_this.insert(aid, x);
-                    }
-                    MemSwap(aid, bid)
-                }
-            };
-            ins.push(instruction);
-        }
-
-        //DeBUGGY:println!("WHOSE {:?}", &whose_mem_is_this);
-
-        let mut bit_assign = BitStatePredicate {
-            ready: bit_guard.ready.clone(),
-            empty_mem: Default::default(),
-            full_mem: Default::default(),
-        };
-        //DeBUGGY:println!("KS BEFORE {:?}", &known_state);
-        let mut output: SmallVec<[Movement; 4]> = rule
-            .output
-            .iter()
-            .map(|(&putter, (putter_retains, getters))| {
-                if known_state.get(&putter).copied() != Some(true) {
-                    return Err(PutWithoutFullCertainty { name: putter });
-                }
-                let putter_id: SpaceIndex = resolve_fully(&temp_names, &name_mapping, putter)?;
-                puts.insert(putter); // no overwrite possible
-                let putter_type_key = spaces[putter_id.0].get_putter_space().expect("CCC").type_key;
-                if !putter_retains {
-                    if let Some(x) = whose_mem_is_this.remove(&putter_id) {
-                        bit_assign.empty_mem.insert(x);
-                    }
-                }
-                let mut po_ge = vec![];
-                let mut me_ge = vec![];
-                for name in getters {
-                    if known_state.get(name).copied() != Some(false) {
-                        return Err(GetWithoutEmptyCertainty { name: *name });
-                    }
-                    let gid = name_mapping.get_by_first(name).expect("DDD");
-                    match persistent_loc_kinds[gid.0] {
-                        LocKind::PoPu => return Err(PutterCannotGet { name: *name }),
-                        LocKind::PoGe => {
-                            if !gets.insert(*name) {
-                                return Err(GetterHasMultiplePutters { name: *name });
-                            }
-                            if port_type_key.get(gid).expect("EE").1 != putter_type_key {
-                                return Err(MovementTypeMismatch { putter, getter: *name });
-                            }
-                            &mut po_ge
-                        }
-                        LocKind::Memo => {
-                            if spaces[gid.0].get_putter_space().expect("FFF").type_key
-                                != putter_type_key
-                            {
-                                // println!("YARP {:?} ", putter_type_key);
-                                return Err(MovementTypeMismatch { putter, getter: *name });
-                            }
-                            if let Some(x) = whose_mem_is_this.remove(&gid) {
-                                bit_assign.full_mem.insert(x);
-                            }
-                            &mut me_ge
-                        }
-                    }
-                    .push(*gid);
-                }
-                Ok(Movement { putter: putter_id, po_ge, me_ge, putter_retains: *putter_retains })
-            })
-            .collect::<Result<_, ProtoBuildError>>()?;
-        //DeBUGGY:println!("KS AFTER {:?}. P|G: {:?}", &known_state, (&puts, &gets));
-        for (name, is_full) in known_state.drain() {
-            if puts.contains(&name) || gets.contains(&name) {
-                continue; // ok it was covered
-            }
-            let id = resolve_fully(&temp_names, &name_mapping, name)?;
-            let putter_retains = match spaces[id.0] {
-                Space::Memo { .. } => true,
-                Space::PoPu { .. } => true,
-                Space::PoGe { .. } => return Err(GetterHasNoPutters { name }),
-            };
-            if is_full {
-                output.push(Movement { putter: id, po_ge: vec![], me_ge: vec![], putter_retains });
+        Term::Named(mover_index) => {
+            if set.contains(*mover_index) {
+                None
             } else {
-                // cover the case of an EMPTY movement. nobody drains it AND its not full
-                bit_assign.ready.remove(&id);
+                Some(*mover_index)
             }
         }
-        Ok(Rule { bit_guard, ins, output, bit_assign })
+    }
+}
+fn in_term_in_set(set: &IndexSet<2>, term: &Term) -> Option<Index> {
+    match term {
+        Term::True | Term::False => None,
+        Term::Not(inner_term) => in_term_in_set(set, inner_term),
+        Term::And(terms) | Term::Or(terms) => {
+            terms.iter().find_map(|term| in_term_in_set(set, term))
+        }
+        Term::IsEq(_type_key, term_pair) => {
+            term_pair.iter().find_map(|term| in_term_in_set(set, term))
+        }
+        Term::Named(mover_index) => {
+            if set.contains(*mover_index) {
+                Some(*mover_index)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn build_rule(mover_defs: &Vec<MoverDef>, rule_def: &RuleDef) -> Result<Rule, RuleBuildError> {
+    use RuleBuildError as Rbe;
+
+    // check that ready -> defined
+    match rule_def.ready.max_element() {
+        Some(max) if mover_defs.len() <= max => return Err(Rbe::IndexOutOfBounds(max)),
+        _ => {}
+    }
+
+    // check that in ruledef -> ready
+    if let Some(mover_index) = rule_def.unready(&rule_def.ready) {
+        return Err(Rbe::MoverUnready(mover_index));
+    }
+
+    // in ruledef -> ready and defined
+
+    let rks = {
+        let mut rks = ReadyKindSubsets::default();
+        for i in rule_def.ready.iter() {
+            match mover_defs[i].mover_kind {
+                MoverKind::PutterPort => &mut rks.putter_ports,
+                MoverKind::GetterPort => &mut rks.getter_ports,
+                MoverKind::MemoryCell => &mut rks.memory_cells,
+            }
+            .insert(i);
+        }
+        rks
     };
 
-    let rules = proto_def
-        .rules
-        .iter()
-        .enumerate()
-        .map(|(rule_id, rule_def)| rule_f(rule_def).map_err(|e| (Some(rule_id), e)))
-        .collect::<Result<_, (_, ProtoBuildError)>>()?;
+    // let's walk over instructions. check that we read only filled, write only unfilled, and that types match everywhere
+    let mut filled: IndexSet<2> = rule_def.ready_and_full_mem.or(&rks.putter_ports).to_index_set();
 
-    let r = ProtoR { rules, spaces, name_mapping };
-    //DeBUGGY:println!("PROTO R {:#?}", &r);
-    let cr =
-        ProtoCr { unclaimed, allocator: Allocator::default(), mem, ready, ref_counts: hashmap! {} };
-    // r.sanity_check(&cr); // DEBUG
-    Ok(Arc::new(Proto { r, cr: Mutex::new(cr) }))
+    println!("{:?} filled", &filled);
+    for ins in rule_def.instructions.iter() {
+        println!("{:?} filled_before", &filled);
+        instruction_fill(mover_defs, &mut filled, ins)?;
+    }
+    rule_movements(mover_defs, &mut filled, rule_def)?;
+
+    /////////////////////////////////////////////////////
+    // OK!
+
+    let bit_guard = BitStatePredicate {
+        ready: rule_def.ready.clone(),
+        full_mem: rule_def.ready_and_full_mem.clone(),
+        empty_mem: rks.memory_cells.without(&rule_def.ready_and_full_mem).to_index_set(),
+    };
+    // now we create the movements
+    let output: SmallVec<[PartitionedMovement; 3]> = rule_def
+        .movements
+        .iter()
+        .map(|movement| PartitionedMovement {
+            putter: movement.putter,
+            putter_retains: movement.putter_retains,
+            me_ge: movement.getters.without(&rks.getter_ports).to_index_set(),
+            po_ge: movement.getters.without(&rks.memory_cells).to_index_set(),
+        })
+        .collect();
+
+    let rule = Rule {
+        bit_guard,
+        ins: rule_def.instructions.iter().cloned().collect(),
+        output,
+        make_mems_filled: rks
+            .memory_cells
+            .and(&filled)
+            .without(&rule_def.ready_and_full_mem)
+            .to_index_set(),
+        make_mems_empty: rks.memory_cells.without(&filled).to_index_set(),
+    };
+    println!("rule {:#?}", &rule);
+    Ok(rule)
+}
+
+///////////////////////
+// THE FOLLOWING ALL ASSUME READY. READY -> DEFINED
+
+fn mover_def(mover_defs: &Vec<MoverDef>, mover_index: Index) -> MoverDef {
+    mover_defs[mover_index]
+}
+
+fn mover_type(mover_defs: &Vec<MoverDef>, mover_index: Index) -> TypeKey {
+    mover_def(mover_defs, mover_index).type_key
+}
+
+fn mover_kind(mover_defs: &Vec<MoverDef>, mover_index: Index) -> MoverKind {
+    mover_def(mover_defs, mover_index).mover_kind
+}
+
+fn term_type(mover_defs: &Vec<MoverDef>, term: &Term) -> TypeKey {
+    match term {
+        Term::Named(mover_index) => mover_type(mover_defs, *mover_index),
+        _ => BOOL_TYPE_KEY,
+    }
+}
+
+fn first_unready(ready: &IndexSet<2>, i: impl IntoIterator<Item = Index>) -> Option<Index> {
+    i.into_iter().find_map(|x| x.unready(ready))
+}
+
+impl MoverReadyChecker for Index {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
+        if ready.contains(*self) {
+            None
+        } else {
+            Some(*self)
+        }
+    }
+}
+
+impl MoverReadyChecker for Term {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
+        in_term_out_set(ready, self)
+    }
+}
+
+impl MoverReadyChecker for Instruction {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
+        match self {
+            Instruction::CreateFromFormula { dest, term } => {
+                dest.unready(ready).or(term.unready(ready))
+            }
+            Instruction::CreateFromCall { dest, func: _, args } => {
+                dest.unready(ready).or(args.iter().find_map(|ins| ins.unready(ready)))
+            }
+            Instruction::Check(term) => term.unready(ready),
+            Instruction::MemSwap(a, b) => first_unready(ready, [*a, *b].iter().copied()),
+        }
+    }
+}
+
+impl MoverReadyChecker for RuleDef {
+    fn unready(&self, ready: &IndexSet<2>) -> Option<Index> {
+        first_unready(ready, self.ready_and_full_mem.iter())
+            .or(self.instructions.iter().find_map(|ins| ins.unready(ready)))
+    }
+}
+
+fn instruction_fill(
+    mover_defs: &Vec<MoverDef>,
+    filled: &mut IndexSet<2>,
+    ins: &Instruction,
+) -> Result<(), RuleBuildError> {
+    use RuleBuildError as Rbe;
+    match ins {
+        Instruction::CreateFromFormula { dest, term } => {
+            if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
+                return Err(Rbe::MoverisntMemory(*dest));
+            }
+            let dest_type = term_type(mover_defs, term);
+            if dest_type != BOOL_TYPE_KEY {
+                return Err(Rbe::TypeInequality(dest_type, BOOL_TYPE_KEY));
+            }
+            if filled.contains(*dest) {
+                return Err(Rbe::Overwriting(*dest));
+            }
+            if let Some(mover_index) = in_term_out_set(&filled, term) {
+                return Err(Rbe::ReadingUnfilled(mover_index));
+            }
+            filled.insert(*dest);
+        }
+        Instruction::CreateFromCall { dest, func, args } => {
+            if mover_kind(mover_defs, *dest) != MoverKind::MemoryCell {
+                return Err(Rbe::MoverisntMemory(*dest));
+            }
+            if filled.contains(*dest) {
+                return Err(Rbe::Overwriting(*dest));
+            }
+            let dest_type = mover_type(mover_defs, *dest);
+            if dest_type != func.ret_type {
+                return Err(Rbe::TypeInequality(dest_type, func.ret_type));
+            }
+            if func.arg_types.len() != args.len() {
+                return Err(Rbe::FuncHasWrongArgNumber {
+                    other_has: args.len(),
+                    func_has: func.arg_types.len(),
+                });
+            }
+            for (&func_arg_type, arg_term) in func.arg_types.iter().zip(args.iter()) {
+                let term_type = term_type(mover_defs, arg_term);
+                if func_arg_type != term_type {
+                    return Err(Rbe::TypeInequality(func_arg_type, term_type));
+                }
+            }
+            if let Some(mover_index) = args.iter().find_map(|term| in_term_in_set(&filled, term)) {
+                return Err(Rbe::ReadingUnfilled(mover_index));
+            }
+            filled.insert(*dest);
+        }
+        Instruction::Check(term) => {
+            let term_type = term_type(mover_defs, term);
+            if term_type != BOOL_TYPE_KEY {
+                return Err(Rbe::TypeInequality(term_type, BOOL_TYPE_KEY));
+            }
+            if let Some(mover_index) = in_term_out_set(&filled, term) {
+                return Err(Rbe::ReadingUnfilled(mover_index));
+            }
+        }
+        Instruction::MemSwap(a, b) => {
+            let [ta, tb] = [mover_type(mover_defs, *a), mover_type(mover_defs, *b)];
+            if ta != tb {
+                return Err(Rbe::TypeInequality(ta, tb));
+            }
+            for mover_index in [a, b] {
+                if mover_kind(mover_defs, *mover_index) != MoverKind::MemoryCell {
+                    return Err(Rbe::MoverisntMemory(*mover_index));
+                }
+                if !filled.contains(*mover_index) {
+                    return Err(Rbe::ReadingUnfilled(*mover_index));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rule_movements(
+    mover_defs: &Vec<MoverDef>,
+    filled: &mut IndexSet<2>,
+    rule_def: &RuleDef,
+) -> Result<(), RuleBuildError> {
+    use RuleBuildError as Rbe;
+    let mut busy_moving = IndexSet::<2>::default();
+    for movement in rule_def.movements.iter() {
+        // putter
+        let putter_type_key = mover_type(mover_defs, movement.putter);
+        if let MoverKind::GetterPort = mover_kind(mover_defs, movement.putter) {
+            return Err(Rbe::MoverCannotPut(movement.putter));
+        }
+        if !busy_moving.insert(movement.putter) {
+            return Err(Rbe::NotUniqueInMovements(movement.putter));
+        }
+        if !movement.putter_retains {
+            if !filled.remove(movement.putter) {
+                return Err(Rbe::ReadingUnfilled(movement.putter));
+            }
+        }
+        // getters
+        for getter in movement.getters.iter() {
+            let getter_type_key = mover_type(mover_defs, getter);
+            if putter_type_key != getter_type_key {
+                return Err(Rbe::TypeInequality(putter_type_key, getter_type_key));
+            }
+            if let MoverKind::PutterPort = mover_kind(mover_defs, movement.putter) {
+                return Err(Rbe::MoverCannotGet(getter));
+            }
+            if !busy_moving.insert(getter) {
+                return Err(Rbe::NotUniqueInMovements(getter));
+            }
+            if !filled.insert(getter) {
+                return Err(Rbe::Overwriting(getter));
+            }
+        }
+        let clones = if movement.putter_retains { 1 } else { 0 } + movement.getters.len();
+        if clones > 1 && putter_type_key.get_info().maybe_clone.is_none() {
+            return Err(Rbe::MoverTypeMissingClone(movement.putter));
+        }
+    }
+    if let Some(mover_index) =
+        rule_def.ready.iter().filter(|mover_index| !busy_moving.contains(*mover_index)).next()
+    {
+        return Err(Rbe::ReadyButDoesntMove(mover_index));
+    }
+    Ok(())
 }
