@@ -1,11 +1,8 @@
 use super::*;
 
 impl PortCommon {
-    fn claim_common(
-        space_idx: Index,
-        want_putter: bool,
-        p: &Arc<Proto>,
-    ) -> Result<Self, ClaimError> {
+    fn claim(mover_index: Index, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
+        let space_idx = mover_index;
         use ClaimError as Ce;
         let is_putter = match p.r.spaces.get(space_idx).ok_or(Ce::UnknownName)? {
             MoverSpace::PoGe { .. } => false,
@@ -23,13 +20,16 @@ impl PortCommon {
             Err(Ce::AlreadyClaimed)
         }
     }
-
-    fn claim(mover_index: Index, want_putter: bool, p: &Arc<Proto>) -> Result<Self, ClaimError> {
-        Self::claim_common(mover_index, want_putter, p)
+    fn type_key(&self) -> TypeKey {
+        let Proto { r, .. } = self.p.as_ref();
+        r.spaces[self.space_idx].type_key()
     }
 }
 
 impl Putter {
+    pub fn type_key(&self) -> TypeKey {
+        self.0.type_key()
+    }
     pub fn claim(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(mover_index, true, p)?))
     }
@@ -79,80 +79,88 @@ impl Putter {
     // }
 }
 
-fn get_data<F: FnOnce(FinalizeHow)>(ps: &PutterSpace, maybe_dest: Option<DatumPtr>, finalize: F) {
-    // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
-    // println!("GET DATA");
-    let type_info = ps.type_key.get_info();
-    let src_ptr = ps.atomic_datum_ptr.load();
-    assert!(src_ptr != DatumPtr::NULL);
+impl Getter {
+    fn get_data<F: FnOnce(FinalizeHow)>(
+        ps: &PutterSpace,
+        maybe_dest: Option<DatumPtr>,
+        finalize: F,
+    ) {
+        // Do NOT NULLIFY SRC PTR. FINALIZE WILL DO THAT
+        // println!("GET DATA");
+        let type_info = ps.type_key.get_info();
+        let src_ptr = ps.atomic_datum_ptr.load();
+        assert!(src_ptr != DatumPtr::NULL);
 
-    const LAST: usize = 1;
+        const LAST: usize = 1;
 
-    if type_info.is_copy() {
-        // irrelevant how many copy
-        if let Some(dest_ptr) = maybe_dest {
-            unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
-            ps.rendesvous.move_flags.visit();
-        }
-        let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-        if was == LAST {
-            let [_, retains] = ps.rendesvous.move_flags.visit();
-            let how = if retains { FinalizeHow::Retain } else { FinalizeHow::Forget };
-            finalize(how);
-        }
-    } else {
-        if let Some(dest_ptr) = maybe_dest {
-            let [visited_first, retains] = ps.rendesvous.move_flags.visit();
-            if visited_first && !retains {
-                // I move!
-                // println!("A");
-                let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                // println!("was (A) {}, retains {}", was, retains);
-                if was != LAST {
-                    ps.rendesvous.mover_sema.acquire();
-                }
+        if type_info.is_copy() {
+            // irrelevant how many copy
+            if let Some(dest_ptr) = maybe_dest {
                 unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
-                finalize(FinalizeHow::Forget);
-            // println!("/A");
-            } else {
-                // println!("B");
+                ps.rendesvous.move_flags.visit();
+            }
+            let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+            if was == LAST {
+                let [_, retains] = ps.rendesvous.move_flags.visit();
+                let how = if retains { FinalizeHow::Retain } else { FinalizeHow::Forget };
+                finalize(how);
+            }
+        } else {
+            if let Some(dest_ptr) = maybe_dest {
+                let [visited_first, retains] = ps.rendesvous.move_flags.visit();
+                if visited_first && !retains {
+                    // I move!
+                    // println!("A");
+                    let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+                    // println!("was (A) {}, retains {}", was, retains);
+                    if was != LAST {
+                        ps.rendesvous.mover_sema.acquire();
+                    }
+                    unsafe { (type_info.raw_move)(dest_ptr.into_raw(), src_ptr.into_raw()) };
+                    finalize(FinalizeHow::Forget);
+                // println!("/A");
+                } else {
+                    // println!("B");
 
-                unsafe {
-                    (type_info.maybe_clone.expect("NEED CLONE"))(
-                        dest_ptr.into_raw(),
-                        src_ptr.into_raw(),
-                    )
-                };
-                // do_clone(dest);
+                    unsafe {
+                        (type_info.maybe_clone.expect("NEED CLONE"))(
+                            dest_ptr.into_raw(),
+                            src_ptr.into_raw(),
+                        )
+                    };
+                    // do_clone(dest);
+                    let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
+                    // println!("was (B) {}, retains {}", was, retains);
+                    if was == LAST {
+                        if retains {
+                            finalize(FinalizeHow::Retain);
+                        } else {
+                            // println!("releasing");
+                            ps.rendesvous.mover_sema.release();
+                        }
+                    }
+                    // println!("/B");
+                }
+            } else {
+                // println!("C");
                 let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-                // println!("was (B) {}, retains {}", was, retains);
                 if was == LAST {
-                    if retains {
-                        finalize(FinalizeHow::Retain);
+                    let [visited_first, retains] = ps.rendesvous.move_flags.visit();
+                    if visited_first {
+                        let how =
+                            if retains { FinalizeHow::Retain } else { FinalizeHow::DropInside };
+                        finalize(how);
                     } else {
-                        // println!("releasing");
                         ps.rendesvous.mover_sema.release();
                     }
                 }
-                // println!("/B");
-            }
-        } else {
-            // println!("C");
-            let was = ps.rendesvous.countdown.fetch_sub(1, SeqCst);
-            if was == LAST {
-                let [visited_first, retains] = ps.rendesvous.move_flags.visit();
-                if visited_first {
-                    let how = if retains { FinalizeHow::Retain } else { FinalizeHow::DropInside };
-                    finalize(how);
-                } else {
-                    ps.rendesvous.mover_sema.release();
-                }
             }
         }
+        // println!("GET COMPLETE");
     }
-    // println!("GET COMPLETE");
-}
-impl Getter {
+    pub fn type_key(&self) -> TypeKey {
+        self.0.type_key()
+    }
     pub fn claim(p: &Arc<Proto>, mover_index: Index) -> Result<Self, ClaimError> {
         Ok(Self(PortCommon::claim(mover_index, false, p)?))
     }
@@ -171,7 +179,7 @@ impl Getter {
             let putter_id: Index = mb.recv();
             // println!("My putter has id {:?}", putter_id);
             match &r.spaces[putter_id] {
-                MoverSpace::PoPu { ps, mb, .. } => get_data(&ps, maybe_dest, move |how| {
+                MoverSpace::PoPu { ps, mb, .. } => Self::get_data(&ps, maybe_dest, move |how| {
                     // finalization function
                     // println!("FINALIZING PUTTER WITH {}", was_moved);
                     mb.send(match how {
@@ -180,7 +188,7 @@ impl Getter {
                     })
                     // println!("FINALZIING DONE");
                 }),
-                MoverSpace::Memo { ps, .. } => get_data(&ps, maybe_dest, |how| {
+                MoverSpace::Memo { ps, .. } => Self::get_data(&ps, maybe_dest, |how| {
                     // finalization function
                     //DeBUGGY:println!("was moved? {:?}", was_moved);
                     // println!("FINALIZING MEMO WITH {}", was_moved);
