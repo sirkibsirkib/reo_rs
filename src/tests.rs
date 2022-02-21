@@ -55,6 +55,34 @@ lazy_static::lazy_static! {
             movements: vec![Movement { putter: 0, putter_retains: true, getters: index_set! {1} }],
         }],
     };
+    static ref PROTO_DEF_CHAIN: ProtoDef = ProtoDef {
+        mover_defs: vec![
+            MoverDef { type_key: BTK, mover_kind: MoverKind::MemoryCell },
+            MoverDef { type_key: BTK, mover_kind: MoverKind::MemoryCell },
+            MoverDef { type_key: BTK, mover_kind: MoverKind::MemoryCell },
+            MoverDef { type_key: BTK, mover_kind: MoverKind::GetterPort },
+        ],
+        rules: vec![
+            RuleDef {
+                ready: index_set! {0,1},
+                ready_and_full_mem: index_set! {0},
+                instructions: vec![],
+                movements: vec![Movement { putter: 0, putter_retains: false, getters: index_set! {1} }],
+            },
+            RuleDef {
+                ready: index_set! {1,2},
+                ready_and_full_mem: index_set! {1},
+                instructions: vec![],
+                movements: vec![Movement { putter: 1, putter_retains: false, getters: index_set! {2} }],
+            },
+            RuleDef {
+                ready: index_set! {2,3},
+                ready_and_full_mem: index_set! {2},
+                instructions: vec![],
+                movements: vec![Movement { putter: 2, putter_retains: false, getters: index_set! {3} }],
+            },
+        ],
+    };
 }
 
 #[test]
@@ -84,8 +112,7 @@ fn sync_round_raw() {
     let mut p1 = Getter::claim(&proto, 1).unwrap();
     let handles = [
         thread::spawn(move || {
-            let mut data = true;
-            unsafe { p0.put_raw(u8_ptr(&mut data)) };
+            unsafe { p0.put_raw(u8_ptr(&mut true)) };
         }),
         thread::spawn(move || {
             let mut data = false;
@@ -105,8 +132,7 @@ fn sync_round_signal() {
     let mut p1 = Getter::claim(&proto, 1).unwrap();
     let handles = [
         thread::spawn(move || {
-            let mut data = true;
-            unsafe { p0.put_raw(u8_ptr(&mut data)) };
+            unsafe { p0.put_raw(u8_ptr(&mut true)) };
         }),
         thread::spawn(move || p1.get_signal()),
     ];
@@ -136,10 +162,8 @@ fn async_round_raw() {
     let proto = Arc::new(PROTO_DEF_ASYNC.build().unwrap());
     let mut p0 = Putter::claim(&proto, 0).unwrap();
     let mut p2 = Getter::claim(&proto, 2).unwrap();
-
-    let mut data0 = true;
     let mut data2 = false;
-    unsafe { p0.put_raw(u8_ptr(&mut data0)) };
+    unsafe { p0.put_raw(u8_ptr(&mut true)) };
     unsafe { p2.get_raw(u8_ptr(&mut data2)) };
     assert!(data2);
 }
@@ -171,8 +195,7 @@ fn clone_claim() {
 #[test]
 fn clone_init() {
     let proto = PROTO_DEF_CLONE.build().unwrap();
-    let mut data = true;
-    unsafe { proto.fill_memory_raw(0, u8_ptr(&mut data)).unwrap() }
+    unsafe { proto.fill_memory_raw(0, u8_ptr(&mut true)).unwrap() }
 }
 
 #[test]
@@ -193,6 +216,46 @@ fn clone_signal() {
     let proto = Arc::new(proto);
     let mut p1 = Getter::claim(&proto, 1).unwrap();
     p1.get_signal();
+}
+#[test]
+fn chain_build() {
+    PROTO_DEF_CLONE.build().unwrap();
+}
+
+#[test]
+fn chain_claim() {
+    let proto = Arc::new(PROTO_DEF_CHAIN.build().unwrap());
+    let _ = Putter::claim(&proto, 0).unwrap_err();
+    let _ = Putter::claim(&proto, 1).unwrap_err();
+    let _ = Getter::claim(&proto, 2).unwrap_err();
+    let _ = Getter::claim(&proto, 3).unwrap();
+    let _ = Getter::claim(&proto, 3).unwrap_err();
+}
+
+#[test]
+fn chain_init() {
+    let proto = PROTO_DEF_CHAIN.build().unwrap();
+    unsafe { proto.fill_memory_raw(0, u8_ptr(&mut true)).unwrap() }
+}
+
+#[test]
+fn chain_round() {
+    let proto = PROTO_DEF_CHAIN.build().unwrap();
+    unsafe { proto.fill_memory_raw(0, u8_ptr(&mut true)).unwrap() };
+    let proto = Arc::new(proto);
+    let mut p3 = Getter::claim(&proto, 3).unwrap();
+    let mut data3 = false;
+    unsafe { p3.get_raw(u8_ptr(&mut data3)) };
+    assert!(data3);
+}
+
+#[test]
+fn chain_signal() {
+    let proto = PROTO_DEF_CHAIN.build().unwrap();
+    unsafe { proto.fill_memory_raw(0, u8_ptr(&mut true)).unwrap() };
+    let proto = Arc::new(proto);
+    let mut p3 = Getter::claim(&proto, 3).unwrap();
+    p3.get_signal();
 }
 
 // #[test]
