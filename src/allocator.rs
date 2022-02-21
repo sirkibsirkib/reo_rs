@@ -1,7 +1,7 @@
 use super::*;
 
 // ensures we never alloc/free a zero-sized type. we use a dummy byte instead
-fn layout_stuff(mut layout: Layout) -> Layout {
+fn pad_layout(layout: Layout) -> Layout {
     if layout.size() == 0 {
         // results in a safe layout assuming the given layout is safe
         unsafe { Layout::from_size_align_unchecked(1, layout.align()) }
@@ -11,15 +11,25 @@ fn layout_stuff(mut layout: Layout) -> Layout {
 }
 
 impl Allocator {
+    /// Given a type key, returns a pointer to a newly-allocated buffer
     pub fn occupy_allocation(&mut self, type_key: TypeKey) -> DatumPtr {
         let Self { vacant, occupied } = self;
         let set = vacant.map.entry(type_key).or_insert_with(Default::default);
-        let datum_ptr = set.iter().copied().next().unwrap_or_else(|| {
-            let layout = layout_stuff(type_key.get_info().layout);
-            let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
-            set.insert(datum_ptr);
-            datum_ptr
-        });
+        let datum_ptr = set
+            .iter()
+            .copied()
+            .next()
+            .map(|vacant_ptr| {
+                // Using vacant_allocation to use
+                assert!(set.remove(&vacant_ptr));
+                vacant_ptr
+            })
+            .unwrap_or_else(|| {
+                // Make a new allocation
+                let layout = pad_layout(type_key.get_info().layout);
+                let datum_ptr = DatumPtr::from_raw(unsafe { std::alloc::alloc(layout) });
+                datum_ptr
+            });
         occupied.insert(type_key, datum_ptr);
         datum_ptr
     }
@@ -52,7 +62,7 @@ impl Drop for Allocator {
 
         // drop all allocations
         for (type_key, datum_boxes) in self.occupied.map.iter().chain(self.vacant.map.iter()) {
-            let layout = layout_stuff(type_key.get_info().layout);
+            let layout = pad_layout(type_key.get_info().layout);
 
             for datum_box in datum_boxes.iter() {
                 unsafe { std::alloc::dealloc(datum_box.into_raw(), layout) }

@@ -352,6 +352,7 @@ impl Proto {
             assert_eq!(DatumPtr::NULL, ps.atomic_datum_ptr.swap(datum_ptr));
             lock.mem_filled.insert(space_idx);
             // println!("SWAP A");
+
             assert!(lock.ref_counts.insert(datum_ptr, 1).is_none());
             (ps.type_key.get_info().raw_move)(datum_ptr.into_raw(), src);
             Ok(())
